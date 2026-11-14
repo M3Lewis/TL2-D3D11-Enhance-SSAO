@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <cstdio>
 
+#include "cegui_explicit_shader.h"
 #include "dxbc_cache.h"
 #include "hlsl_cbuffer_fastpath.h"
 
@@ -90,12 +91,14 @@ extern "C" __declspec(dllexport) void dllStartPlugin() {
     if (ok_d3d && ok_ogre) {
         const bool dxbc_ok = routeb::InstallDxbcCacheHook(d3d_base, &LogLine);
         const bool fp_ok = routeb::InstallPhase1FastPaths(d3d_base, ogre_base, &LogLine);
+        const bool p2_ok = routeb::InstallCeguiExplicitShaderHook(d3d_base, ogre_base, &LogLine);
         g_phase1_installed = dxbc_ok && fp_ok;
-        LogLine("[RouteB][Phase1] Active status: dxbc_cache=%s fastpaths=%s",
+        LogLine("[RouteB][Phase1+2] Active status: dxbc_cache=%s fastpaths=%s cegui_shader=%s",
                 dxbc_ok ? "ON" : "OFF",
-                fp_ok ? "ON" : "OFF");
+                fp_ok ? "ON" : "OFF",
+                p2_ok ? "ON" : "OFF");
     } else {
-        LogLine("[RouteB][Phase1] PE mismatch or RenderSystem_Direct3D11 not loaded; Phase 1 disabled cleanly.");
+        LogLine("[RouteB][Phase1] PE mismatch or RenderSystem_Direct3D11 not loaded; Phase 1+2 disabled cleanly.");
     }
 }
 
@@ -116,8 +119,17 @@ extern "C" __declspec(dllexport) void dllStopPlugin() {
             static_cast<unsigned long long>(fp.ff_param_hits),
             static_cast<unsigned long long>(fp.ff_param_misses),
             static_cast<unsigned long long>(fp.ff_param_skipped_missing));
+        const auto cegui = routeb::GetCeguiShaderStats();
+        LogLine(
+            "[RouteB][Phase2][Stats] CEGUI hooked=%d ready=%d calls=%llu explicitBinds=%llu skips=%llu",
+            cegui.hooked ? 1 : 0,
+            cegui.shaders_ready ? 1 : 0,
+            static_cast<unsigned long long>(cegui.hook_calls),
+            static_cast<unsigned long long>(cegui.explicit_binds),
+            static_cast<unsigned long long>(cegui.fallback_skips));
     }
 
+    routeb::RemoveCeguiExplicitShaderHook();
     routeb::RemovePhase1FastPaths();
     routeb::RemoveDxbcCacheHook();
     g_phase1_installed = false;
@@ -131,6 +143,7 @@ extern "C" __declspec(dllexport) void dllStopPlugin() {
 
 BOOL APIENTRY DllMain(HMODULE, DWORD reason, LPVOID) {
     if (reason == DLL_PROCESS_DETACH) {
+        routeb::RemoveCeguiExplicitShaderHook();
         routeb::RemovePhase1FastPaths();
         routeb::RemoveDxbcCacheHook();
         if (g_log) {

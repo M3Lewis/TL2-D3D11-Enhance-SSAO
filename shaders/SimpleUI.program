@@ -1,0 +1,14 @@
+vertex_program TL2/SimpleUI_VS hlsl
+{
+    source hlsl4/SimpleUI_vs.hlsl
+    entry_point main
+    target vs_4_0
+    column_major_matrices false
+}
+
+fragment_program TL2/SimpleUI_PS hlsl
+{
+    source hlsl4/SimpleUI_ps.hlsl
+    entry_point main
+    target ps_4_0
+}

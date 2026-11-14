@@ -1,0 +1,198 @@
+// Native-resolution UI stays outside this scene compositor.
+vertex_program TL2/FxaaVS9 hlsl
+{
+    source Fxaa_vs.hlsl
+    target vs_2_0
+    entry_point main
+}
+vertex_program TL2/FxaaVS11 hlsl
+{
+    source hlsl4/Fxaa_vs.hlsl
+    target vs_4_0
+    entry_point main
+}
+vertex_program TL2/FxaaVS unified
+{
+    delegate TL2/FxaaVS11
+    delegate TL2/FxaaVS9
+}
+fragment_program TL2/CopyPS9 hlsl
+{
+    source Copy_ps.hlsl
+    target ps_2_0
+    entry_point main
+}
+fragment_program TL2/CopyPS11 hlsl
+{
+    source hlsl4/Copy_ps.hlsl
+    target ps_4_0
+    entry_point main
+}
+fragment_program TL2/CopyPS unified
+{
+    delegate TL2/CopyPS11
+    delegate TL2/CopyPS9
+}
+fragment_program TL2/FxaaPS9 hlsl
+{
+    source Fxaa_ps.hlsl
+    target ps_3_0
+    entry_point main
+    default_params
+    {
+        param_named_auto texelSize inverse_texture_size 0
+    }
+}
+fragment_program TL2/FxaaPS11 hlsl
+{
+    source hlsl4/Fxaa_ps.hlsl
+    target ps_4_0
+    entry_point main
+    default_params
+    {
+        param_named_auto texelSize inverse_texture_size 0
+    }
+}
+fragment_program TL2/FxaaPS unified
+{
+    delegate TL2/FxaaPS11
+    delegate TL2/FxaaPS9
+}
+
+// Compile the extra preview samples out of the full-screen scene shader.
+fragment_program TL2/PreviewFxaaPS9 hlsl
+{
+    source Fxaa_ps.hlsl
+    target ps_3_0
+    entry_point main
+    preprocessor_defines PREVIEW_FXAA=1
+    default_params
+    {
+        param_named_auto texelSize inverse_texture_size 0
+        param_named outputTransmission float 0
+    }
+}
+fragment_program TL2/PreviewFxaaPS11 hlsl
+{
+    source hlsl4/Fxaa_ps.hlsl
+    target ps_4_0
+    entry_point main
+    preprocessor_defines PREVIEW_FXAA=1
+    default_params
+    {
+        param_named_auto texelSize inverse_texture_size 0
+        param_named outputTransmission float 0
+    }
+}
+fragment_program TL2/PreviewFxaaPS unified
+{
+    delegate TL2/PreviewFxaaPS11
+    delegate TL2/PreviewFxaaPS9
+}
+
+material TL2/RenderScale/FXAA
+{
+    technique
+    {
+        pass
+        {
+            lighting off
+            depth_check off
+            depth_write off
+            cull_hardware none
+            cull_software none
+            fog_override true
+            vertex_program_ref TL2/FxaaVS {}
+            fragment_program_ref TL2/FxaaPS {}
+            texture_unit
+            {
+                tex_coord_set 0
+                tex_address_mode clamp
+                filtering linear linear none
+            }
+        }
+    }
+}
+
+material TL2/Preview/FXAA
+{
+    technique
+    {
+        pass
+        {
+            lighting off
+            depth_check off
+            depth_write off
+            cull_hardware none
+            cull_software none
+            fog_override true
+            scene_blend dest_colour zero
+            vertex_program_ref TL2/FxaaVS {}
+            fragment_program_ref TL2/PreviewFxaaPS
+            {
+                param_named outputTransmission float 1
+            }
+            texture_unit
+            {
+                tex_coord_set 0
+                tex_address_mode clamp
+                filtering linear linear none
+            }
+            texture_unit
+            {
+                tex_coord_set 0
+                tex_address_mode clamp
+                filtering linear linear none
+            }
+        }
+        pass
+        {
+            lighting off
+            depth_check off
+            depth_write off
+            cull_hardware none
+            cull_software none
+            fog_override true
+            scene_blend one one
+            vertex_program_ref TL2/FxaaVS {}
+            fragment_program_ref TL2/PreviewFxaaPS {}
+            texture_unit
+            {
+                tex_coord_set 0
+                tex_address_mode clamp
+                filtering linear linear none
+            }
+            texture_unit
+            {
+                tex_coord_set 0
+                tex_address_mode clamp
+                filtering linear linear none
+            }
+        }
+    }
+}
+
+material TL2/RenderScale/Copy
+{
+	technique
+	{
+		pass
+		{
+			lighting off
+			depth_check off
+			depth_write off
+			cull_hardware none
+			cull_software none
+			fog_override true
+			vertex_program_ref TL2/FxaaVS {}
+			fragment_program_ref TL2/CopyPS {}
+
+			texture_unit
+			{
+				tex_coord_set 0
+				tex_address_mode clamp
+				filtering linear linear none
+			}
+		}
+	}
+}

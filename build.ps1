@@ -5,6 +5,7 @@ $SrcFiles = @(
     (Join-Path $RootDir "src\hook_utils.cpp"),
     (Join-Path $RootDir "src\dxbc_cache.cpp"),
     (Join-Path $RootDir "src\hlsl_cbuffer_fastpath.cpp"),
+    (Join-Path $RootDir "src\cegui_explicit_shader.cpp"),
     (Join-Path $RootDir "src\plugin_main.cpp")
 )
 $OutDir = Join-Path $RootDir "bin"

@@ -23,5 +23,6 @@ struct Phase3Stats {
 bool InstallPhase3ScenePipeline(void* d3d11_base, void* ogre_main_base, Phase3LogFn logger);
 void RemovePhase3ScenePipeline();
 Phase3Stats GetPhase3Stats();
+void LogPhase3PassDiagnostics(Phase3LogFn logger);
 
 }  // namespace routeb

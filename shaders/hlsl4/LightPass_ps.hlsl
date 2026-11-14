@@ -25,23 +25,34 @@ float  FogEnd;
 float  FogDensity;
 
 // p3Flags:
-//   x = stage1 blend op (0=none, 1=modulate, 2=add, 3=alpha_blend, 4=modulate_x2)
+//   x = stage1 blend op (0=none, 1=modulate, 2=add, 3=alpha_blend, 4=modulate_x2, 5=modulate_x4)
 //   y = unused
 //   z = fog mode (0=none, 1=exp, 2=exp2, 3=linear)
-//   w = stage1 texcoord index (0 or 1)
-float4 p3Flags = float4(0.0, 1.0, 0.0, 1.0);
+//   w = stage1 projective flag (0=planar .xy, 1=projective .xy/.w)
+float4 p3Flags = float4(0.0, 1.0, 0.0, 0.0);
+
+float2 ResolveStageUv(float4 rawUv, bool isProjective)
+{
+    if (isProjective)
+    {
+        return (abs(rawUv.w) > 1e-5) ? (rawUv.xy / rawUv.w) : float2(-1.0, -1.0);
+    }
+    return rawUv.xy;
+}
 
 float3 ApplyStage1Op(float3 baseColor, float2 uv, int op)
 {
     float4 t1 = Texture1.Sample(Sampler1, uv);
     if (op == 1)
-        return baseColor * t1.rgb;
+        return saturate(baseColor * t1.rgb);
     if (op == 2)
-        return baseColor + t1.rgb;
+        return saturate(baseColor + t1.rgb);
     if (op == 3)
-        return lerp(baseColor, t1.rgb, t1.a);
+        return saturate(lerp(baseColor, t1.rgb, t1.a));
     if (op == 4)
-        return baseColor * (t1.rgb * 2.0);
+        return saturate(baseColor * (t1.rgb * 2.0));
+    if (op == 5)
+        return saturate(baseColor * (t1.rgb * 4.0));
     return baseColor;
 }
 
@@ -87,7 +98,7 @@ float4 main(VS_OUTPUT input) : SV_TARGET
     int texOp = (int)(p3Flags.x + 0.5);
     if (texOp > 0)
     {
-        float2 uv1 = (p3Flags.w > 0.5) ? input.Texcoord1.xy : input.Texcoord0.xy;
+        float2 uv1 = ResolveStageUv(input.Texcoord1, p3Flags.w > 0.5);
         color = ApplyStage1Op(color, uv1, texOp);
     }
 

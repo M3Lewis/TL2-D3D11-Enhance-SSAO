@@ -6,6 +6,8 @@
 #include <algorithm>
 #include <atomic>
 #include <cctype>
+#include <cmath>
+#include <cstdio>
 #include <cstring>
 #include <exception>
 #include <string>
@@ -61,10 +63,10 @@ struct OgreColourValue {
     float a = 1.0f;
 };
 
-struct OgreLayerBlendModeEx {
-    int blendType = 0;
-    int operation = 0;
+struct OgreMatrix4Raw {
+    float m[4][4] = {};
 };
+static_assert(sizeof(OgreMatrix4Raw) == 64, "Ogre::Matrix4 must be 64 bytes");
 
 enum OgreCompareFunction : int {
     kCmpAlwaysFail = 0,
@@ -74,6 +76,22 @@ enum OgreCompareFunction : int {
 enum OgreTextureType : int {
     kTexType2D = 2,
     kTexTypeCubeMap = 4,
+};
+
+enum OgreLayerBlendOp : int {
+    kLbxSource1 = 0,
+    kLbxSource2 = 1,
+    kLbxModulate = 2,
+    kLbxModulateX2 = 3,
+    kLbxModulateX4 = 4,
+    kLbxAdd = 5,
+    kLbxBlendTextureAlpha = 10,
+};
+
+enum OgreLayerBlendSource : int {
+    kLbsCurrent = 0,
+    kLbsTexture = 1,
+    kLbsDiffuse = 2,
 };
 
 enum class PassArchetype {
@@ -130,7 +148,10 @@ using SmGetColourFn = const OgreColourValue&(__fastcall*)(uintptr_t sm);
 
 using TusGetIntFn = int(__fastcall*)(const void* tus);
 using TusGetU32Fn = uint32_t(__fastcall*)(const void* tus);
-using TusGetBlendModeFn = const OgreLayerBlendModeEx&(__fastcall*)(const void* tus);
+using TusGetBoolFn = bool(__fastcall*)(const void* tus);
+using TusGetStringFn = const std::string&(__fastcall*)(const void* tus);
+using TusGetMatrixFn = const OgreMatrix4Raw&(__fastcall*)(const void* tus);
+using TusGetBlendModeFn = const OgreLayerBlendModeExRaw&(__fastcall*)(const void* tus);
 
 struct OgreApiTable {
     GetSingletonPtrFn hl_mgr_singleton = nullptr;
@@ -144,10 +165,14 @@ struct OgreApiTable {
     PassGetBoolFn pass_has_vp = nullptr;
     PassGetBoolFn pass_has_fp = nullptr;
     PassGetStringFn pass_get_vp_name = nullptr;
+    PassGetStringFn pass_get_fp_name = nullptr;
     PassGetU16Fn pass_get_num_tus = nullptr;
     PassGetTusFn pass_get_tus = nullptr;
     PassGetIntFn pass_get_alpha_reject_func = nullptr;
     PassGetU8Fn pass_get_alpha_reject_val = nullptr;
+    PassGetBoolFn pass_get_lighting_enabled = nullptr;
+    PassGetBoolFn pass_get_depth_write_enabled = nullptr;
+    PassGetBoolFn pass_is_transparent = nullptr;
     PassGetBoolFn pass_get_fog_override = nullptr;
     PassGetIntFn pass_get_fog_mode = nullptr;
     PassGetColourFn pass_get_fog_colour = nullptr;
@@ -161,9 +186,16 @@ struct OgreApiTable {
     SmGetFloatFn sm_get_fog_end = nullptr;
     SmGetFloatFn sm_get_fog_density = nullptr;
 
+    TusGetStringFn tus_get_name = nullptr;
+    TusGetStringFn tus_get_texture_name = nullptr;
     TusGetIntFn tus_get_tex_type = nullptr;
     TusGetU32Fn tus_get_coord_set = nullptr;
+    TusGetU32Fn tus_get_num_frames = nullptr;
+    TusGetBoolFn tus_is_blank = nullptr;
+    TusGetBoolFn tus_has_view_rel_texgen = nullptr;
+    TusGetMatrixFn tus_get_tex_transform = nullptr;
     TusGetBlendModeFn tus_get_colour_blend = nullptr;
+    TusGetBlendModeFn tus_get_alpha_blend = nullptr;
 };
 
 struct Phase3Toggles {
@@ -213,6 +245,202 @@ std::atomic<uint64_t> g_vs_texcoord_injections{0};
 std::atomic<uint64_t> g_ff_explicit_syncs{0};
 std::atomic<bool> g_hooked{false};
 
+enum class SkipReason : uint8_t {
+    Matched = 0,
+    HasExplicitFp,
+    ExcludedName,
+    OtherExplicitVp,
+    DisabledToggle,
+    Unlit,
+    NoDepthWrite,
+    TranslucentNoReject,
+    ZeroOrMultiTus,
+    LightpassTus,
+    StageNot2DOrBlank,
+    StageTexGen,
+    StageAnimated,
+    StageTexTransform,
+    StageManualBlend,
+    Stage0OpMismatch,
+    Stage1OpMismatch,
+    StageAlphaOpMismatch,
+    StageCoordUnsupported,
+    UnmatchedName,
+};
+
+const char* ArchName(PassArchetype arch) {
+    switch (arch) {
+        case PassArchetype::DiffPassOpaque: return "DiffOpaque";
+        case PassArchetype::DiffPassAlpha: return "DiffAlpha";
+        case PassArchetype::SkinnedDiffOpaque: return "SkinnedOpaque";
+        case PassArchetype::SkinnedDiffAlpha: return "SkinnedAlpha";
+        case PassArchetype::LightPass: return "LightPass";
+        case PassArchetype::RimLit2D: return "Rim2D";
+        case PassArchetype::RimLitCube: return "RimCube";
+        default: return "None";
+    }
+}
+
+const char* SkipReasonName(SkipReason r) {
+    switch (r) {
+        case SkipReason::Matched: return "ok";
+        case SkipReason::HasExplicitFp: return "hasFP";
+        case SkipReason::ExcludedName: return "excludedName";
+        case SkipReason::OtherExplicitVp: return "otherVP";
+        case SkipReason::DisabledToggle: return "disabled";
+        case SkipReason::Unlit: return "unlit";
+        case SkipReason::NoDepthWrite: return "noDepthWrite";
+        case SkipReason::TranslucentNoReject: return "translucentNoAR";
+        case SkipReason::ZeroOrMultiTus: return "numTus!=1..3";
+        case SkipReason::LightpassTus: return "hasLightpassTus";
+        case SkipReason::StageNot2DOrBlank: return "not2DOrBlank";
+        case SkipReason::StageTexGen: return "texGen";
+        case SkipReason::StageAnimated: return "animTex";
+        case SkipReason::StageTexTransform: return "texXform";
+        case SkipReason::StageManualBlend: return "manualBlend";
+        case SkipReason::Stage0OpMismatch: return "stage0Op";
+        case SkipReason::Stage1OpMismatch: return "stage1Op";
+        case SkipReason::StageAlphaOpMismatch: return "alphaOp";
+        case SkipReason::StageCoordUnsupported: return "coordSet";
+        case SkipReason::UnmatchedName: return "unmatchedName";
+        default: return "unknown";
+    }
+}
+
+constexpr size_t kMaxPassDiagSlots = 64;
+
+struct PassDiagSlot {
+    std::atomic<uint64_t> key{0};
+    std::atomic<uint64_t> hits{0};
+    char summary[240]{};
+};
+
+PassDiagSlot g_diag_slots[kMaxPassDiagSlots]{};
+std::atomic<uint32_t> g_diag_used{0};
+SRWLOCK g_diag_lock = SRWLOCK_INIT;
+
+void ResetPassDiagSlots() {
+    ::AcquireSRWLockExclusive(&g_diag_lock);
+    for (auto& slot : g_diag_slots) {
+        slot.key.store(0, std::memory_order_relaxed);
+        slot.hits.store(0, std::memory_order_relaxed);
+        slot.summary[0] = '\0';
+    }
+    g_diag_used.store(0, std::memory_order_relaxed);
+    ::ReleaseSRWLockExclusive(&g_diag_lock);
+}
+
+uint64_t ComputeQuickPassKey(const void* pass, PassArchetype arch, SkipReason reason, uint16_t num_tus) {
+    uint64_t h = 14695981039346656037ULL ^ reinterpret_cast<uintptr_t>(pass);
+    h = (h * 1099511628211ULL) ^ static_cast<uint64_t>(arch);
+    h = (h * 1099511628211ULL) ^ (static_cast<uint64_t>(reason) << 8) ^ static_cast<uint64_t>(num_tus);
+    return h ? h : 1;
+}
+
+void FormatPassDiagSummary(
+    const void* pass,
+    PassArchetype arch,
+    SkipReason reason,
+    char* out,
+    size_t out_cap) {
+    const std::string empty;
+    const std::string& p_name = (pass && g_api.pass_get_name) ? g_api.pass_get_name(pass) : empty;
+    const bool has_vp = (pass && g_api.pass_has_vp) ? g_api.pass_has_vp(pass) : false;
+    const bool has_fp = (pass && g_api.pass_has_fp) ? g_api.pass_has_fp(pass) : false;
+    const std::string& vp_name = (has_vp && g_api.pass_get_vp_name) ? g_api.pass_get_vp_name(pass) : empty;
+    const std::string& fp_name = (has_fp && g_api.pass_get_fp_name) ? g_api.pass_get_fp_name(pass) : empty;
+    const int lit = (pass && g_api.pass_get_lighting_enabled) ? (g_api.pass_get_lighting_enabled(pass) ? 1 : 0) : -1;
+    const int dw = (pass && g_api.pass_get_depth_write_enabled) ? (g_api.pass_get_depth_write_enabled(pass) ? 1 : 0) : -1;
+    const int tr = (pass && g_api.pass_is_transparent) ? (g_api.pass_is_transparent(pass) ? 1 : 0) : -1;
+    const int ar = (pass && g_api.pass_get_alpha_reject_func) ? g_api.pass_get_alpha_reject_func(pass) : -1;
+    const uint16_t num_tus = (pass && g_api.pass_get_num_tus) ? g_api.pass_get_num_tus(pass) : 0;
+
+    int pos = std::snprintf(
+        out,
+        out_cap,
+        "arch=%s skip=%s pass=\"%s\" vp=%d:\"%s\" fp=%d:\"%s\" lit=%d dw=%d tr=%d ar=%d tus=%u",
+        ArchName(arch),
+        SkipReasonName(reason),
+        p_name.c_str(),
+        has_vp ? 1 : 0,
+        vp_name.c_str(),
+        has_fp ? 1 : 0,
+        fp_name.c_str(),
+        lit,
+        dw,
+        tr,
+        ar,
+        static_cast<unsigned>(num_tus));
+
+    const uint16_t show_tus = (num_tus < 3) ? num_tus : 3;
+    for (uint16_t i = 0; i < show_tus && pos > 0 && static_cast<size_t>(pos) + 16 < out_cap; ++i) {
+        const void* tus = g_api.pass_get_tus ? g_api.pass_get_tus(pass, i) : nullptr;
+        if (!tus) {
+            continue;
+        }
+        const std::string& t_name = g_api.tus_get_name ? g_api.tus_get_name(tus) : empty;
+        const std::string& tex_name = g_api.tus_get_texture_name ? g_api.tus_get_texture_name(tus) : empty;
+        const int col_op = g_api.tus_get_colour_blend ? static_cast<int>(g_api.tus_get_colour_blend(tus).operation) : -1;
+        const int src1 = g_api.tus_get_colour_blend ? static_cast<int>(g_api.tus_get_colour_blend(tus).source1) : -1;
+        const int src2 = g_api.tus_get_colour_blend ? static_cast<int>(g_api.tus_get_colour_blend(tus).source2) : -1;
+        pos += std::snprintf(
+            out + pos,
+            out_cap - static_cast<size_t>(pos),
+            " t%u=\"%s\"(%s,op=%d,s=%d/%d)",
+            static_cast<unsigned>(i),
+            t_name.c_str(),
+            tex_name.c_str(),
+            col_op,
+            src1,
+            src2);
+    }
+}
+
+void RecordPassDiag(const void* pass, PassArchetype arch, SkipReason reason) {
+    const uint16_t num_tus = (pass && g_api.pass_get_num_tus) ? g_api.pass_get_num_tus(pass) : 0;
+    const uint64_t key = ComputeQuickPassKey(pass, arch, reason, num_tus);
+    const size_t mask = kMaxPassDiagSlots - 1;
+    size_t idx = static_cast<size_t>(key) & mask;
+
+    for (size_t probe = 0; probe < 8; ++probe) {
+        const size_t slot_idx = (idx + probe) & mask;
+        const uint64_t existing = g_diag_slots[slot_idx].key.load(std::memory_order_acquire);
+        if (existing == key) {
+            g_diag_slots[slot_idx].hits.fetch_add(1, std::memory_order_relaxed);
+            return;
+        }
+        if (existing == 0) {
+            break;
+        }
+    }
+
+    if (g_diag_used.load(std::memory_order_relaxed) >= 48) {
+        return;
+    }
+
+    ::AcquireSRWLockExclusive(&g_diag_lock);
+    for (size_t probe = 0; probe < 8; ++probe) {
+        const size_t slot_idx = (idx + probe) & mask;
+        const uint64_t existing = g_diag_slots[slot_idx].key.load(std::memory_order_relaxed);
+        if (existing == key) {
+            g_diag_slots[slot_idx].hits.fetch_add(1, std::memory_order_relaxed);
+            ::ReleaseSRWLockExclusive(&g_diag_lock);
+            return;
+        }
+        if (existing == 0) {
+            if (g_diag_used.load(std::memory_order_relaxed) < 48) {
+                FormatPassDiagSummary(pass, arch, reason, g_diag_slots[slot_idx].summary, sizeof(g_diag_slots[slot_idx].summary));
+                g_diag_slots[slot_idx].hits.store(1, std::memory_order_relaxed);
+                g_diag_slots[slot_idx].key.store(key, std::memory_order_release);
+                g_diag_used.fetch_add(1, std::memory_order_relaxed);
+            }
+            ::ReleaseSRWLockExclusive(&g_diag_lock);
+            return;
+        }
+    }
+    ::ReleaseSRWLockExclusive(&g_diag_lock);
+}
+
 void ReleaseOgreSharedPtr(OgreSharedPtr& sp) {
     if (sp.use_count && ::InterlockedDecrement(sp.use_count) == 0) {
         auto** vtbl = static_cast<void(**)(void*)>(sp.vftable);
@@ -245,18 +473,20 @@ bool ContainsAsciiInsensitive(std::string_view haystack, std::string_view needle
 }
 
 int MapOgreBlendOpToShader(int ogre_lbx_op) {
-    // Ogre LayerBlendOperationEx: LBX_MODULATE=2, LBX_MODULATE_X2=3, LBX_ADD=5, LBX_BLEND_*_ALPHA=9..11
+    // Ogre LayerBlendOperationEx: 2=MODULATE, 3=MODULATE_X2, 4=MODULATE_X4, 5=ADD, 9..11=BLEND_*_ALPHA
     switch (ogre_lbx_op) {
-        case 2:
-            return 1;  // modulate
-        case 5:
-            return 2;  // add
+        case kLbxModulate:
+            return 1;
+        case kLbxAdd:
+            return 2;
         case 9:
-        case 10:
+        case kLbxBlendTextureAlpha:
         case 11:
-            return 3;  // alpha blend
-        case 3:
-            return 4;  // modulate x2
+            return 3;
+        case kLbxModulateX2:
+            return 4;
+        case kLbxModulateX4:
+            return 5;
         default:
             return 0;
     }
@@ -376,17 +606,215 @@ bool EnsureSlotReady(PassArchetype arch) {
     return slot.ready;
 }
 
+bool IsIdentityMatrix4(const OgreMatrix4Raw& mat) {
+    static constexpr float kIdentity[4][4] = {
+        {1.0f, 0.0f, 0.0f, 0.0f},
+        {0.0f, 1.0f, 0.0f, 0.0f},
+        {0.0f, 0.0f, 1.0f, 0.0f},
+        {0.0f, 0.0f, 0.0f, 1.0f},
+    };
+    for (int r = 0; r < 4; ++r) {
+        for (int c = 0; c < 4; ++c) {
+            if (std::fabs(mat.m[r][c] - kIdentity[r][c]) > 1e-4f) {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+bool UsesManualBlend(const OgreLayerBlendModeExRaw& blend) {
+    return blend.operation == kLayerBlendOpManual ||
+           blend.source1 == kLayerBlendSrcManual ||
+           blend.source2 == kLayerBlendSrcManual;
+}
+
+bool IsCommutativeCurrentAndTexture(const OgreLayerBlendModeExRaw& col) {
+    return (col.source1 == kLbsCurrent && col.source2 == kLbsTexture) ||
+           (col.source1 == kLbsTexture && col.source2 == kLbsCurrent);
+}
+
+bool MapDiffOverlayStageOp(const OgreLayerBlendModeExRaw& col, int* out_shader_op) {
+    if (col.operation == kLbxBlendTextureAlpha) {
+        if (col.source1 == kLbsTexture && col.source2 == kLbsCurrent) {
+            *out_shader_op = 3;
+            return true;
+        }
+        *out_shader_op = 0;
+        return false;
+    }
+    if (col.operation == kLbxModulate ||
+        col.operation == kLbxModulateX2 ||
+        col.operation == kLbxModulateX4 ||
+        col.operation == kLbxAdd) {
+        if (IsCommutativeCurrentAndTexture(col)) {
+            *out_shader_op = MapOgreBlendOpToShader(static_cast<int>(col.operation));
+            return (*out_shader_op != 0);
+        }
+    }
+    *out_shader_op = 0;
+    return false;
+}
+
+bool PreservesPreviousAlpha(const OgreLayerBlendModeExRaw& alpha) {
+    return (alpha.operation == kLbxSource1 && alpha.source1 == kLbsCurrent) ||
+           (alpha.operation == kLbxSource2 && alpha.source2 == kLbsCurrent);
+}
+
+bool IsStage0AlphaValid(const OgreLayerBlendModeExRaw& alpha, bool transparent, bool has_alpha_reject) {
+    if (!transparent && !has_alpha_reject) {
+        return true;
+    }
+    if (alpha.operation == kLbxModulate) {
+        const bool tex_cur = (alpha.source1 == kLbsTexture && (alpha.source2 == kLbsCurrent || alpha.source2 == kLbsDiffuse)) ||
+                             (alpha.source2 == kLbsTexture && (alpha.source1 == kLbsCurrent || alpha.source1 == kLbsDiffuse));
+        if (tex_cur) {
+            return true;
+        }
+    }
+    return (alpha.operation == kLbxSource1 && alpha.source1 == kLbsTexture) ||
+           (alpha.operation == kLbxSource2 && alpha.source2 == kLbsTexture);
+}
+
+bool CanUseSafeDiffPass(
+    const void* pass,
+    uint16_t num_tus,
+    bool has_alpha_reject,
+    bool has_lightpass_tus,
+    float out_flags[4],
+    float out_flags2[4],
+    SkipReason* out_reason) {
+    if (!g_toggles.diff_pass) {
+        *out_reason = SkipReason::DisabledToggle;
+        return false;
+    }
+    if (!g_api.pass_get_lighting_enabled || !g_api.pass_get_lighting_enabled(pass)) {
+        *out_reason = SkipReason::Unlit;
+        return false;
+    }
+    const bool dw_enabled = g_api.pass_get_depth_write_enabled ? g_api.pass_get_depth_write_enabled(pass) : false;
+    if (!dw_enabled && !has_alpha_reject && !has_lightpass_tus) {
+        *out_reason = SkipReason::NoDepthWrite;
+        return false;
+    }
+    const bool transparent = g_api.pass_is_transparent ? g_api.pass_is_transparent(pass) : false;
+    if (transparent && !has_alpha_reject && !has_lightpass_tus) {
+        *out_reason = SkipReason::TranslucentNoReject;
+        return false;
+    }
+    if (num_tus == 0 || num_tus > 3) {
+        *out_reason = SkipReason::ZeroOrMultiTus;
+        return false;
+    }
+
+    out_flags[0] = 0.0f;
+    out_flags[3] = 0.0f;
+    out_flags2[0] = 0.0f;
+    out_flags2[1] = 0.0f;
+
+    for (uint16_t i = 0; i < num_tus; ++i) {
+        const void* tus = g_api.pass_get_tus ? g_api.pass_get_tus(pass, i) : nullptr;
+        if (!tus) {
+            *out_reason = SkipReason::StageNot2DOrBlank;
+            return false;
+        }
+        const bool is_lightpass = (g_api.tus_get_name && g_api.tus_get_name(tus) == "LIGHTPASS");
+        const int tex_type = g_api.tus_get_tex_type ? g_api.tus_get_tex_type(tus) : kTexType2D;
+        const bool is_blank = g_api.tus_is_blank ? g_api.tus_is_blank(tus) : false;
+        if (tex_type != kTexType2D || is_blank) {
+            *out_reason = SkipReason::StageNot2DOrBlank;
+            return false;
+        }
+        if (g_api.tus_get_num_frames && g_api.tus_get_num_frames(tus) > 1) {
+            *out_reason = SkipReason::StageAnimated;
+            return false;
+        }
+
+        const bool has_texgen = g_api.tus_has_view_rel_texgen ? g_api.tus_has_view_rel_texgen(tus) : false;
+        if ((i == 0 || !is_lightpass) && has_texgen) {
+            *out_reason = SkipReason::StageTexGen;
+            return false;
+        }
+        if ((i == 0 || !is_lightpass) && g_api.tus_get_tex_transform && !IsIdentityMatrix4(g_api.tus_get_tex_transform(tus))) {
+            *out_reason = SkipReason::StageTexTransform;
+            return false;
+        }
+
+        const OgreLayerBlendModeExRaw& col = g_api.tus_get_colour_blend(tus);
+        if (UsesManualBlend(col)) {
+            *out_reason = SkipReason::StageManualBlend;
+            return false;
+        }
+        const OgreLayerBlendModeExRaw* alpha = g_api.tus_get_alpha_blend ? &g_api.tus_get_alpha_blend(tus) : nullptr;
+        if (alpha && UsesManualBlend(*alpha)) {
+            *out_reason = SkipReason::StageManualBlend;
+            return false;
+        }
+
+        const uint32_t coord_set = g_api.tus_get_coord_set ? g_api.tus_get_coord_set(tus) : 0;
+        if (i == 0) {
+            if (coord_set != 0) {
+                *out_reason = SkipReason::StageCoordUnsupported;
+                return false;
+            }
+            if (col.operation != kLbxModulate ||
+                !((col.source1 == kLbsTexture && (col.source2 == kLbsCurrent || col.source2 == kLbsDiffuse)) ||
+                  (col.source2 == kLbsTexture && (col.source1 == kLbsCurrent || col.source1 == kLbsDiffuse)))) {
+                *out_reason = SkipReason::Stage0OpMismatch;
+                return false;
+            }
+            if (alpha && !IsStage0AlphaValid(*alpha, transparent, has_alpha_reject)) {
+                *out_reason = SkipReason::StageAlphaOpMismatch;
+                return false;
+            }
+        } else {
+            if (coord_set > 2) {
+                *out_reason = SkipReason::StageCoordUnsupported;
+                return false;
+            }
+            int shader_op = 0;
+            if (!MapDiffOverlayStageOp(col, &shader_op)) {
+                *out_reason = SkipReason::Stage1OpMismatch;
+                return false;
+            }
+            if (alpha && !is_lightpass && (transparent || has_alpha_reject) && !PreservesPreviousAlpha(*alpha)) {
+                *out_reason = SkipReason::StageAlphaOpMismatch;
+                return false;
+            }
+            const float proj_flag = (is_lightpass && has_texgen) ? 1.0f : 0.0f;
+            if (i == 1) {
+                out_flags[0] = static_cast<float>(shader_op);
+                out_flags[3] = proj_flag;
+            } else {
+                out_flags2[0] = static_cast<float>(shader_op);
+                out_flags2[1] = proj_flag;
+            }
+        }
+    }
+
+    *out_reason = SkipReason::Matched;
+    return true;
+}
+
 PassArchetype ClassifyPass(
     const void* pass,
     float out_flags[4],
-    bool* out_is_fixed_func_vs) {
+    float out_flags2[4],
+    bool* out_is_fixed_func_vs,
+    SkipReason* out_reason) {
     out_flags[0] = 0.0f;
     out_flags[1] = 1.0f;
     out_flags[2] = 0.0f;
     out_flags[3] = 1.0f;
+    out_flags2[0] = 0.0f;
+    out_flags2[1] = 0.0f;
+    out_flags2[2] = 0.0f;
+    out_flags2[3] = 0.0f;
     *out_is_fixed_func_vs = false;
+    *out_reason = SkipReason::Matched;
 
     if (!pass || !g_api.pass_has_fp || g_api.pass_has_fp(pass)) {
+        *out_reason = SkipReason::HasExplicitFp;
         return PassArchetype::None;
     }
 
@@ -394,6 +822,7 @@ PassArchetype ClassifyPass(
     if (ContainsAsciiInsensitive(pass_name, "Behind") ||
         ContainsAsciiInsensitive(pass_name, "Shadow") ||
         ContainsAsciiInsensitive(pass_name, "Caster")) {
+        *out_reason = SkipReason::ExcludedName;
         return PassArchetype::None;
     }
 
@@ -407,7 +836,7 @@ PassArchetype ClassifyPass(
 
     if (tus1 && g_api.tus_get_colour_blend && tex1_type != kTexTypeCubeMap) {
         const auto& blend = g_api.tus_get_colour_blend(tus1);
-        out_flags[0] = static_cast<float>(MapOgreBlendOpToShader(blend.operation));
+        out_flags[0] = static_cast<float>(MapOgreBlendOpToShader(static_cast<int>(blend.operation)));
         const uint32_t coord_set = g_api.tus_get_coord_set ? g_api.tus_get_coord_set(tus1) : 1;
         out_flags[3] = static_cast<float>((coord_set >= 2) ? 2 : coord_set);
     }
@@ -417,21 +846,24 @@ PassArchetype ClassifyPass(
         if (ContainsAsciiInsensitive(vp_name, "Behind") ||
             ContainsAsciiInsensitive(vp_name, "Shadow") ||
             ContainsAsciiInsensitive(vp_name, "Caster")) {
+            *out_reason = SkipReason::ExcludedName;
             return PassArchetype::None;
         }
         if (vp_name.find("HardwareSkinning") != std::string::npos) {
             if (tex1_type == kTexTypeCubeMap) {
                 if (!g_toggles.rim_lit) {
+                    *out_reason = SkipReason::DisabledToggle;
                     return PassArchetype::None;
                 }
                 if (tus1 && g_api.tus_get_colour_blend) {
                     const auto& blend = g_api.tus_get_colour_blend(tus1);
-                    const int mapped = MapOgreBlendOpToShader(blend.operation);
+                    const int mapped = MapOgreBlendOpToShader(static_cast<int>(blend.operation));
                     out_flags[0] = static_cast<float>(mapped > 0 ? mapped : 2);
                 }
                 return PassArchetype::RimLitCube;
             }
             if (!g_toggles.skinned_diff) {
+                *out_reason = SkipReason::DisabledToggle;
                 return PassArchetype::None;
             }
             if (vp_name.find("Secondary") != std::string::npos && vp_name.find("Enviro") == std::string::npos) {
@@ -441,18 +873,35 @@ PassArchetype ClassifyPass(
             }
             return has_alpha_reject ? PassArchetype::SkinnedDiffAlpha : PassArchetype::SkinnedDiffOpaque;
         }
+        *out_reason = SkipReason::OtherExplicitVp;
         return PassArchetype::None;
     }
 
     *out_is_fixed_func_vs = true;
 
-    if (pass_name == "RIMLIT") {
+    bool has_rimlit_tus = false;
+    bool has_lightpass_tus = false;
+    if (g_api.tus_get_name) {
+        for (uint16_t i = 0; i < num_tus; ++i) {
+            if (const void* tus = g_api.pass_get_tus(pass, i)) {
+                const std::string& tn = g_api.tus_get_name(tus);
+                if (tn == "RIMLIT") {
+                    has_rimlit_tus = true;
+                } else if (tn == "LIGHTPASS") {
+                    has_lightpass_tus = true;
+                }
+            }
+        }
+    }
+
+    if (pass_name == "RIMLIT" || has_rimlit_tus) {
         if (!g_toggles.rim_lit || !tus1) {
+            *out_reason = SkipReason::DisabledToggle;
             return PassArchetype::None;
         }
         if (g_api.tus_get_colour_blend) {
             const auto& blend = g_api.tus_get_colour_blend(tus1);
-            const int mapped = MapOgreBlendOpToShader(blend.operation);
+            const int mapped = MapOgreBlendOpToShader(static_cast<int>(blend.operation));
             out_flags[0] = static_cast<float>(mapped > 0 ? mapped : 2);
         } else {
             out_flags[0] = 2.0f;
@@ -461,20 +910,32 @@ PassArchetype ClassifyPass(
     }
 
     if (pass_name == "LIGHTPASS") {
-        return g_toggles.light_pass ? PassArchetype::LightPass : PassArchetype::None;
+        if (!g_toggles.light_pass) {
+            *out_reason = SkipReason::DisabledToggle;
+            return PassArchetype::None;
+        }
+        out_flags[3] = (tus1 && g_api.tus_has_view_rel_texgen && g_api.tus_has_view_rel_texgen(tus1)) ? 1.0f : 0.0f;
+        return PassArchetype::LightPass;
     }
 
-    if (pass_name == "DIFFPASS") {
-        if (!g_toggles.diff_pass) {
+    if (pass_name == "DIFFPASS" || pass_name == "0" || pass_name.empty()) {
+        if (!CanUseSafeDiffPass(pass, num_tus, has_alpha_reject, has_lightpass_tus, out_flags, out_flags2, out_reason)) {
             return PassArchetype::None;
         }
         return has_alpha_reject ? PassArchetype::DiffPassAlpha : PassArchetype::DiffPassOpaque;
     }
 
+    *out_reason = SkipReason::UnmatchedName;
     return PassArchetype::None;
 }
 
-void ApplyPassFogAndAlphaToExplicitPs(uintptr_t scene_mgr, const void* pass, uintptr_t ps_params, float flags[4]) {
+void ApplyPassFogAndAlphaToExplicitPs(
+    uintptr_t scene_mgr,
+    const void* pass,
+    PassArchetype arch,
+    uintptr_t ps_params,
+    float flags[4],
+    const float flags2[4]) {
     int fog_mode = 0;
     OgreColourValue fog_color{};
     float fog_start = 0.0f;
@@ -497,6 +958,9 @@ void ApplyPassFogAndAlphaToExplicitPs(uintptr_t scene_mgr, const void* pass, uin
 
     flags[2] = static_cast<float>(fog_mode);
     WriteExplicitPsNamedFloat4(ps_params, "p3Flags", flags);
+    if (arch == PassArchetype::DiffPassOpaque || arch == PassArchetype::DiffPassAlpha) {
+        WriteExplicitPsNamedFloat4(ps_params, "p3Flags2", flags2);
+    }
 
     const float fc[4] = {fog_color.r, fog_color.g, fog_color.b, fog_color.a};
     WriteExplicitPsNamedFloat4(ps_params, "FogColor", fc);
@@ -587,8 +1051,11 @@ const void* __fastcall HookSceneManagerSetPass(
     EnsureSharedPerFrameLighting();
 
     float flags[4] = {};
+    float flags2[4] = {};
     bool is_ff_vs = false;
-    const PassArchetype arch = ClassifyPass(used_pass, flags, &is_ff_vs);
+    SkipReason skip_reason = SkipReason::Matched;
+    const PassArchetype arch = ClassifyPass(used_pass, flags, flags2, &is_ff_vs, &skip_reason);
+    RecordPassDiag(used_pass, arch, skip_reason);
     if (arch == PassArchetype::None) {
         return used_pass;
     }
@@ -599,7 +1066,7 @@ const void* __fastcall HookSceneManagerSetPass(
 
     const ExplicitProgramSlot& slot = g_slots[static_cast<size_t>(arch)];
     const uintptr_t ps_params_raw = reinterpret_cast<uintptr_t>(slot.params_sp.rep);
-    ApplyPassFogAndAlphaToExplicitPs(scene_mgr, used_pass, ps_params_raw, flags);
+    ApplyPassFogAndAlphaToExplicitPs(scene_mgr, used_pass, arch, ps_params_raw, flags, flags2);
     BindExplicitPsToRenderSystem(rs, slot.delegate, &slot.params_sp);
     RecordBindStat(arch);
 
@@ -633,11 +1100,13 @@ void* __fastcall HookGetFixedFuncShaderSource(
     if (fog_pos == std::string::npos) {
         return ret;
     }
-    if (out_src->find("Texcoord6") != std::string::npos || out_src->find("Texcoord7") != std::string::npos) {
+    // Check assignment targets rather than "Texcoord6" (struct VS_OUTPUT always declares Texcoord6..7).
+    if (out_src->find("output.Texcoord6") != std::string::npos ||
+        out_src->find("output.Texcoord7") != std::string::npos) {
         return ret;
     }
 
-    const bool has_normal = (out_src->find("float3 N=") != std::string::npos);
+    const bool has_normal = (out_src->find("input.Normal0") != std::string::npos);
     const bool has_cam = (out_src->find("cameraPos") != std::string::npos);
 
     std::string inject = "\noutput.Texcoord6=";
@@ -697,10 +1166,14 @@ bool ResolveAllOgreExports(HMODULE ogre_mod) {
     ok &= ResolveExport(ogre_mod, "?hasVertexProgram@Pass@Ogre@@QEBA_NXZ", g_api.pass_has_vp);
     ok &= ResolveExport(ogre_mod, "?hasFragmentProgram@Pass@Ogre@@QEBA_NXZ", g_api.pass_has_fp);
     ok &= ResolveExport(ogre_mod, "?getVertexProgramName@Pass@Ogre@@QEBAAEBV?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@XZ", g_api.pass_get_vp_name);
+    ok &= ResolveExport(ogre_mod, "?getFragmentProgramName@Pass@Ogre@@QEBAAEBV?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@XZ", g_api.pass_get_fp_name);
     ok &= ResolveExport(ogre_mod, "?getNumTextureUnitStates@Pass@Ogre@@QEBAGXZ", g_api.pass_get_num_tus);
     ok &= ResolveExport(ogre_mod, "?getTextureUnitState@Pass@Ogre@@QEBAPEBVTextureUnitState@2@G@Z", g_api.pass_get_tus);
     ok &= ResolveExport(ogre_mod, "?getAlphaRejectFunction@Pass@Ogre@@QEBA?AW4CompareFunction@2@XZ", g_api.pass_get_alpha_reject_func);
     ok &= ResolveExport(ogre_mod, "?getAlphaRejectValue@Pass@Ogre@@QEBAEXZ", g_api.pass_get_alpha_reject_val);
+    ok &= ResolveExport(ogre_mod, "?getLightingEnabled@Pass@Ogre@@QEBA_NXZ", g_api.pass_get_lighting_enabled);
+    ok &= ResolveExport(ogre_mod, "?getDepthWriteEnabled@Pass@Ogre@@QEBA_NXZ", g_api.pass_get_depth_write_enabled);
+    ok &= ResolveExport(ogre_mod, "?isTransparent@Pass@Ogre@@QEBA_NXZ", g_api.pass_is_transparent);
     ok &= ResolveExport(ogre_mod, "?getFogOverride@Pass@Ogre@@QEBA_NXZ", g_api.pass_get_fog_override);
     ok &= ResolveExport(ogre_mod, "?getFogMode@Pass@Ogre@@QEBA?AW4FogMode@2@XZ", g_api.pass_get_fog_mode);
     ok &= ResolveExport(ogre_mod, "?getFogColour@Pass@Ogre@@QEBAAEBVColourValue@2@XZ", g_api.pass_get_fog_colour);
@@ -714,9 +1187,16 @@ bool ResolveAllOgreExports(HMODULE ogre_mod) {
     ok &= ResolveExport(ogre_mod, "?getFogEnd@SceneManager@Ogre@@UEBAMXZ", g_api.sm_get_fog_end);
     ok &= ResolveExport(ogre_mod, "?getFogDensity@SceneManager@Ogre@@UEBAMXZ", g_api.sm_get_fog_density);
 
+    ok &= ResolveExport(ogre_mod, "?getName@TextureUnitState@Ogre@@QEBAAEBV?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@XZ", g_api.tus_get_name);
+    ok &= ResolveExport(ogre_mod, "?getTextureName@TextureUnitState@Ogre@@QEBAAEBV?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@XZ", g_api.tus_get_texture_name);
     ok &= ResolveExport(ogre_mod, "?getTextureType@TextureUnitState@Ogre@@QEBA?AW4TextureType@2@XZ", g_api.tus_get_tex_type);
     ok &= ResolveExport(ogre_mod, "?getTextureCoordSet@TextureUnitState@Ogre@@QEBAIXZ", g_api.tus_get_coord_set);
+    ok &= ResolveExport(ogre_mod, "?getNumFrames@TextureUnitState@Ogre@@QEBAIXZ", g_api.tus_get_num_frames);
+    ok &= ResolveExport(ogre_mod, "?isBlank@TextureUnitState@Ogre@@QEBA_NXZ", g_api.tus_is_blank);
+    ok &= ResolveExport(ogre_mod, "?hasViewRelativeTextureCoordinateGeneration@TextureUnitState@Ogre@@QEBA_NXZ", g_api.tus_has_view_rel_texgen);
+    ok &= ResolveExport(ogre_mod, "?getTextureTransform@TextureUnitState@Ogre@@QEBAAEBVMatrix4@2@XZ", g_api.tus_get_tex_transform);
     ok &= ResolveExport(ogre_mod, "?getColourBlendMode@TextureUnitState@Ogre@@QEBAAEBVLayerBlendModeEx@2@XZ", g_api.tus_get_colour_blend);
+    ok &= ResolveExport(ogre_mod, "?getAlphaBlendMode@TextureUnitState@Ogre@@QEBAAEBVLayerBlendModeEx@2@XZ", g_api.tus_get_alpha_blend);
     return ok;
 }
 
@@ -727,6 +1207,7 @@ bool InstallPhase3ScenePipeline(void* d3d11_base, void* ogre_main_base, Phase3Lo
     if (!d3d11_base || !ogre_main_base) {
         return false;
     }
+    ResetPassDiagSlots();
 
     g_toggles.diff_pass = !EnvFlagIsOne("TL2_P3_DISABLE_DIFF");
     g_toggles.skinned_diff = !EnvFlagIsOne("TL2_P3_DISABLE_SKIN");
@@ -840,6 +1321,34 @@ Phase3Stats GetPhase3Stats() {
     s.hooked = g_hooked.load(std::memory_order_relaxed);
     s.shared_params_ready = g_shared_params_ready;
     return s;
+}
+
+void LogPhase3PassDiagnostics(Phase3LogFn logger) {
+    if (!logger) {
+        return;
+    }
+    struct Row {
+        uint64_t hits = 0;
+        const char* summary = nullptr;
+    };
+    Row rows[kMaxPassDiagSlots]{};
+    size_t count = 0;
+
+    ::AcquireSRWLockShared(&g_diag_lock);
+    for (const auto& slot : g_diag_slots) {
+        const uint64_t h = slot.hits.load(std::memory_order_relaxed);
+        if (slot.key.load(std::memory_order_relaxed) != 0 && h > 0 && slot.summary[0] != '\0') {
+            rows[count++] = {h, slot.summary};
+        }
+    }
+    std::sort(rows, rows + count, [](const Row& a, const Row& b) { return a.hits > b.hits; });
+    const size_t limit = (count < 24) ? count : 24;
+    for (size_t i = 0; i < limit; ++i) {
+        logger("[RouteB][Phase3][PassDiag] hits=%llu %s",
+               static_cast<unsigned long long>(rows[i].hits),
+               rows[i].summary);
+    }
+    ::ReleaseSRWLockShared(&g_diag_lock);
 }
 
 }  // namespace routeb

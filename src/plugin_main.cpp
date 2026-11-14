@@ -204,6 +204,7 @@ void LogAllStats() {
         static_cast<unsigned long long>(p3.rimlit_cube_binds),
         static_cast<unsigned long long>(p3.vs_texcoord_injections),
         static_cast<unsigned long long>(p3.ff_explicit_syncs));
+    routeb::LogPhase3PassDiagnostics(LogLine);
     LogLine(
         "[RouteB][OgreFix] MemoryDataStream readHook=%d seekHook=%d skipHook=%d boundsClamps=%llu",
         g_detour_mem_read.IsInstalled() ? 1 : 0,

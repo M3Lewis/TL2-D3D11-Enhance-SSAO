@@ -18,6 +18,8 @@ Texture2D    Texture0 : register(t0);
 SamplerState Sampler0 : register(s0);
 Texture2D    Texture1 : register(t1);
 SamplerState Sampler1 : register(s1);
+Texture2D    Texture2 : register(t2);
+SamplerState Sampler2 : register(s2);
 
 float4x4 View;
 float4 BaseLightAmbient;
@@ -34,23 +36,38 @@ float  FogEnd;
 float  FogDensity;
 
 // p3Flags:
-//   x = stage1 blend op (0=none, 1=modulate, 2=add, 3=alpha_blend, 4=modulate_x2)
+//   x = stage1 blend op (0=none, 1=modulate, 2=add, 3=alpha_blend, 4=modulate_x2, 5=modulate_x4)
 //   y = alpha reject compare func (Ogre CompareFunction: 0=fail,1=pass,2=<,3<=,4==,5!=,6>=,7>)
 //   z = fog mode (0=none, 1=exp, 2=exp2, 3=linear)
-//   w = stage1 texcoord index (0 or 1)
-float4 p3Flags = float4(0.0, 1.0, 0.0, 1.0);
+//   w = stage1 projective flag (0=planar .xy, 1=projective .xy/.w)
+float4 p3Flags = float4(0.0, 1.0, 0.0, 0.0);
 
-float3 ApplyStage1Op(float3 baseColor, float2 uv, int op)
+// p3Flags2:
+//   x = stage2 blend op (0=none, 1=modulate, 2=add, 3=alpha_blend, 4=modulate_x2, 5=modulate_x4)
+//   y = stage2 projective flag (0=planar .xy, 1=projective .xy/.w)
+float4 p3Flags2 = float4(0.0, 0.0, 0.0, 0.0);
+
+float2 ResolveFixedFuncUv(float4 rawUv, bool isProjective)
 {
-    float4 t1 = Texture1.Sample(Sampler1, uv);
+    if (isProjective)
+    {
+        return (abs(rawUv.w) > 1e-5) ? (rawUv.xy / rawUv.w) : float2(-1.0, -1.0);
+    }
+    return rawUv.xy;
+}
+
+float3 ApplyTextureStageOp(float3 baseColor, float4 tSample, int op)
+{
     if (op == 1)
-        return baseColor * t1.rgb;
+        return saturate(baseColor * tSample.rgb);
     if (op == 2)
-        return baseColor + t1.rgb;
+        return saturate(baseColor + tSample.rgb);
     if (op == 3)
-        return lerp(baseColor, t1.rgb, t1.a);
+        return saturate(lerp(baseColor, tSample.rgb, tSample.a));
     if (op == 4)
-        return baseColor * (t1.rgb * 2.0);
+        return saturate(baseColor * (tSample.rgb * 2.0));
+    if (op == 5)
+        return saturate(baseColor * (tSample.rgb * 4.0));
     return baseColor;
 }
 
@@ -112,8 +129,8 @@ float4 ShadeDiffPass(VS_OUTPUT input, bool doAlphaReject)
             float3 V = input.Texcoord7.xyz * rsqrt(vLenSq);
             float NdotV = saturate(dot(N, V));
 
-            // View-space up vector derived safely from active View matrix
-            float3 rawUp = mul((float3x3)View, float3(0.0, 1.0, 0.0));
+            // View-space up vector derived safely from active View matrix (Ogre FFP View uses row-vector mul(vec, View))
+            float3 rawUp = mul(float3(0.0, 1.0, 0.0), (float3x3)View);
             float upLenSq = dot(rawUp, rawUp);
             float3 upV = (upLenSq > 1e-6) ? (rawUp * rsqrt(upLenSq)) : float3(0.0, 1.0, 0.0);
 
@@ -123,7 +140,7 @@ float4 ShadeDiffPass(VS_OUTPUT input, bool doAlphaReject)
             float dirLum = dot(DirectionalLight0_Diffuse.rgb, float3(0.299, 0.587, 0.114));
             if (dirLum > 1e-4)
             {
-                float3 rawL0 = mul((float3x3)View, -DirectionalLight0_Direction.xyz);
+                float3 rawL0 = mul(-DirectionalLight0_Direction.xyz, (float3x3)View);
                 float l0LenSq = dot(rawL0, rawL0);
                 if (l0LenSq > 1e-6)
                 {
@@ -144,13 +161,20 @@ float4 ShadeDiffPass(VS_OUTPUT input, bool doAlphaReject)
         }
     }
 
-    float3 color = albedo.rgb * litEnv + specAdd;
+    float3 color = saturate(albedo.rgb * litEnv + specAdd);
 
-    int texOp = (int)(p3Flags.x + 0.5);
-    if (texOp > 0)
+    int op1 = (int)(p3Flags.x + 0.5);
+    if (op1 > 0)
     {
-        float2 uv1 = (p3Flags.w > 0.5) ? input.Texcoord1.xy : input.Texcoord0.xy;
-        color = ApplyStage1Op(color, uv1, texOp);
+        float2 uv1 = ResolveFixedFuncUv(input.Texcoord1, p3Flags.w > 0.5);
+        color = ApplyTextureStageOp(color, Texture1.Sample(Sampler1, uv1), op1);
+    }
+
+    int op2 = (int)(p3Flags2.x + 0.5);
+    if (op2 > 0)
+    {
+        float2 uv2 = ResolveFixedFuncUv(input.Texcoord2, p3Flags2.y > 0.5);
+        color = ApplyTextureStageOp(color, Texture2.Sample(Sampler2, uv2), op2);
     }
 
     color = saturate(color + input.ColorSpec.rgb);

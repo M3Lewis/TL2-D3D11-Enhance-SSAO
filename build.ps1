@@ -6,6 +6,7 @@ $SrcFiles = @(
     (Join-Path $RootDir "src\dxbc_cache.cpp"),
     (Join-Path $RootDir "src\hlsl_cbuffer_fastpath.cpp"),
     (Join-Path $RootDir "src\cegui_explicit_shader.cpp"),
+    (Join-Path $RootDir "src\phase3_scene_pipeline.cpp"),
     (Join-Path $RootDir "src\plugin_main.cpp")
 )
 $OutDir = Join-Path $RootDir "bin"
@@ -42,3 +43,17 @@ if ($LASTEXITCODE -ne 0 -or -not (Test-Path $OutDll)) {
 }
 
 Write-Host "[OK] Built $OutDll ($((Get-Item $OutDll).Length) bytes)" -ForegroundColor Green
+
+$TestNames = @("test_phase1_verify", "test_phase2_verify", "test_phase3_verify")
+foreach ($t in $TestNames) {
+    $testSrc = Join-Path $RootDir "tests\$t.cpp"
+    $testExe = Join-Path $ObjDir "$t.exe"
+    if (Test-Path $testSrc) {
+        $tCmd = "call `"$vcvars`" >nul && cl.exe /nologo /utf-8 /O2 /EHsc /std:c++20 /W4 /WX /MD /Fo`"$ObjDir\\`" `"$testSrc`" /link /OUT:`"$testExe`""
+        cmd.exe /c $tCmd
+        if ($LASTEXITCODE -ne 0 -or -not (Test-Path $testExe)) {
+            throw "Test build failed for $t with exit code $LASTEXITCODE"
+        }
+        Write-Host "[OK] Built $testExe" -ForegroundColor Green
+    }
+}

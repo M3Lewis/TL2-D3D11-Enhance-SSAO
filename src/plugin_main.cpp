@@ -8,6 +8,7 @@
 #include "cegui_explicit_shader.h"
 #include "dxbc_cache.h"
 #include "hlsl_cbuffer_fastpath.h"
+#include "phase3_scene_pipeline.h"
 
 namespace {
 
@@ -92,13 +93,15 @@ extern "C" __declspec(dllexport) void dllStartPlugin() {
         const bool dxbc_ok = routeb::InstallDxbcCacheHook(d3d_base, &LogLine);
         const bool fp_ok = routeb::InstallPhase1FastPaths(d3d_base, ogre_base, &LogLine);
         const bool p2_ok = routeb::InstallCeguiExplicitShaderHook(d3d_base, ogre_base, &LogLine);
+        const bool p3_ok = routeb::InstallPhase3ScenePipeline(d3d_base, ogre_base, &LogLine);
         g_phase1_installed = dxbc_ok && fp_ok;
-        LogLine("[RouteB][Phase1+2] Active status: dxbc_cache=%s fastpaths=%s cegui_shader=%s",
+        LogLine("[RouteB][Phase1+2+3] Active status: dxbc_cache=%s fastpaths=%s cegui_shader=%s scene_p3=%s",
                 dxbc_ok ? "ON" : "OFF",
                 fp_ok ? "ON" : "OFF",
-                p2_ok ? "ON" : "OFF");
+                p2_ok ? "ON" : "OFF",
+                p3_ok ? "ON" : "OFF");
     } else {
-        LogLine("[RouteB][Phase1] PE mismatch or RenderSystem_Direct3D11 not loaded; Phase 1+2 disabled cleanly.");
+        LogLine("[RouteB][Phase1] PE mismatch or RenderSystem_Direct3D11 not loaded; Phase 1+2+3 disabled cleanly.");
     }
 }
 
@@ -113,12 +116,13 @@ extern "C" __declspec(dllexport) void dllStopPlugin() {
             static_cast<unsigned long long>(dxbc.bypassed),
             static_cast<unsigned long long>(dxbc.write_errors));
         LogLine(
-            "[RouteB][Phase1][Stats] CB fastHits=%llu fallback=%llu | FFParam hits=%llu misses=%llu skippedMissing=%llu",
+            "[RouteB][Phase1][Stats] CB fastHits=%llu fallback=%llu | FFParam hits=%llu misses=%llu skippedMissing=%llu p3Fwd=%llu",
             static_cast<unsigned long long>(fp.cb_fast_hits),
             static_cast<unsigned long long>(fp.cb_fallback_calls),
             static_cast<unsigned long long>(fp.ff_param_hits),
             static_cast<unsigned long long>(fp.ff_param_misses),
-            static_cast<unsigned long long>(fp.ff_param_skipped_missing));
+            static_cast<unsigned long long>(fp.ff_param_skipped_missing),
+            static_cast<unsigned long long>(fp.p3_param_forwards));
         const auto cegui = routeb::GetCeguiShaderStats();
         LogLine(
             "[RouteB][Phase2][Stats] CEGUI hooked=%d ready=%d calls=%llu explicitBinds=%llu skips=%llu",
@@ -127,8 +131,23 @@ extern "C" __declspec(dllexport) void dllStopPlugin() {
             static_cast<unsigned long long>(cegui.hook_calls),
             static_cast<unsigned long long>(cegui.explicit_binds),
             static_cast<unsigned long long>(cegui.fallback_skips));
+        const auto p3 = routeb::GetPhase3Stats();
+        LogLine(
+            "[RouteB][Phase3][Stats] Scene hooked=%d shared=%d setPass=%llu diffOpaque=%llu diffAlpha=%llu skinned=%llu light=%llu rim2D=%llu rimCube=%llu vsInject=%llu ffSync=%llu",
+            p3.hooked ? 1 : 0,
+            p3.shared_params_ready ? 1 : 0,
+            static_cast<unsigned long long>(p3.setpass_calls),
+            static_cast<unsigned long long>(p3.diffpass_opaque_binds),
+            static_cast<unsigned long long>(p3.diffpass_alpha_binds),
+            static_cast<unsigned long long>(p3.skinned_diff_binds),
+            static_cast<unsigned long long>(p3.lightpass_binds),
+            static_cast<unsigned long long>(p3.rimlit_2d_binds),
+            static_cast<unsigned long long>(p3.rimlit_cube_binds),
+            static_cast<unsigned long long>(p3.vs_texcoord_injections),
+            static_cast<unsigned long long>(p3.ff_explicit_syncs));
     }
 
+    routeb::RemovePhase3ScenePipeline();
     routeb::RemoveCeguiExplicitShaderHook();
     routeb::RemovePhase1FastPaths();
     routeb::RemoveDxbcCacheHook();
@@ -143,6 +162,7 @@ extern "C" __declspec(dllexport) void dllStopPlugin() {
 
 BOOL APIENTRY DllMain(HMODULE, DWORD reason, LPVOID) {
     if (reason == DLL_PROCESS_DETACH) {
+        routeb::RemovePhase3ScenePipeline();
         routeb::RemoveCeguiExplicitShaderHook();
         routeb::RemovePhase1FastPaths();
         routeb::RemoveDxbcCacheHook();

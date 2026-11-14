@@ -126,6 +126,8 @@ std::atomic<uint64_t> g_cb_fallback_calls{0};
 std::atomic<uint64_t> g_ff_param_hits{0};
 std::atomic<uint64_t> g_ff_param_misses{0};
 std::atomic<uint64_t> g_ff_param_skipped_missing{0};
+std::atomic<uint64_t> g_p3_param_forwards{0};
+std::atomic<uintptr_t> g_forward_ps_params{0};
 
 bool IsIntConstantType(uint32_t t) {
     return (t >= 5 && t <= 10) || (t >= 20 && t <= 23);
@@ -255,6 +257,18 @@ void WriteCachedParam(uintptr_t params, const CachedParamDef& def, const void* s
     }
 }
 
+void ForwardToActiveExplicitPs(uintptr_t ff_target_params, const void* msvc_str, const void* src, size_t size) {
+    const uintptr_t extra_ps = g_forward_ps_params.load(std::memory_order_relaxed);
+    if (!extra_ps || extra_ps == ff_target_params) {
+        return;
+    }
+    const CachedParamDef extra_def = ResolveParamCached(extra_ps, msvc_str);
+    if (extra_def.found) {
+        WriteCachedParam(extra_ps, extra_def, src, size);
+        g_p3_param_forwards.fetch_add(1, std::memory_order_relaxed);
+    }
+}
+
 void __fastcall HookSetParamHelper(uintptr_t ff_progs, int prog_type, void* msvc_str, const void* src, size_t size) {
     if ((prog_type == 0 || prog_type == 1) && g_find_named_def) {
         const uintptr_t usage = ff_progs + (prog_type == 0 ? 16 : 56);
@@ -262,6 +276,7 @@ void __fastcall HookSetParamHelper(uintptr_t ff_progs, int prog_type, void* msvc
         if (params) {
             const CachedParamDef def = ResolveParamCached(params, msvc_str);
             WriteCachedParam(params, def, src, size);
+            ForwardToActiveExplicitPs(params, msvc_str, src, size);
             g_string_dtor(msvc_str);
             return;
         }
@@ -277,6 +292,7 @@ void __fastcall HookSetVec3Helper(uintptr_t ff_progs, int prog_type, void* msvc_
             float copy[3] = {vec3[0], vec3[1], vec3[2]};
             const CachedParamDef def = ResolveParamCached(params, msvc_str);
             WriteCachedParam(params, def, copy, sizeof(copy));
+            ForwardToActiveExplicitPs(params, msvc_str, copy, sizeof(copy));
             g_string_dtor(msvc_str);
             return;
         }
@@ -285,6 +301,8 @@ void __fastcall HookSetVec3Helper(uintptr_t ff_progs, int prog_type, void* msvc_
 }
 
 void __fastcall HookOgreGpuParamsDtor(uintptr_t params) {
+    uintptr_t expected = params;
+    g_forward_ps_params.compare_exchange_strong(expected, 0, std::memory_order_relaxed);
     ::AcquireSRWLockExclusive(&g_cache_lock);
     g_param_cache.erase(params);
     ::ReleaseSRWLockExclusive(&g_cache_lock);
@@ -448,6 +466,7 @@ bool InstallPhase1FastPaths(void* d3d11_base, void* ogre_main_base, LogFn logger
 }
 
 void RemovePhase1FastPaths() {
+    g_forward_ps_params.store(0, std::memory_order_relaxed);
     g_detour_set_vec3.Remove();
     g_detour_set_param.Remove();
     g_detour_ogre_dtor.Remove();
@@ -467,7 +486,63 @@ FastPathStats GetFastPathStats() {
     s.ff_param_hits = g_ff_param_hits.load(std::memory_order_relaxed);
     s.ff_param_misses = g_ff_param_misses.load(std::memory_order_relaxed);
     s.ff_param_skipped_missing = g_ff_param_skipped_missing.load(std::memory_order_relaxed);
+    s.p3_param_forwards = g_p3_param_forwards.load(std::memory_order_relaxed);
     return s;
+}
+
+void SetActiveExplicitPsForwardTarget(uintptr_t explicit_ps_params) {
+    g_forward_ps_params.store(explicit_ps_params, std::memory_order_relaxed);
+}
+
+bool WriteExplicitPsNamedFloat4(uintptr_t params, const char* name, const float v[4]) {
+    if (!params || !name || !v || !g_find_named_def) {
+        return false;
+    }
+    static_assert(sizeof(std::string) == sizeof(MsvcStringRaw), "std::string ABI mismatch");
+    const std::string key(name);
+    const CachedParamDef def = ResolveParamCached(params, &key);
+    if (!def.found) {
+        return false;
+    }
+    WriteCachedParam(params, def, v, sizeof(float) * 4);
+    return true;
+}
+
+bool WriteExplicitPsNamedFloat(uintptr_t params, const char* name, float v) {
+    if (!params || !name || !g_find_named_def) {
+        return false;
+    }
+    static_assert(sizeof(std::string) == sizeof(MsvcStringRaw), "std::string ABI mismatch");
+    const std::string key(name);
+    const CachedParamDef def = ResolveParamCached(params, &key);
+    if (!def.found) {
+        return false;
+    }
+    WriteCachedParam(params, def, &v, sizeof(float));
+    return true;
+}
+
+void ResetExplicitPsLightingScratch(uintptr_t params) {
+    if (!params || !g_find_named_def) {
+        return;
+    }
+    static const std::string kDir0Diff = "DirectionalLight0_Diffuse";
+    static const std::string kDir0Dir = "DirectionalLight0_Direction";
+    static const std::string kBaseAmbient = "BaseLightAmbient";
+    static constexpr float kZero4[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+
+    const CachedParamDef d0 = ResolveParamCached(params, &kDir0Diff);
+    if (d0.found) {
+        WriteCachedParam(params, d0, kZero4, sizeof(float) * 4);
+    }
+    const CachedParamDef d1 = ResolveParamCached(params, &kDir0Dir);
+    if (d1.found) {
+        WriteCachedParam(params, d1, kZero4, sizeof(float) * 4);
+    }
+    const CachedParamDef d2 = ResolveParamCached(params, &kBaseAmbient);
+    if (d2.found) {
+        WriteCachedParam(params, d2, kZero4, sizeof(float) * 4);
+    }
 }
 
 }  // namespace routeb

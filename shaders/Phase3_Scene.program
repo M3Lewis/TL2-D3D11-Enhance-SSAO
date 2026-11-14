@@ -1,0 +1,55 @@
+fragment_program TL2/Phase3/DiffPassOpaquePS hlsl
+{
+    source hlsl4/DiffPass_ps.hlsl
+    entry_point main_opaque
+    target ps_4_0
+    column_major_matrices false
+}
+
+fragment_program TL2/Phase3/DiffPassAlphaPS hlsl
+{
+    source hlsl4/DiffPass_ps.hlsl
+    entry_point main_alpha
+    target ps_4_0
+    column_major_matrices false
+}
+
+fragment_program TL2/Phase3/SkinnedDiffOpaquePS hlsl
+{
+    source hlsl4/SkinnedDiff_ps.hlsl
+    entry_point main_opaque
+    target ps_4_0
+    column_major_matrices false
+}
+
+fragment_program TL2/Phase3/SkinnedDiffAlphaPS hlsl
+{
+    source hlsl4/SkinnedDiff_ps.hlsl
+    entry_point main_alpha
+    target ps_4_0
+    column_major_matrices false
+}
+
+fragment_program TL2/Phase3/LightPassPS hlsl
+{
+    source hlsl4/LightPass_ps.hlsl
+    entry_point main
+    target ps_4_0
+    column_major_matrices false
+}
+
+fragment_program TL2/Phase3/RimLit2DPS hlsl
+{
+    source hlsl4/RimLit_ps.hlsl
+    entry_point main_2d
+    target ps_4_0
+    column_major_matrices false
+}
+
+fragment_program TL2/Phase3/RimLitCubePS hlsl
+{
+    source hlsl4/RimLit_ps.hlsl
+    entry_point main_cube
+    target ps_4_0
+    column_major_matrices false
+}

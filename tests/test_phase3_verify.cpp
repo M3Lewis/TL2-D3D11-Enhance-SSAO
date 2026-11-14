@@ -8,6 +8,7 @@
 #include <string>
 
 #include "../src/fixed_func_manual_uniforms.h"
+#include "../src/phase3_scene_pipeline.h"
 
 namespace {
 
@@ -116,10 +117,64 @@ bool TestManualNormalizationAndDeclInjection() {
     return true;
 }
 
+bool TestMissingVertexColourFallback() {
+    // Case 1: Mesh without COLOR0 stream + lit shader -> MaterialTrack lerp must fall back to Material*.
+    std::string no_vcol_lit =
+        "struct VS_INPUT { float3 Position0 : POSITION0; float3 Normal0 : NORMAL0; float2 Uv0 : TEXCOORD0; };\n"
+        "VS_OUTPUT vs_main(VS_INPUT input) { VS_OUTPUT output=(VS_OUTPUT)0;\n"
+        "float4 vertexColour=float4(1,1,1,1);\n"
+        "float4 ambient=lerp(MaterialAmbient,vertexColour,MaterialTrack.x); "
+        "float4 diffuse=lerp(MaterialDiffuse,vertexColour,MaterialTrack.y);\n"
+        "float4 specular=lerp(MaterialSpecular,vertexColour,MaterialTrack.z); "
+        "float4 emissive=lerp(MaterialEmissive,vertexColour,MaterialTrack.w);\n"
+        "return output; }\n";
+    if (!routeb::PatchFixedFuncMissingVertexColour(no_vcol_lit)) {
+        std::printf("FAILED: expected PatchFixedFuncMissingVertexColour to patch no-COLOR0 lit VS\n");
+        return false;
+    }
+    if (no_vcol_lit.find("float4 diffuse=MaterialDiffuse;") == std::string::npos ||
+        no_vcol_lit.find("float4 ambient=MaterialAmbient;") == std::string::npos ||
+        no_vcol_lit.find("MaterialTrack") != std::string::npos) {
+        std::printf("FAILED: patched no-COLOR0 lit VS mismatch:\n%s\n", no_vcol_lit.c_str());
+        return false;
+    }
+
+    // Case 2: Mesh WITH COLOR0 stream -> must preserve MaterialTrack lerp untouched.
+    std::string with_vcol_lit =
+        "struct VS_INPUT { float3 Position0 : POSITION0; uint Diffuse0 : COLOR0; };\n"
+        "VS_OUTPUT vs_main(VS_INPUT input) { VS_OUTPUT output=(VS_OUTPUT)0;\n"
+        "float4 vertexColour=float4(1,1,1,1);\n"
+        "vertexColour=float4((input.Diffuse0>>16)&255,0,0,255)/255.0;\n"
+        "float4 ambient=lerp(MaterialAmbient,vertexColour,MaterialTrack.x); "
+        "float4 diffuse=lerp(MaterialDiffuse,vertexColour,MaterialTrack.y);\n"
+        "float4 specular=lerp(MaterialSpecular,vertexColour,MaterialTrack.z); "
+        "float4 emissive=lerp(MaterialEmissive,vertexColour,MaterialTrack.w);\n"
+        "return output; }\n";
+    const std::string with_vcol_orig = with_vcol_lit;
+    if (routeb::PatchFixedFuncMissingVertexColour(with_vcol_lit) || with_vcol_lit != with_vcol_orig) {
+        std::printf("FAILED: VS with COLOR0 stream must not be modified\n");
+        return false;
+    }
+
+    // Case 3: Unlit shader without COLOR0 -> keeps vertexColour = float4(1,1,1,1) untouched.
+    std::string no_vcol_unlit =
+        "struct VS_INPUT { float3 Position0 : POSITION0; };\n"
+        "VS_OUTPUT vs_main(VS_INPUT input) { VS_OUTPUT output=(VS_OUTPUT)0;\n"
+        "float4 vertexColour=float4(1,1,1,1);\n"
+        "output.Color=vertexColour;\n"
+        "return output; }\n";
+    const std::string no_vcol_unlit_orig = no_vcol_unlit;
+    if (routeb::PatchFixedFuncMissingVertexColour(no_vcol_unlit) || no_vcol_unlit != no_vcol_unlit_orig) {
+        std::printf("FAILED: unlit VS must not be modified\n");
+        return false;
+    }
+    return true;
+}
+
 }  // namespace
 
 int main() {
-    if (!TestManualNormalizationAndDeclInjection()) {
+    if (!TestManualNormalizationAndDeclInjection() || !TestMissingVertexColourFallback()) {
         return 10;
     }
 
@@ -211,6 +266,7 @@ int main() {
     const std::string log = ReadWholeLog("TL2_RouteB_D3D11.log");
     if (log.find("scene_p3=ON") == std::string::npos ||
         log.find("[RouteB][Phase3][Stats] Scene hooked=1") == std::string::npos ||
+        log.find("vsVColFix=") == std::string::npos ||
         log.find("[RouteB][FFManual][Stats] hooked=1") == std::string::npos ||
         log.find("nullCb=") == std::string::npos) {
         std::printf("FAILED log check: Phase 3 / FFManual / CB breakdown stats missing from TL2_RouteB_D3D11.log\n");

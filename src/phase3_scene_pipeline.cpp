@@ -242,6 +242,7 @@ std::atomic<uint64_t> g_lightpass_binds{0};
 std::atomic<uint64_t> g_rimlit_2d_binds{0};
 std::atomic<uint64_t> g_rimlit_cube_binds{0};
 std::atomic<uint64_t> g_vs_texcoord_injections{0};
+std::atomic<uint64_t> g_vs_missing_vcol_fixes{0};
 std::atomic<uint64_t> g_ff_explicit_syncs{0};
 std::atomic<bool> g_hooked{false};
 
@@ -855,10 +856,24 @@ PassArchetype ClassifyPass(
                     *out_reason = SkipReason::DisabledToggle;
                     return PassArchetype::None;
                 }
-                if (tus1 && g_api.tus_get_colour_blend) {
+                if (num_tus != 2 || !tus1 || (g_api.tus_is_blank && g_api.tus_is_blank(tus1))) {
+                    *out_reason = SkipReason::ZeroOrMultiTus;
+                    return PassArchetype::None;
+                }
+                if (g_api.tus_get_colour_blend) {
                     const auto& blend = g_api.tus_get_colour_blend(tus1);
+                    if (UsesManualBlend(blend)) {
+                        *out_reason = SkipReason::StageManualBlend;
+                        return PassArchetype::None;
+                    }
                     const int mapped = MapOgreBlendOpToShader(static_cast<int>(blend.operation));
-                    out_flags[0] = static_cast<float>(mapped > 0 ? mapped : 2);
+                    if (mapped <= 0) {
+                        *out_reason = SkipReason::Stage1OpMismatch;
+                        return PassArchetype::None;
+                    }
+                    out_flags[0] = static_cast<float>(mapped);
+                } else {
+                    out_flags[0] = 2.0f;
                 }
                 return PassArchetype::RimLitCube;
             }
@@ -866,10 +881,58 @@ PassArchetype ClassifyPass(
                 *out_reason = SkipReason::DisabledToggle;
                 return PassArchetype::None;
             }
-            if (vp_name.find("Secondary") != std::string::npos && vp_name.find("Enviro") == std::string::npos) {
-                out_flags[3] = 2.0f;
-            } else if (num_tus >= 2) {
-                out_flags[3] = 1.0f;
+            if (num_tus == 0 || num_tus > 2) {
+                *out_reason = SkipReason::ZeroOrMultiTus;
+                return PassArchetype::None;
+            }
+            const void* tus0 = g_api.pass_get_tus ? g_api.pass_get_tus(pass, 0) : nullptr;
+            if (!tus0 ||
+                (g_api.tus_get_tex_type && g_api.tus_get_tex_type(tus0) != kTexType2D) ||
+                (g_api.tus_is_blank && g_api.tus_is_blank(tus0))) {
+                *out_reason = SkipReason::StageNot2DOrBlank;
+                return PassArchetype::None;
+            }
+            if (num_tus >= 2) {
+                if (!tus1 ||
+                    (g_api.tus_get_tex_type && g_api.tus_get_tex_type(tus1) != kTexType2D) ||
+                    (g_api.tus_is_blank && g_api.tus_is_blank(tus1))) {
+                    *out_reason = SkipReason::StageNot2DOrBlank;
+                    return PassArchetype::None;
+                }
+                if (g_api.tus_get_num_frames && g_api.tus_get_num_frames(tus1) > 1) {
+                    *out_reason = SkipReason::StageAnimated;
+                    return PassArchetype::None;
+                }
+                if (g_api.tus_get_colour_blend) {
+                    const auto& blend = g_api.tus_get_colour_blend(tus1);
+                    if (UsesManualBlend(blend)) {
+                        *out_reason = SkipReason::StageManualBlend;
+                        return PassArchetype::None;
+                    }
+                    if (MapOgreBlendOpToShader(static_cast<int>(blend.operation)) <= 0) {
+                        *out_reason = SkipReason::Stage1OpMismatch;
+                        return PassArchetype::None;
+                    }
+                }
+                const bool is_enviro = (vp_name.find("Enviro") != std::string::npos);
+                const bool is_secondary = (vp_name.find("Secondary") != std::string::npos);
+                const bool is_lightpass = (g_api.tus_get_name && g_api.tus_get_name(tus1) == "LIGHTPASS");
+                const bool has_texgen = (g_api.tus_has_view_rel_texgen && g_api.tus_has_view_rel_texgen(tus1));
+                if (!is_enviro && !is_lightpass && !has_texgen &&
+                    g_api.tus_get_tex_transform && !IsIdentityMatrix4(g_api.tus_get_tex_transform(tus1))) {
+                    *out_reason = SkipReason::StageTexTransform;
+                    return PassArchetype::None;
+                }
+                if (is_enviro || is_lightpass || has_texgen) {
+                    out_flags[3] = 1.0f;
+                } else {
+                    const uint32_t coord_set = g_api.tus_get_coord_set ? g_api.tus_get_coord_set(tus1) : 0;
+                    if (coord_set >= 1 && is_secondary) {
+                        out_flags[3] = 2.0f;
+                    } else {
+                        out_flags[3] = 0.0f;
+                    }
+                }
             }
             return has_alpha_reject ? PassArchetype::SkinnedDiffAlpha : PassArchetype::SkinnedDiffOpaque;
         }
@@ -897,6 +960,10 @@ PassArchetype ClassifyPass(
     if (pass_name == "RIMLIT" || has_rimlit_tus) {
         if (!g_toggles.rim_lit || !tus1) {
             *out_reason = SkipReason::DisabledToggle;
+            return PassArchetype::None;
+        }
+        if (num_tus != 2) {
+            *out_reason = SkipReason::ZeroOrMultiTus;
             return PassArchetype::None;
         }
         if (g_api.tus_get_colour_blend) {
@@ -1094,6 +1161,10 @@ void* __fastcall HookGetFixedFuncShaderSource(
     EndFixedFuncManualShaderGen(out_src);
     if (!out_src) {
         return ret;
+    }
+
+    if (PatchFixedFuncMissingVertexColour(*out_src)) {
+        g_vs_missing_vcol_fixes.fetch_add(1, std::memory_order_relaxed);
     }
 
     const size_t fog_pos = out_src->find("output.fogDist=");
@@ -1317,6 +1388,7 @@ Phase3Stats GetPhase3Stats() {
     s.rimlit_2d_binds = g_rimlit_2d_binds.load(std::memory_order_relaxed);
     s.rimlit_cube_binds = g_rimlit_cube_binds.load(std::memory_order_relaxed);
     s.vs_texcoord_injections = g_vs_texcoord_injections.load(std::memory_order_relaxed);
+    s.vs_missing_vcol_fixes = g_vs_missing_vcol_fixes.load(std::memory_order_relaxed);
     s.ff_explicit_syncs = g_ff_explicit_syncs.load(std::memory_order_relaxed);
     s.hooked = g_hooked.load(std::memory_order_relaxed);
     s.shared_params_ready = g_shared_params_ready;

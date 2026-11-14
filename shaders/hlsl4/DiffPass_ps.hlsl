@@ -104,8 +104,90 @@ bool PassesAlphaReject(float alpha, float threshold, int func)
     return true;
 }
 
+struct SurfaceDetail
+{
+    float3 albedo;
+    float3 microNormal;
+    float  detailFade;
+    float  smoothness;
+    float  metalMask;
+};
+
+SurfaceDetail AnalyzeSurfaceDetail(float2 uv, float2 duvX, float2 duvY, float3 centerAlbedo, float3 baseNormal, bool hasNormal)
+{
+    SurfaceDetail sd;
+    sd.albedo = centerAlbedo;
+    sd.microNormal = baseNormal;
+    sd.detailFade = 0.0;
+
+    float lenX = length(duvX);
+    float lenY = length(duvY);
+    float uvFoot = max(lenX, lenY);
+    float fade = 1.0 - smoothstep(0.003, 0.012, uvFoot);
+
+    float3 avg4 = centerAlbedo;
+    float gx = 0.0;
+    float gy = 0.0;
+
+    if (fade > 0.01 && uvFoot > 1e-6 && uvFoot < 0.03)
+    {
+        float maxStep = 0.0025;
+        float2 stepX = (lenX > maxStep) ? (duvX * (maxStep / lenX)) : duvX;
+        float2 stepY = (lenY > maxStep) ? (duvY * (maxStep / lenY)) : duvY;
+
+        float3 sXp = Texture0.SampleGrad(Sampler0, uv + stepX * 0.75, duvX, duvY).rgb;
+        float3 sXm = Texture0.SampleGrad(Sampler0, uv - stepX * 0.75, duvX, duvY).rgb;
+        float3 sYp = Texture0.SampleGrad(Sampler0, uv + stepY * 0.75, duvX, duvY).rgb;
+        float3 sYm = Texture0.SampleGrad(Sampler0, uv - stepY * 0.75, duvX, duvY).rgb;
+
+        avg4 = (sXp + sXm + sYp + sYm) * 0.25;
+
+        const float3 lumaW = float3(0.299, 0.587, 0.114);
+        float lumC = dot(centerAlbedo, lumaW);
+        float lumAvg = dot(avg4, lumaW);
+        gx = dot(sXp - sXm, lumaW);
+        gy = -dot(sYp - sYm, lumaW);
+
+        // Zero-mean 2x micro-detail clarity + subtle crevice etching (no average brightness shift)
+        float lumHeadroom = saturate(min(lumC, 1.0 - lumC) * 4.5);
+        float3 highFreq = clamp(centerAlbedo - avg4, -0.06, 0.06);
+        float3 enhanced = saturate(centerAlbedo + highFreq * (0.36 * fade * lumHeadroom));
+
+        float dip = max(lumAvg - lumC, 0.0);
+        float crevice = 1.0 - saturate(dip * 1.05) * (0.13 * fade);
+        sd.albedo = enhanced * crevice;
+        sd.detailFade = fade;
+
+        if (hasNormal)
+        {
+            float3 rawGrad = float3(gx, gy, 0.0);
+            float3 tanGrad = rawGrad - baseNormal * dot(rawGrad, baseNormal);
+            float gradLen = length(tanGrad);
+            if (gradLen > 0.30)
+                tanGrad *= (0.30 / gradLen);
+            sd.microNormal = normalize(baseNormal - tanGrad * (0.95 * fade));
+        }
+    }
+
+    float maxC = max(sd.albedo.r, max(sd.albedo.g, sd.albedo.b));
+    float minC = min(sd.albedo.r, min(sd.albedo.g, sd.albedo.b));
+    float sat = (maxC > 1e-4) ? ((maxC - minC) / maxC) : 0.0;
+    float lum = dot(sd.albedo, float3(0.299, 0.587, 0.114));
+    float lumAvg = dot(avg4, float3(0.299, 0.587, 0.114));
+    float localNoise = saturate(abs(lum - lumAvg) * 3.5 + (abs(gx) + abs(gy)) * 1.5);
+
+    sd.smoothness = saturate((1.0 - localNoise * 0.65) * smoothstep(0.10, 0.35, lum));
+    sd.metalMask = (1.0 - smoothstep(0.14, 0.34, sat)) *
+                   smoothstep(0.14, 0.28, lum) *
+                   (1.0 - smoothstep(0.68, 0.85, lum)) *
+                   saturate(1.0 - localNoise * 0.5);
+    return sd;
+}
+
 float4 ShadeDiffPass(VS_OUTPUT input, bool doAlphaReject)
 {
+    float2 duvX = ddx(input.Texcoord0.xy);
+    float2 duvY = ddy(input.Texcoord0.xy);
     float4 albedo = Texture0.Sample(Sampler0, input.Texcoord0.xy);
     float outAlpha = saturate(albedo.a * input.Color.a);
 
@@ -116,52 +198,65 @@ float4 ShadeDiffPass(VS_OUTPUT input, bool doAlphaReject)
             discard;
     }
 
-    float3 litEnv = input.Color.rgb;
-    float3 specAdd = float3(0.0, 0.0, 0.0);
-
+    bool hasNormal = false;
+    float3 N = float3(0.0, 0.0, 1.0);
+    float3 V = float3(0.0, 0.0, 1.0);
     if (input.Texcoord6.w > 0.5)
     {
         float nLenSq = dot(input.Texcoord6.xyz, input.Texcoord6.xyz);
         float vLenSq = dot(input.Texcoord7.xyz, input.Texcoord7.xyz);
         if (nLenSq > 1e-6 && vLenSq > 1e-6)
         {
-            float3 N = input.Texcoord6.xyz * rsqrt(nLenSq);
-            float3 V = input.Texcoord7.xyz * rsqrt(vLenSq);
-            float NdotV = saturate(dot(N, V));
+            N = input.Texcoord6.xyz * rsqrt(nLenSq);
+            V = input.Texcoord7.xyz * rsqrt(vLenSq);
+            hasNormal = true;
+        }
+    }
 
-            // View-space up vector derived safely from active View matrix (Ogre FFP View uses row-vector mul(vec, View))
-            float3 rawUp = mul(float3(0.0, 1.0, 0.0), (float3x3)View);
-            float upLenSq = dot(rawUp, rawUp);
-            float3 upV = (upLenSq > 1e-6) ? (rawUp * rsqrt(upLenSq)) : float3(0.0, 1.0, 0.0);
+    SurfaceDetail sd = AnalyzeSurfaceDetail(input.Texcoord0.xy, duvX, duvY, albedo.rgb, N, hasNormal);
 
-            float hemi = dot(N, upV) * 0.5 + 0.5;
-            litEnv *= lerp(0.92, 1.08, hemi);
+    float3 litEnv = input.Color.rgb;
+    float3 specAdd = float3(0.0, 0.0, 0.0);
 
-            float dirLum = dot(DirectionalLight0_Diffuse.rgb, float3(0.299, 0.587, 0.114));
-            if (dirLum > 1e-4)
+    if (hasNormal)
+    {
+        float3 Nmicro = sd.microNormal;
+        float NdotV = saturate(dot(Nmicro, V));
+
+        // Preserve original lighting feel while projecting micro-surface bevels cleanly
+        float bevel = dot(Nmicro, V) - dot(N, V);
+        litEnv *= saturate(1.0 + bevel * (0.16 * sd.detailFade));
+
+        float dirLum = dot(DirectionalLight0_Diffuse.rgb, float3(0.299, 0.587, 0.114));
+        if (dirLum > 1e-4)
+        {
+            float3 rawL0 = mul(-DirectionalLight0_Direction.xyz, (float3x3)View);
+            float l0LenSq = dot(rawL0, rawL0);
+            if (l0LenSq > 1e-6)
             {
-                float3 rawL0 = mul(-DirectionalLight0_Direction.xyz, (float3x3)View);
-                float l0LenSq = dot(rawL0, rawL0);
-                if (l0LenSq > 1e-6)
-                {
-                    float3 L0 = rawL0 * rsqrt(l0LenSq);
-                    float ndlRaw = dot(N, L0);
-                    float3 H = normalize(L0 + V);
-                    float ndh = max(dot(N, H), 0.0);
+                float3 L0 = rawL0 * rsqrt(l0LenSq);
+                float relief = dot(Nmicro, L0) - dot(N, L0);
+                litEnv *= saturate(1.0 + relief * (0.35 * sd.detailFade));
 
-                    float specPow = clamp((MaterialPower > 1.0) ? MaterialPower : 24.0, 12.0, 64.0);
-                    float fresnel = 0.25 + 0.75 * pow(1.0 - NdotV, 3.0);
-                    float termMask = saturate(ndlRaw * 2.5 + 0.15);
-                    float specScalar = pow(ndh, specPow) * 0.14 * fresnel * termMask;
+                float ndlRaw = dot(Nmicro, L0);
+                float3 H = normalize(L0 + V);
+                float ndh = max(dot(Nmicro, H), 0.0);
 
-                    float3 surfTint = lerp(float3(1.0, 1.0, 1.0), albedo.rgb, 0.55);
-                    specAdd = DirectionalLight0_Diffuse.rgb * MaterialDiffuse.rgb * surfTint * specScalar;
-                }
+                float basePow = clamp((MaterialPower > 1.0) ? MaterialPower : 24.0, 14.0, 64.0);
+                float specPow = lerp(basePow * 0.85, max(basePow, 44.0), max(sd.smoothness, sd.metalMask));
+                float fresnel = lerp(0.28, 0.90, pow(1.0 - NdotV, 2.8));
+                float termMask = saturate(ndlRaw * 2.5 + 0.15);
+                float matScale = lerp(0.04, 0.16, sd.smoothness) + sd.metalMask * 0.08;
+                float specScalar = pow(ndh, specPow) * matScale * fresnel * termMask;
+
+                float tintWeight = lerp(0.45, 0.80, sd.metalMask);
+                float3 surfTint = lerp(float3(1.0, 1.0, 1.0), sd.albedo, tintWeight);
+                specAdd = DirectionalLight0_Diffuse.rgb * MaterialDiffuse.rgb * surfTint * specScalar;
             }
         }
     }
 
-    float3 color = saturate(albedo.rgb * litEnv + specAdd);
+    float3 color = saturate(sd.albedo * litEnv + specAdd);
 
     int op1 = (int)(p3Flags.x + 0.5);
     if (op1 > 0)

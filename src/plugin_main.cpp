@@ -192,7 +192,7 @@ void LogAllStats() {
         static_cast<unsigned long long>(cegui.fallback_skips));
     const auto p3 = routeb::GetPhase3Stats();
     LogLine(
-        "[RouteB][Phase3][Stats] Scene hooked=%d shared=%d setPass=%llu diffOpaque=%llu diffAlpha=%llu skinned=%llu light=%llu rim2D=%llu rimCube=%llu vsInject=%llu ffSync=%llu",
+        "[RouteB][Phase3][Stats] Scene hooked=%d shared=%d setPass=%llu diffOpaque=%llu diffAlpha=%llu skinned=%llu light=%llu rim2D=%llu rimCube=%llu vsInject=%llu vsVColFix=%llu ffSync=%llu",
         p3.hooked ? 1 : 0,
         p3.shared_params_ready ? 1 : 0,
         static_cast<unsigned long long>(p3.setpass_calls),
@@ -203,6 +203,7 @@ void LogAllStats() {
         static_cast<unsigned long long>(p3.rimlit_2d_binds),
         static_cast<unsigned long long>(p3.rimlit_cube_binds),
         static_cast<unsigned long long>(p3.vs_texcoord_injections),
+        static_cast<unsigned long long>(p3.vs_missing_vcol_fixes),
         static_cast<unsigned long long>(p3.ff_explicit_syncs));
     routeb::LogPhase3PassDiagnostics(LogLine);
     LogLine(

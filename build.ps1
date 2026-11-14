@@ -1,7 +1,12 @@
 $ErrorActionPreference = "Stop"
 
 $RootDir = Split-Path -Parent $MyInvocation.MyCommand.Path
-$SrcFile = Join-Path $RootDir "src\plugin_main.cpp"
+$SrcFiles = @(
+    (Join-Path $RootDir "src\hook_utils.cpp"),
+    (Join-Path $RootDir "src\dxbc_cache.cpp"),
+    (Join-Path $RootDir "src\hlsl_cbuffer_fastpath.cpp"),
+    (Join-Path $RootDir "src\plugin_main.cpp")
+)
 $OutDir = Join-Path $RootDir "bin"
 $ObjDir = Join-Path $RootDir "obj"
 
@@ -26,8 +31,9 @@ if (-not (Test-Path $vcvars)) {
 $OutDll = Join-Path $OutDir "Plugin_TL2_RouteB.dll"
 $OutPdb = Join-Path $OutDir "Plugin_TL2_RouteB.pdb"
 $OutImplib = Join-Path $ObjDir "Plugin_TL2_RouteB.lib"
+$JoinedSrc = ($SrcFiles | ForEach-Object { "`"$_`"" }) -join " "
 
-$cmdLine = "call `"$vcvars`" >nul && cl.exe /nologo /O2 /EHsc /std:c++20 /W4 /WX /MD /Zi /Fo`"$ObjDir\\`" /Fd`"$OutPdb`" `"$SrcFile`" /link /DLL /OUT:`"$OutDll`" /IMPLIB:`"$OutImplib`" /DEBUG"
+$cmdLine = "call `"$vcvars`" >nul && cl.exe /nologo /utf-8 /O2 /EHsc /std:c++20 /W4 /WX /MD /Zi /Fo`"$ObjDir\\`" /Fd`"$OutPdb`" $JoinedSrc /link /DLL /OUT:`"$OutDll`" /IMPLIB:`"$OutImplib`" /DEBUG"
 
 cmd.exe /c $cmdLine
 if ($LASTEXITCODE -ne 0 -or -not (Test-Path $OutDll)) {

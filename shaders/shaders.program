@@ -1,0 +1,959 @@
+//---------------------------------------------------
+// This file includes a number of basic GPU programs
+// for use in many materials. 
+//---------------------------------------------------
+
+
+// FOUR VERTEX SHADOW CASTING
+vertex_program Ogre/HardwareSkinningShadowCasterD3D11 hlsl
+{
+    source hlsl4/skinning.hlsl
+    entry_point hardwareSkinningCaster_vp
+    target vs_4_0
+    column_major_matrices false
+    includes_skeletal_animation true
+}
+
+vertex_program Ogre/HardwareSkinningShadowCasterCg cg
+{
+	source shaders.cg
+	entry_point hardwareSkinningCaster_vp
+	profiles vs_2_0 arbvp1
+	includes_skeletal_animation true
+}
+
+vertex_program Ogre/HardwareSkinningShadowCaster unified
+{
+	delegate Ogre/HardwareSkinningShadowCasterD3D11
+	delegate Ogre/HardwareSkinningShadowCasterCg
+
+
+   default_params
+   {
+   		param_named_auto worldMatrix3x4Array world_matrix_array_3x4
+		param_named_auto viewProjectionMatrix viewproj_matrix
+		param_named_auto emissive surface_emissive_colour
+
+   }
+}
+
+// THREE VERTEX SHADOW CASTING
+vertex_program Ogre/HardwareSkinningShadowCasterThreeD3D11 hlsl
+{
+    source hlsl4/skinning.hlsl
+    entry_point hardwareSkinningCasterThree_vp
+    target vs_4_0
+    column_major_matrices false
+    includes_skeletal_animation true
+}
+
+vertex_program Ogre/HardwareSkinningShadowCasterThreeCg cg
+{
+	source shaders.cg
+	entry_point hardwareSkinningCasterThree_vp
+	profiles vs_2_0 arbvp1
+	includes_skeletal_animation true
+}
+
+vertex_program Ogre/HardwareSkinningShadowCasterThree unified
+{
+	delegate Ogre/HardwareSkinningShadowCasterThreeD3D11
+	delegate Ogre/HardwareSkinningShadowCasterThreeCg
+
+
+   default_params
+   {
+   		param_named_auto worldMatrix3x4Array world_matrix_array_3x4
+		param_named_auto viewProjectionMatrix viewproj_matrix
+		param_named_auto emissive surface_emissive_colour
+
+   }
+}
+
+
+// TWO VERTEX SHADOW CASTING
+vertex_program Ogre/HardwareSkinningShadowCasterTwoD3D11 hlsl
+{
+    source hlsl4/skinning.hlsl
+    entry_point hardwareSkinningCasterTwo_vp
+    target vs_4_0
+    column_major_matrices false
+    includes_skeletal_animation true
+}
+
+vertex_program Ogre/HardwareSkinningShadowCasterTwoCg cg
+{
+	source shaders.cg
+	entry_point hardwareSkinningCasterTwo_vp
+	profiles vs_2_0 arbvp1
+	includes_skeletal_animation true
+}
+
+vertex_program Ogre/HardwareSkinningShadowCasterTwo unified
+{
+	delegate Ogre/HardwareSkinningShadowCasterTwoD3D11
+	delegate Ogre/HardwareSkinningShadowCasterTwoCg
+
+
+   default_params
+   {
+   		param_named_auto worldMatrix3x4Array world_matrix_array_3x4
+		param_named_auto viewProjectionMatrix viewproj_matrix
+		param_named_auto emissive surface_emissive_colour
+
+   }
+}
+
+
+// ONE VERTEX SHADOW CASTING
+vertex_program Ogre/HardwareSkinningShadowCasterOneD3D11 hlsl
+{
+    source hlsl4/skinning.hlsl
+    entry_point hardwareSkinningCasterOne_vp
+    target vs_4_0
+    column_major_matrices false
+    includes_skeletal_animation true
+}
+
+vertex_program Ogre/HardwareSkinningShadowCasterOneCg cg
+{
+	source shaders.cg
+	entry_point hardwareSkinningCasterOne_vp
+	profiles vs_2_0 arbvp1
+	includes_skeletal_animation true
+}
+
+vertex_program Ogre/HardwareSkinningShadowCasterOne unified
+{
+	delegate Ogre/HardwareSkinningShadowCasterOneD3D11
+	delegate Ogre/HardwareSkinningShadowCasterOneCg
+
+
+   default_params
+   {
+   		param_named_auto worldMatrix3x4Array world_matrix_array_3x4
+		param_named_auto viewProjectionMatrix viewproj_matrix
+		param_named_auto emissive surface_emissive_colour
+
+   }
+}
+
+
+// FOUR VERTEX SKINNING
+vertex_program Ogre/HardwareSkinningD3D11 hlsl
+{
+    source hlsl4/skinning.hlsl
+    entry_point hardwareSkinning_vp
+    target vs_4_0
+    column_major_matrices false
+    includes_skeletal_animation true
+}
+
+vertex_program Ogre/HardwareSkinningCg cg
+{
+   source shaders.cg
+   entry_point hardwareSkinning_vp
+   profiles vs_2_0 arbvp1
+   includes_skeletal_animation true
+}
+
+
+vertex_program Ogre/HardwareSkinning unified
+{
+	delegate Ogre/HardwareSkinningD3D11
+	delegate Ogre/HardwareSkinningCg
+	
+   default_params
+   {
+   		param_named_auto worldMatrix3x4Array world_matrix_array_3x4
+		param_named_auto viewProjectionMatrix viewproj_matrix
+		param_named_auto lightPos[0] light_position 0
+		param_named_auto lightDiffuseColour[0] light_diffuse_colour 0
+		param_named_auto lightPos[1] light_position 1
+		param_named_auto lightDiffuseColour[1] light_diffuse_colour 1
+		param_named_auto texViewProj texture_matrix 1
+		param_named_auto ambient ambient_light_colour
+		param_named_auto diffuse surface_diffuse_colour
+		param_named_auto emissive surface_emissive_colour
+		param_named_auto viewMatrix view_matrix
+
+   }
+}
+
+// THREE VERTEX SKINNING
+vertex_program Ogre/HardwareSkinningThreeD3D11 hlsl
+{
+    source hlsl4/skinning.hlsl
+    entry_point hardwareSkinningThree_vp
+    target vs_4_0
+    column_major_matrices false
+    includes_skeletal_animation true
+}
+
+vertex_program Ogre/HardwareSkinningThreeCg cg
+{
+   source shaders.cg
+   entry_point hardwareSkinningThree_vp
+   profiles vs_2_0 arbvp1
+   includes_skeletal_animation true
+}
+
+vertex_program Ogre/HardwareSkinningThree unified
+{
+	delegate Ogre/HardwareSkinningThreeD3D11
+	delegate Ogre/HardwareSkinningThreeCg
+	
+   default_params
+   {
+   		param_named_auto worldMatrix3x4Array world_matrix_array_3x4
+		param_named_auto viewProjectionMatrix viewproj_matrix
+		param_named_auto lightPos[0] light_position 0
+		param_named_auto lightDiffuseColour[0] light_diffuse_colour 0
+		param_named_auto lightPos[1] light_position 1
+		param_named_auto lightDiffuseColour[1] light_diffuse_colour 1
+		param_named_auto texViewProj texture_matrix 1
+		param_named_auto ambient ambient_light_colour
+		param_named_auto diffuse surface_diffuse_colour
+		param_named_auto emissive surface_emissive_colour
+		param_named_auto viewMatrix view_matrix
+
+   }
+}
+
+
+// TWO VERTEX SKINNING
+vertex_program Ogre/HardwareSkinningTwoD3D11 hlsl
+{
+    source hlsl4/skinning.hlsl
+    entry_point hardwareSkinningTwo_vp
+    target vs_4_0
+    column_major_matrices false
+    includes_skeletal_animation true
+}
+
+vertex_program Ogre/HardwareSkinningTwoCg cg
+{
+   source shaders.cg
+   entry_point hardwareSkinningTwo_vp
+   profiles vs_2_0 arbvp1
+   includes_skeletal_animation true
+}
+
+vertex_program Ogre/HardwareSkinningTwo unified
+{
+	delegate Ogre/HardwareSkinningTwoD3D11
+	delegate Ogre/HardwareSkinningTwoCg
+	
+   default_params
+   {
+   		param_named_auto worldMatrix3x4Array world_matrix_array_3x4
+		param_named_auto viewProjectionMatrix viewproj_matrix
+		param_named_auto lightPos[0] light_position 0
+		param_named_auto lightDiffuseColour[0] light_diffuse_colour 0
+		param_named_auto lightPos[1] light_position 1
+		param_named_auto lightDiffuseColour[1] light_diffuse_colour 1
+		param_named_auto texViewProj texture_matrix 1
+		param_named_auto ambient ambient_light_colour
+		param_named_auto diffuse surface_diffuse_colour
+		param_named_auto emissive surface_emissive_colour
+		param_named_auto viewMatrix view_matrix
+
+   }
+}
+
+// ONE VERTEX SKINNING
+vertex_program Ogre/HardwareSkinningOneD3D11 hlsl
+{
+    source hlsl4/skinning.hlsl
+    entry_point hardwareSkinningOne_vp
+    target vs_4_0
+    column_major_matrices false
+    includes_skeletal_animation true
+}
+
+vertex_program Ogre/HardwareSkinningOneCg cg
+{
+   source shaders.cg
+   entry_point hardwareSkinningOne_vp
+   profiles vs_2_0 arbvp1
+   includes_skeletal_animation true
+}
+
+vertex_program Ogre/HardwareSkinningOne unified
+{
+	delegate Ogre/HardwareSkinningOneD3D11
+	delegate Ogre/HardwareSkinningOneCg
+	
+   default_params
+   {
+   		param_named_auto worldMatrix3x4Array world_matrix_array_3x4
+		param_named_auto viewProjectionMatrix viewproj_matrix
+		param_named_auto lightPos[0] light_position 0
+		param_named_auto lightDiffuseColour[0] light_diffuse_colour 0
+		param_named_auto lightPos[1] light_position 1
+		param_named_auto lightDiffuseColour[1] light_diffuse_colour 1
+		param_named_auto texViewProj texture_matrix 1 
+		param_named_auto ambient ambient_light_colour
+		param_named_auto diffuse surface_diffuse_colour
+		param_named_auto emissive surface_emissive_colour
+		param_named_auto viewMatrix view_matrix
+
+   }
+}
+
+
+
+// FOR FOUR VERTEX RENDERBEHIND
+vertex_program Ogre/HardwareSkinningBehindD3D11 hlsl
+{
+    source hlsl4/skinning.hlsl
+    entry_point hardwareSkinningBehind_vp
+    target vs_4_0
+    column_major_matrices false
+    includes_skeletal_animation true
+}
+
+vertex_program Ogre/HardwareSkinningBehindCg cg
+{
+   source shaders.cg
+   entry_point hardwareSkinningBehind_vp
+   profiles vs_2_0 arbvp1
+   includes_skeletal_animation true
+}
+vertex_program Ogre/HardwareSkinningBehind unified
+{
+	delegate Ogre/HardwareSkinningBehindD3D11
+	delegate Ogre/HardwareSkinningBehindCg
+	
+   default_params
+   {
+   		param_named_auto worldMatrix3x4Array world_matrix_array_3x4
+		param_named_auto viewProjectionMatrix viewproj_matrix
+		param_named_auto viewMatrix view_matrix
+		param_named_auto lightPos[0] light_position 0
+		param_named_auto lightDiffuseColour[0] light_diffuse_colour 0
+		param_named_auto ambient ambient_light_colour
+		param_named_auto diffuse surface_diffuse_colour
+		param_named_auto emissive surface_emissive_colour
+
+   }
+}
+
+// FOR THREE VERTEX RENDERBEHIND
+vertex_program Ogre/HardwareSkinningBehindThreeD3D11 hlsl
+{
+    source hlsl4/skinning.hlsl
+    entry_point hardwareSkinningBehindThree_vp
+    target vs_4_0
+    column_major_matrices false
+    includes_skeletal_animation true
+}
+
+vertex_program Ogre/HardwareSkinningBehindThreeCg cg
+{
+   source shaders.cg
+   entry_point hardwareSkinningBehindThree_vp
+   profiles vs_2_0 arbvp1
+   includes_skeletal_animation true
+}
+vertex_program Ogre/HardwareSkinningBehindThree unified
+{
+	delegate Ogre/HardwareSkinningBehindThreeD3D11
+	delegate Ogre/HardwareSkinningBehindThreeCg
+	
+   default_params
+   {
+   		param_named_auto worldMatrix3x4Array world_matrix_array_3x4
+		param_named_auto viewProjectionMatrix viewproj_matrix
+		param_named_auto viewMatrix view_matrix
+		param_named_auto lightPos[0] light_position 0
+		param_named_auto lightDiffuseColour[0] light_diffuse_colour 0
+		param_named_auto ambient ambient_light_colour
+		param_named_auto diffuse surface_diffuse_colour
+		param_named_auto emissive surface_emissive_colour
+
+   }
+}
+
+
+// FOR TWO VERTEX RENDERBEHIND
+vertex_program Ogre/HardwareSkinningBehindTwoD3D11 hlsl
+{
+    source hlsl4/skinning.hlsl
+    entry_point hardwareSkinningBehindTwo_vp
+    target vs_4_0
+    column_major_matrices false
+    includes_skeletal_animation true
+}
+
+vertex_program Ogre/HardwareSkinningBehindTwoCg cg
+{
+   source shaders.cg
+   entry_point hardwareSkinningBehindTwo_vp
+   profiles vs_2_0 arbvp1
+   includes_skeletal_animation true
+}
+vertex_program Ogre/HardwareSkinningBehindTwo unified
+{
+	delegate Ogre/HardwareSkinningBehindTwoD3D11
+	delegate Ogre/HardwareSkinningBehindTwoCg
+	
+   default_params
+   {
+   		param_named_auto worldMatrix3x4Array world_matrix_array_3x4
+		param_named_auto viewProjectionMatrix viewproj_matrix
+		param_named_auto viewMatrix view_matrix
+		param_named_auto lightPos[0] light_position 0
+		param_named_auto lightDiffuseColour[0] light_diffuse_colour 0
+		param_named_auto ambient ambient_light_colour
+		param_named_auto diffuse surface_diffuse_colour
+		param_named_auto emissive surface_emissive_colour
+
+   }
+}
+
+
+// FOR ONE VERTEX RENDERBEHIND
+vertex_program Ogre/HardwareSkinningBehindOneD3D11 hlsl
+{
+    source hlsl4/skinning.hlsl
+    entry_point hardwareSkinningBehindOne_vp
+    target vs_4_0
+    column_major_matrices false
+    includes_skeletal_animation true
+}
+
+vertex_program Ogre/HardwareSkinningBehindOneCg cg
+{
+   source shaders.cg
+   entry_point hardwareSkinningBehindOne_vp
+   profiles vs_2_0 arbvp1
+   includes_skeletal_animation true
+}
+vertex_program Ogre/HardwareSkinningBehindOne unified
+{
+	delegate Ogre/HardwareSkinningBehindOneD3D11
+	delegate Ogre/HardwareSkinningBehindOneCg
+	
+   default_params
+   {
+   		param_named_auto worldMatrix3x4Array world_matrix_array_3x4
+		param_named_auto viewProjectionMatrix viewproj_matrix
+		param_named_auto viewMatrix view_matrix
+		param_named_auto lightPos[0] light_position 0
+		param_named_auto lightDiffuseColour[0] light_diffuse_colour 0
+		param_named_auto ambient ambient_light_colour
+		param_named_auto diffuse surface_diffuse_colour
+		param_named_auto emissive surface_emissive_colour
+
+   }
+}
+
+
+// FOR FOUR VERTEX WEIGHTING WITH ENV MAPS
+vertex_program Ogre/HardwareSkinningSecondaryD3D11 hlsl
+{
+    source hlsl4/skinning.hlsl
+    entry_point hardwareSkinningSecondary_vp
+    target vs_4_0
+    column_major_matrices false
+    includes_skeletal_animation true
+}
+
+vertex_program Ogre/HardwareSkinningSecondaryCg cg
+{
+   source shaders.cg
+   entry_point hardwareSkinningSecondary_vp
+   profiles vs_2_0 arbvp1
+   includes_skeletal_animation true
+}
+
+vertex_program Ogre/HardwareSkinningSecondary unified
+{
+	delegate Ogre/HardwareSkinningSecondaryD3D11
+	delegate Ogre/HardwareSkinningSecondaryCg
+	
+   default_params
+   {
+   		param_named_auto worldMatrix3x4Array world_matrix_array_3x4
+		param_named_auto viewProjectionMatrix viewproj_matrix
+		param_named_auto lightPos[0] light_position 0
+		param_named_auto lightDiffuseColour[0] light_diffuse_colour 0
+		param_named_auto lightPos[1] light_position 1
+		param_named_auto lightDiffuseColour[1] light_diffuse_colour 1
+		param_named_auto texViewProj texture_matrix 1
+		param_named_auto ambient ambient_light_colour
+		param_named_auto diffuse surface_diffuse_colour
+		param_named_auto emissive surface_emissive_colour
+		param_named_auto viewMatrix view_matrix
+
+   }
+}
+// FOR THREE VERTEX WEIGHTING WITH ENV MAPS
+vertex_program Ogre/HardwareSkinningThreeSecondaryD3D11 hlsl
+{
+    source hlsl4/skinning.hlsl
+    entry_point hardwareSkinningThreeSecondary_vp
+    target vs_4_0
+    column_major_matrices false
+    includes_skeletal_animation true
+}
+
+vertex_program Ogre/HardwareSkinningThreeSecondaryCg cg
+{
+   source shaders.cg
+   entry_point hardwareSkinningThreeSecondary_vp
+   profiles vs_2_0 arbvp1
+   includes_skeletal_animation true
+}
+
+vertex_program Ogre/HardwareSkinningThreeSecondary unified
+{
+	delegate Ogre/HardwareSkinningThreeSecondaryD3D11
+	delegate Ogre/HardwareSkinningThreeSecondaryCg
+	
+   default_params
+   {
+   		param_named_auto worldMatrix3x4Array world_matrix_array_3x4
+		param_named_auto viewProjectionMatrix viewproj_matrix
+		param_named_auto lightPos[0] light_position 0
+		param_named_auto lightDiffuseColour[0] light_diffuse_colour 0
+		param_named_auto lightPos[1] light_position 1
+		param_named_auto lightDiffuseColour[1] light_diffuse_colour 1
+		param_named_auto texViewProj texture_matrix 1
+		param_named_auto ambient ambient_light_colour
+		param_named_auto diffuse surface_diffuse_colour
+		param_named_auto emissive surface_emissive_colour
+		param_named_auto viewMatrix view_matrix
+
+   }
+}
+
+
+// FOR TWO VERTEX WEIGHTING WITH ENV MAPS
+vertex_program Ogre/HardwareSkinningTwoSecondaryD3D11 hlsl
+{
+    source hlsl4/skinning.hlsl
+    entry_point hardwareSkinningTwoSecondary_vp
+    target vs_4_0
+    column_major_matrices false
+    includes_skeletal_animation true
+}
+
+vertex_program Ogre/HardwareSkinningTwoSecondaryCg cg
+{
+   source shaders.cg
+   entry_point hardwareSkinningTwoSecondary_vp
+   profiles vs_2_0 arbvp1
+   includes_skeletal_animation true
+}
+
+vertex_program Ogre/HardwareSkinningTwoSecondary unified
+{
+	delegate Ogre/HardwareSkinningTwoSecondaryD3D11
+	delegate Ogre/HardwareSkinningTwoSecondaryCg
+	
+   default_params
+   {
+   		param_named_auto worldMatrix3x4Array world_matrix_array_3x4
+		param_named_auto viewProjectionMatrix viewproj_matrix
+		param_named_auto lightPos[0] light_position 0
+		param_named_auto lightDiffuseColour[0] light_diffuse_colour 0
+		param_named_auto lightPos[1] light_position 1
+		param_named_auto lightDiffuseColour[1] light_diffuse_colour 1
+		param_named_auto texViewProj texture_matrix 1
+		param_named_auto ambient ambient_light_colour
+		param_named_auto diffuse surface_diffuse_colour
+		param_named_auto emissive surface_emissive_colour
+		param_named_auto viewMatrix view_matrix
+
+   }
+}
+
+// FOR ONE VERTEX WEIGHTING WITH ENV MAPS
+vertex_program Ogre/HardwareSkinningOneSecondaryD3D11 hlsl
+{
+    source hlsl4/skinning.hlsl
+    entry_point hardwareSkinningOneSecondary_vp
+    target vs_4_0
+    column_major_matrices false
+    includes_skeletal_animation true
+}
+
+vertex_program Ogre/HardwareSkinningOneSecondaryCg cg
+{
+   source shaders.cg
+   entry_point hardwareSkinningOneSecondary_vp
+   profiles vs_2_0 arbvp1
+   includes_skeletal_animation true
+}
+
+vertex_program Ogre/HardwareSkinningOneSecondary unified
+{
+	delegate Ogre/HardwareSkinningOneSecondaryD3D11
+	delegate Ogre/HardwareSkinningOneSecondaryCg
+	
+   default_params
+   {
+   		param_named_auto worldMatrix3x4Array world_matrix_array_3x4
+		param_named_auto viewProjectionMatrix viewproj_matrix
+		param_named_auto lightPos[0] light_position 0
+		param_named_auto lightDiffuseColour[0] light_diffuse_colour 0
+		param_named_auto lightPos[1] light_position 1
+		param_named_auto lightDiffuseColour[1] light_diffuse_colour 1
+		param_named_auto texViewProj texture_matrix 1
+		param_named_auto ambient ambient_light_colour
+		param_named_auto diffuse surface_diffuse_colour
+		param_named_auto emissive surface_emissive_colour
+		param_named_auto viewMatrix view_matrix
+
+   }
+}
+
+// FOUR VERTEX SKINNING
+vertex_program Ogre/HardwareSkinningEnviroD3D11 hlsl
+{
+    source hlsl4/skinning.hlsl
+    entry_point hardwareSkinningEnviro_vp
+    target vs_4_0
+    column_major_matrices false
+    includes_skeletal_animation true
+    default_params
+    {
+        param_named_auto viewMatrix view_matrix
+    }
+}
+
+vertex_program Ogre/HardwareSkinningEnviroCg cg
+{
+   source shaders.cg
+   entry_point hardwareSkinningEnviro_vp
+   profiles vs_2_0 arbvp1
+   includes_skeletal_animation true
+}
+
+
+vertex_program Ogre/HardwareSkinningEnviro unified
+{
+	delegate Ogre/HardwareSkinningEnviroD3D11
+	delegate Ogre/HardwareSkinningEnviroCg
+	
+   default_params
+   {
+   		param_named_auto worldMatrix3x4Array world_matrix_array_3x4
+		param_named_auto viewProjectionMatrix viewproj_matrix
+		param_named_auto lightPos[0] light_position 0
+		param_named_auto lightDiffuseColour[0] light_diffuse_colour 0
+		param_named_auto lightPos[1] light_position 1
+		param_named_auto lightDiffuseColour[1] light_diffuse_colour 1
+		param_named_auto texViewProj texture_viewproj_matrix 1
+		param_named_auto ambient ambient_light_colour
+		param_named_auto diffuse surface_diffuse_colour
+		param_named_auto emissive surface_emissive_colour
+
+   }
+}
+
+// THREE VERTEX SKINNING
+vertex_program Ogre/HardwareSkinningEnviroThreeD3D11 hlsl
+{
+    source hlsl4/skinning.hlsl
+    entry_point hardwareSkinningEnviroThree_vp
+    target vs_4_0
+    column_major_matrices false
+    includes_skeletal_animation true
+    default_params
+    {
+        param_named_auto viewMatrix view_matrix
+    }
+}
+
+vertex_program Ogre/HardwareSkinningEnviroThreeCg cg
+{
+   source shaders.cg
+   entry_point hardwareSkinningEnviroThree_vp
+   profiles vs_2_0 arbvp1
+   includes_skeletal_animation true
+}
+
+vertex_program Ogre/HardwareSkinningEnviroThree unified
+{
+	delegate Ogre/HardwareSkinningEnviroThreeD3D11
+	delegate Ogre/HardwareSkinningEnviroThreeCg
+	
+   default_params
+   {
+   		param_named_auto worldMatrix3x4Array world_matrix_array_3x4
+		param_named_auto viewProjectionMatrix viewproj_matrix
+		param_named_auto lightPos[0] light_position 0
+		param_named_auto lightDiffuseColour[0] light_diffuse_colour 0
+		param_named_auto lightPos[1] light_position 1
+		param_named_auto lightDiffuseColour[1] light_diffuse_colour 1
+		param_named_auto texViewProj texture_viewproj_matrix 1
+		param_named_auto ambient ambient_light_colour
+		param_named_auto diffuse surface_diffuse_colour
+		param_named_auto emissive surface_emissive_colour
+
+   }
+}
+
+
+// TWO VERTEX SKINNING
+vertex_program Ogre/HardwareSkinningEnviroTwoD3D11 hlsl
+{
+    source hlsl4/skinning.hlsl
+    entry_point hardwareSkinningEnviroTwo_vp
+    target vs_4_0
+    column_major_matrices false
+    includes_skeletal_animation true
+    default_params
+    {
+        param_named_auto viewMatrix view_matrix
+    }
+}
+
+vertex_program Ogre/HardwareSkinningEnviroTwoCg cg
+{
+   source shaders.cg
+   entry_point hardwareSkinningEnviroTwo_vp
+   profiles vs_2_0 arbvp1
+   includes_skeletal_animation true
+}
+
+vertex_program Ogre/HardwareSkinningEnviroTwo unified
+{
+	delegate Ogre/HardwareSkinningEnviroTwoD3D11
+	delegate Ogre/HardwareSkinningEnviroTwoCg
+	
+   default_params
+   {
+   		param_named_auto worldMatrix3x4Array world_matrix_array_3x4
+		param_named_auto viewProjectionMatrix viewproj_matrix
+		param_named_auto lightPos[0] light_position 0
+		param_named_auto lightDiffuseColour[0] light_diffuse_colour 0
+		param_named_auto lightPos[1] light_position 1
+		param_named_auto lightDiffuseColour[1] light_diffuse_colour 1
+		param_named_auto texViewProj texture_viewproj_matrix 1
+		param_named_auto ambient ambient_light_colour
+		param_named_auto diffuse surface_diffuse_colour
+		param_named_auto emissive surface_emissive_colour
+
+   }
+}
+
+// ONE VERTEX SKINNING
+vertex_program Ogre/HardwareSkinningEnviroOneD3D11 hlsl
+{
+    source hlsl4/skinning.hlsl
+    entry_point hardwareSkinningEnviroOne_vp
+    target vs_4_0
+    column_major_matrices false
+    includes_skeletal_animation true
+    default_params
+    {
+        param_named_auto viewMatrix view_matrix
+    }
+}
+
+vertex_program Ogre/HardwareSkinningEnviroOneCg cg
+{
+   source shaders.cg
+   entry_point hardwareSkinningEnviroOne_vp
+   profiles vs_2_0 arbvp1
+   includes_skeletal_animation true
+}
+
+vertex_program Ogre/HardwareSkinningEnviroOne unified
+{
+	delegate Ogre/HardwareSkinningEnviroOneD3D11
+	delegate Ogre/HardwareSkinningEnviroOneCg
+	
+   default_params
+   {
+   		param_named_auto worldMatrix3x4Array world_matrix_array_3x4
+		param_named_auto viewProjectionMatrix viewproj_matrix
+		param_named_auto lightPos[0] light_position 0
+		param_named_auto lightDiffuseColour[0] light_diffuse_colour 0
+		param_named_auto lightPos[1] light_position 1
+		param_named_auto lightDiffuseColour[1] light_diffuse_colour 1
+		param_named_auto texViewProj texture_viewproj_matrix 1 
+		param_named_auto ambient ambient_light_colour
+		param_named_auto diffuse surface_diffuse_colour
+		param_named_auto emissive surface_emissive_colour
+
+   }
+}
+
+
+// FOR FOUR VERTEX WEIGHTING WITH ENV MAPS
+vertex_program Ogre/HardwareSkinningEnviroSecondaryD3D11 hlsl
+{
+    source hlsl4/skinning.hlsl
+    entry_point hardwareSkinningEnviroSecondary_vp
+    target vs_4_0
+    column_major_matrices false
+    includes_skeletal_animation true
+    default_params
+    {
+        param_named_auto viewMatrix view_matrix
+    }
+}
+
+vertex_program Ogre/HardwareSkinningEnviroSecondaryCg cg
+{
+   source shaders.cg
+   entry_point hardwareSkinningEnviroSecondary_vp
+   profiles vs_2_0 arbvp1
+   includes_skeletal_animation true
+}
+
+vertex_program Ogre/HardwareSkinningEnviroSecondary unified
+{
+	delegate Ogre/HardwareSkinningEnviroSecondaryD3D11
+	delegate Ogre/HardwareSkinningEnviroSecondaryCg
+	
+   default_params
+   {
+   		param_named_auto worldMatrix3x4Array world_matrix_array_3x4
+		param_named_auto viewProjectionMatrix viewproj_matrix
+		param_named_auto lightPos[0] light_position 0
+		param_named_auto lightDiffuseColour[0] light_diffuse_colour 0
+		param_named_auto lightPos[1] light_position 1
+		param_named_auto lightDiffuseColour[1] light_diffuse_colour 1
+		param_named_auto texViewProj texture_viewproj_matrix 1
+		param_named_auto ambient ambient_light_colour
+		param_named_auto diffuse surface_diffuse_colour
+		param_named_auto emissive surface_emissive_colour
+
+   }
+}
+// FOR THREE VERTEX WEIGHTING WITH ENV MAPS
+vertex_program Ogre/HardwareSkinningEnviroThreeSecondaryD3D11 hlsl
+{
+    source hlsl4/skinning.hlsl
+    entry_point hardwareSkinningEnviroThreeSecondary_vp
+    target vs_4_0
+    column_major_matrices false
+    includes_skeletal_animation true
+    default_params
+    {
+        param_named_auto viewMatrix view_matrix
+    }
+}
+
+vertex_program Ogre/HardwareSkinningEnviroThreeSecondaryCg cg
+{
+   source shaders.cg
+   entry_point hardwareSkinningEnviroThreeSecondary_vp
+   profiles vs_2_0 arbvp1
+   includes_skeletal_animation true
+}
+
+vertex_program Ogre/HardwareSkinningEnviroThreeSecondary unified
+{
+	delegate Ogre/HardwareSkinningEnviroThreeSecondaryD3D11
+	delegate Ogre/HardwareSkinningEnviroThreeSecondaryCg
+	
+   default_params
+   {
+   		param_named_auto worldMatrix3x4Array world_matrix_array_3x4
+		param_named_auto viewProjectionMatrix viewproj_matrix
+		param_named_auto lightPos[0] light_position 0
+		param_named_auto lightDiffuseColour[0] light_diffuse_colour 0
+		param_named_auto lightPos[1] light_position 1
+		param_named_auto lightDiffuseColour[1] light_diffuse_colour 1
+		param_named_auto texViewProj texture_viewproj_matrix 1
+		param_named_auto ambient ambient_light_colour
+		param_named_auto diffuse surface_diffuse_colour
+		param_named_auto emissive surface_emissive_colour
+
+   }
+}
+
+
+// FOR TWO VERTEX WEIGHTING WITH ENV MAPS
+vertex_program Ogre/HardwareSkinningEnviroTwoSecondaryD3D11 hlsl
+{
+    source hlsl4/skinning.hlsl
+    entry_point hardwareSkinningEnviroTwoSecondary_vp
+    target vs_4_0
+    column_major_matrices false
+    includes_skeletal_animation true
+    default_params
+    {
+        param_named_auto viewMatrix view_matrix
+    }
+}
+
+vertex_program Ogre/HardwareSkinningEnviroTwoSecondaryCg cg
+{
+   source shaders.cg
+   entry_point hardwareSkinningEnviroTwoSecondary_vp
+   profiles vs_2_0 arbvp1
+   includes_skeletal_animation true
+}
+
+vertex_program Ogre/HardwareSkinningEnviroTwoSecondary unified
+{
+	delegate Ogre/HardwareSkinningEnviroTwoSecondaryD3D11
+	delegate Ogre/HardwareSkinningEnviroTwoSecondaryCg
+	
+   default_params
+   {
+   		param_named_auto worldMatrix3x4Array world_matrix_array_3x4
+		param_named_auto viewProjectionMatrix viewproj_matrix
+		param_named_auto lightPos[0] light_position 0
+		param_named_auto lightDiffuseColour[0] light_diffuse_colour 0
+		param_named_auto lightPos[1] light_position 1
+		param_named_auto lightDiffuseColour[1] light_diffuse_colour 1
+		param_named_auto texViewProj texture_viewproj_matrix 1
+		param_named_auto ambient ambient_light_colour
+		param_named_auto diffuse surface_diffuse_colour
+		param_named_auto emissive surface_emissive_colour
+
+   }
+}
+
+// FOR ONE VERTEX WEIGHTING WITH ENV MAPS
+vertex_program Ogre/HardwareSkinningEnviroOneSecondaryD3D11 hlsl
+{
+    source hlsl4/skinning.hlsl
+    entry_point hardwareSkinningEnviroOneSecondary_vp
+    target vs_4_0
+    column_major_matrices false
+    includes_skeletal_animation true
+    default_params
+    {
+        param_named_auto viewMatrix view_matrix
+    }
+}
+
+vertex_program Ogre/HardwareSkinningEnviroOneSecondaryCg cg
+{
+   source shaders.cg
+   entry_point hardwareSkinningEnviroOneSecondary_vp
+   profiles vs_2_0 arbvp1
+   includes_skeletal_animation true
+}
+
+vertex_program Ogre/HardwareSkinningEnviroOneSecondary unified
+{
+	delegate Ogre/HardwareSkinningEnviroOneSecondaryD3D11
+	delegate Ogre/HardwareSkinningEnviroOneSecondaryCg
+	
+   default_params
+   {
+   		param_named_auto worldMatrix3x4Array world_matrix_array_3x4
+		param_named_auto viewProjectionMatrix viewproj_matrix
+		param_named_auto lightPos[0] light_position 0
+		param_named_auto lightDiffuseColour[0] light_diffuse_colour 0
+		param_named_auto lightPos[1] light_position 1
+		param_named_auto lightDiffuseColour[1] light_diffuse_colour 1
+		param_named_auto texViewProj texture_matrix 1
+		param_named_auto ambient ambient_light_colour
+		param_named_auto diffuse surface_diffuse_colour
+		param_named_auto emissive surface_emissive_colour
+
+   }
+}
+

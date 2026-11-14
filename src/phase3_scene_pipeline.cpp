@@ -7,9 +7,11 @@
 #include <atomic>
 #include <cctype>
 #include <cstring>
+#include <exception>
 #include <string>
 #include <string_view>
 
+#include "fixed_func_manual_uniforms.h"
 #include "hlsl_cbuffer_fastpath.h"
 #include "hook_utils.h"
 
@@ -275,24 +277,49 @@ void EnsureSharedPerFrameLighting() {
 
     g_shared_params_init_done = true;
     const std::string set_name = "TL2PerFrameLighting";
-    g_api.get_shared_params(mgr, &g_shared_per_frame_sp, set_name);
-    if (!g_shared_per_frame_sp.rep) {
+    bool newly_created = false;
+    try {
         g_api.create_shared_params(mgr, &g_shared_per_frame_sp, set_name);
+        newly_created = (g_shared_per_frame_sp.rep != nullptr);
+    } catch (const std::exception&) {
+        g_shared_per_frame_sp = {};
+    } catch (...) {
+        g_shared_per_frame_sp = {};
     }
+
+    if (!g_shared_per_frame_sp.rep) {
+        try {
+            g_api.get_shared_params(mgr, &g_shared_per_frame_sp, set_name);
+        } catch (const std::exception& ex) {
+            g_shared_per_frame_sp = {};
+            if (g_log) {
+                g_log("[RouteB][Phase3] getSharedParameters fallback failed: %s", ex.what());
+            }
+        } catch (...) {
+            g_shared_per_frame_sp = {};
+        }
+    }
+
     if (g_shared_per_frame_sp.rep) {
         const uintptr_t sp_ptr = reinterpret_cast<uintptr_t>(g_shared_per_frame_sp.rep);
         const std::string kSunDir = "tl2SunViewDir";
         const std::string kSunCol = "tl2SunColor";
         const std::string kAmbCol = "tl2AmbientColor";
         const std::string kEnvParams = "tl2Phase3Env";
-        // GCT_FLOAT4 = 4
-        g_api.add_shared_const_def(sp_ptr, kSunDir, 4, 1);
-        g_api.add_shared_const_def(sp_ptr, kSunCol, 4, 1);
-        g_api.add_shared_const_def(sp_ptr, kAmbCol, 4, 1);
-        g_api.add_shared_const_def(sp_ptr, kEnvParams, 4, 1);
+        if (newly_created) {
+            // GCT_FLOAT4 = 4
+            for (const std::string* param_name : {&kSunDir, &kSunCol, &kAmbCol, &kEnvParams}) {
+                try {
+                    g_api.add_shared_const_def(sp_ptr, *param_name, 4, 1);
+                } catch (const std::exception&) {
+                } catch (...) {
+                }
+            }
+        }
         g_shared_params_ready = true;
         if (g_log) {
-            g_log("[RouteB][Phase3] Registered Ogre GpuSharedParameters 'TL2PerFrameLighting'");
+            g_log("[RouteB][Phase3] Registered Ogre GpuSharedParameters 'TL2PerFrameLighting' (created=%d)",
+                  newly_created ? 1 : 0);
         }
     }
 }
@@ -306,36 +333,45 @@ bool EnsureSlotReady(PassArchetype arch) {
     if (slot.ready) {
         return true;
     }
-    if (slot.attempted || !slot.program_name || !g_api.hl_mgr_singleton || !g_api.gpu_mgr_get_by_name) {
+    if (slot.attempted || !slot.program_name || !g_api.gpu_mgr_singleton || !g_api.gpu_mgr_get_by_name) {
         return false;
     }
-    const uintptr_t mgr = g_api.hl_mgr_singleton();
+    const uintptr_t mgr = g_api.gpu_mgr_singleton();
     if (!mgr) {
         return false;
     }
 
     slot.attempted = true;
-    const std::string prog_name(slot.program_name);
-    g_api.gpu_mgr_get_by_name(mgr, &slot.resource_sp, prog_name, false);
-    if (!slot.resource_sp.rep) {
-        if (g_log) {
-            g_log("[RouteB][Phase3] Program '%s' not found in HighLevelGpuProgramManager", slot.program_name);
+    try {
+        const std::string prog_name(slot.program_name);
+        g_api.gpu_mgr_get_by_name(mgr, &slot.resource_sp, prog_name, true);
+        if (!slot.resource_sp.rep) {
+            if (g_log) {
+                g_log("[RouteB][Phase3] Program '%s' not found in GpuProgramManager", slot.program_name);
+            }
+            return false;
         }
-        return false;
-    }
 
-    auto* prog_vtbl = *reinterpret_cast<uintptr_t**>(slot.resource_sp.rep);
-    using LoadFn = void(__fastcall*)(void*, bool);
-    using GetDelegateFn = uintptr_t(__fastcall*)(void*);
-    using CreateParamsFn = void(__fastcall*)(void*, OgreSharedPtr*);
+        auto* prog_vtbl = *reinterpret_cast<uintptr_t**>(slot.resource_sp.rep);
+        using LoadFn = void(__fastcall*)(void*, bool);
+        using GetDelegateFn = uintptr_t(__fastcall*)(void*);
+        using CreateParamsFn = void(__fastcall*)(void*, OgreSharedPtr*);
 
-    reinterpret_cast<LoadFn>(prog_vtbl[kGpuProgVtblLoad])(slot.resource_sp.rep, false);
-    slot.delegate = reinterpret_cast<GetDelegateFn>(prog_vtbl[kGpuProgVtblBindingDelegate])(slot.resource_sp.rep);
-    reinterpret_cast<CreateParamsFn>(prog_vtbl[kGpuProgVtblCreateParameters])(slot.resource_sp.rep, &slot.params_sp);
+        reinterpret_cast<LoadFn>(prog_vtbl[kGpuProgVtblLoad])(slot.resource_sp.rep, false);
+        slot.delegate = reinterpret_cast<GetDelegateFn>(prog_vtbl[kGpuProgVtblBindingDelegate])(slot.resource_sp.rep);
+        reinterpret_cast<CreateParamsFn>(prog_vtbl[kGpuProgVtblCreateParameters])(slot.resource_sp.rep, &slot.params_sp);
 
-    slot.ready = (slot.delegate != 0 && slot.params_sp.rep != nullptr);
-    if (g_log) {
-        g_log("[RouteB][Phase3] Loaded explicit SM4.0 shader '%s' (ready=%d)", slot.program_name, slot.ready ? 1 : 0);
+        slot.ready = (slot.delegate != 0 && slot.params_sp.rep != nullptr);
+        if (g_log) {
+            g_log("[RouteB][Phase3] Loaded explicit SM4.0 shader '%s' (ready=%d)", slot.program_name, slot.ready ? 1 : 0);
+        }
+    } catch (const std::exception& ex) {
+        slot.ready = false;
+        if (g_log) {
+            g_log("[RouteB][Phase3] Exception loading '%s': %s", slot.program_name, ex.what());
+        }
+    } catch (...) {
+        slot.ready = false;
     }
     return slot.ready;
 }
@@ -472,12 +508,30 @@ void ApplyPassFogAndAlphaToExplicitPs(uintptr_t scene_mgr, const void* pass, uin
     WriteExplicitPsNamedFloat(ps_params, "AlphaRejectValue", alpha_val);
 }
 
+void BindExplicitPsParametersByValue(uintptr_t rs, const OgreSharedPtr& params_sp) {
+    if (!rs || !params_sp.rep) {
+        return;
+    }
+    // D3D11RenderSystem::bindGpuProgramParameters takes GpuProgramParametersSharedPtr by value;
+    // MSVC x64 ABI passes the caller's copy by address and destroys it inside the callee.
+    OgreSharedPtr by_val_copy = params_sp;
+    if (by_val_copy.use_count) {
+        ::InterlockedIncrement(by_val_copy.use_count);
+    }
+    auto* rs_vtbl = *reinterpret_cast<uintptr_t**>(rs);
+    using BindParamsFn = void(__fastcall*)(uintptr_t, int, OgreSharedPtr*, uint16_t);
+    reinterpret_cast<BindParamsFn>(rs_vtbl[kRsVtblBindGpuProgramParameters])(
+        rs, 1 /*GPT_FRAGMENT_PROGRAM*/, &by_val_copy, 0xFFFF);
+}
+
 void BindExplicitPsToRenderSystem(uintptr_t rs, uintptr_t ps_delegate, const OgreSharedPtr* params_sp) {
+    if (!rs || !params_sp) {
+        return;
+    }
     auto* rs_vtbl = *reinterpret_cast<uintptr_t**>(rs);
     using BindProgFn = void(__fastcall*)(uintptr_t, uintptr_t);
-    using BindParamsFn = void(__fastcall*)(uintptr_t, int, const OgreSharedPtr*, uint16_t);
     reinterpret_cast<BindProgFn>(rs_vtbl[kRsVtblBindGpuProgram])(rs, ps_delegate);
-    reinterpret_cast<BindParamsFn>(rs_vtbl[kRsVtblBindGpuProgramParameters])(rs, 1 /*GPT_FRAGMENT_PROGRAM*/, params_sp, 0xFFFF);
+    BindExplicitPsParametersByValue(rs, *params_sp);
 }
 
 void RecordBindStat(PassArchetype arch) {
@@ -568,7 +622,9 @@ void* __fastcall HookGetFixedFuncShaderSource(
     const void* frag_entry,
     const void* vdecl,
     const void* ff_state) {
+    BeginFixedFuncManualShaderGen();
     void* ret = g_orig_get_shader_src(self, out_src, vert_entry, frag_entry, vdecl, ff_state);
+    EndFixedFuncManualShaderGen(out_src);
     if (!out_src) {
         return ret;
     }
@@ -616,12 +672,10 @@ void __fastcall HookSetFixedFuncProgramsParameters(uintptr_t ff_progs, uintptr_t
     g_orig_set_ff_params(ff_progs, ff_state);
 
     if (sync_explicit) {
-        auto* rs_vtbl = *reinterpret_cast<uintptr_t**>(binding.rs);
-        using BindParamsFn = void(__fastcall*)(uintptr_t, int, const OgreSharedPtr*, uint16_t);
-        reinterpret_cast<BindParamsFn>(rs_vtbl[kRsVtblBindGpuProgramParameters])(
-            binding.rs, 1 /*GPT_FRAGMENT_PROGRAM*/, binding.params_sp, 0xFFFF);
+        BindExplicitPsParametersByValue(binding.rs, *binding.params_sp);
         g_ff_explicit_syncs.fetch_add(1, std::memory_order_relaxed);
     }
+    ApplyFixedFuncManualUniforms(sync_explicit ? 0 : ff_progs);
 }
 
 template <typename Fn>
@@ -736,14 +790,16 @@ bool InstallPhase3ScenePipeline(void* d3d11_base, void* ogre_main_base, Phase3Lo
     g_orig_set_ff_params = reinterpret_cast<SetFfProgramsParamsFn>(orig_ff_params);
 
     EnsureSharedPerFrameLighting();
+    const bool ff_manual_ok = InstallFixedFuncManualUniforms(d3d11_base, g_log);
     g_hooked.store(true, std::memory_order_relaxed);
     if (g_log) {
         g_log(
-            "[RouteB][Phase3] Scene pipeline installed (diff=%d skin=%d light=%d rim=%d)",
+            "[RouteB][Phase3] Scene pipeline installed (diff=%d skin=%d light=%d rim=%d ffManual=%d)",
             g_toggles.diff_pass ? 1 : 0,
             g_toggles.skinned_diff ? 1 : 0,
             g_toggles.light_pass ? 1 : 0,
-            g_toggles.rim_lit ? 1 : 0);
+            g_toggles.rim_lit ? 1 : 0,
+            ff_manual_ok ? 1 : 0);
     }
     return true;
 }
@@ -753,6 +809,7 @@ void RemovePhase3ScenePipeline() {
     SetActiveExplicitPsForwardTarget(0);
     g_active_binding = {};
 
+    RemoveFixedFuncManualUniforms();
     g_detour_set_ff_params.Remove();
     g_detour_get_shader_src.Remove();
     g_detour_set_pass.Remove();

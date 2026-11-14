@@ -120,14 +120,41 @@ using ParamMap = std::unordered_map<std::string, CachedParamDef, TransparentStri
 
 SRWLOCK g_cache_lock = SRWLOCK_INIT;
 std::unordered_map<uintptr_t, ParamMap> g_param_cache;
+std::atomic<uint64_t> g_cache_epoch{1};
 
 std::atomic<uint64_t> g_cb_fast_hits{0};
 std::atomic<uint64_t> g_cb_fallback_calls{0};
+std::atomic<uint64_t> g_cb_fb_null_cb{0};
+std::atomic<uint64_t> g_cb_fb_null_params{0};
+std::atomic<uint64_t> g_cb_fb_uninit{0};
+std::atomic<uint64_t> g_cb_fb_bounds{0};
+std::atomic<uint64_t> g_cb_fb_map_fail{0};
 std::atomic<uint64_t> g_ff_param_hits{0};
 std::atomic<uint64_t> g_ff_param_misses{0};
 std::atomic<uint64_t> g_ff_param_skipped_missing{0};
 std::atomic<uint64_t> g_p3_param_forwards{0};
 std::atomic<uintptr_t> g_forward_ps_params{0};
+
+constexpr size_t kL1CacheSlots = 2048;
+constexpr size_t kL1MaxNameLen = 46;
+
+struct L1ParamEntry {
+    uint64_t epoch = 0;
+    uintptr_t params = 0;
+    uint64_t hash = 0;
+    CachedParamDef def{};
+    uint8_t name_len = 0;
+    char name[kL1MaxNameLen]{};
+};
+
+uint64_t HashL1Key(uintptr_t params, std::string_view sv) {
+    uint64_t h = 14695981039346656037ULL ^ (static_cast<uint64_t>(params) * 0x9E3779B97F4A7C15ULL);
+    for (unsigned char c : sv) {
+        h ^= c;
+        h *= 1099511628211ULL;
+    }
+    return h;
+}
 
 bool IsIntConstantType(uint32_t t) {
     return (t >= 5 && t <= 10) || (t >= 20 && t <= 23);
@@ -144,14 +171,17 @@ void ReleaseSharedPtrGpuParams(uintptr_t* sp) {
 void* __fastcall HookGetConstantBuffer(uintptr_t a1, uintptr_t* a2) {
     void* cb = *reinterpret_cast<void**>(a1 + 680);
     if (!cb) {
-        g_cb_fallback_calls.fetch_add(1, std::memory_order_relaxed);
-        return g_orig_get_cb(a1, a2);
+        // Mirror vanilla sub_180008260 when mConstantBuffer is null: release SharedPtr and return null without detour overhead.
+        g_cb_fb_null_cb.fetch_add(1, std::memory_order_relaxed);
+        ReleaseSharedPtrGpuParams(a2);
+        return nullptr;
     }
 
     const uint32_t var_count = *reinterpret_cast<const uint32_t*>(a1 + 716);
     const auto* vars = *reinterpret_cast<const ShaderVarWithPosInBuf* const*>(a1 + 1048);
     const uintptr_t params = a2[1];
     if (!params || (var_count > 0 && !vars)) {
+        g_cb_fb_null_params.fetch_add(1, std::memory_order_relaxed);
         g_cb_fallback_calls.fetch_add(1, std::memory_order_relaxed);
         return g_orig_get_cb(a1, a2);
     }
@@ -167,12 +197,14 @@ void* __fastcall HookGetConstantBuffer(uintptr_t a1, uintptr_t* a2) {
     for (uint32_t i = 0; i < var_count; ++i) {
         const auto& v = vars[i];
         if (v.isInitialized != 1) {
+            g_cb_fb_uninit.fetch_add(1, std::memory_order_relaxed);
             g_cb_fallback_calls.fetch_add(1, std::memory_order_relaxed);
             return g_orig_get_cb(a1, a2);
         }
         const size_t avail = v.isFloat ? float_bytes : int_bytes;
         const size_t byte_off = static_cast<size_t>(v.physicalIndex) * 4;
         if (byte_off > avail || v.size > (avail - byte_off)) {
+            g_cb_fb_bounds.fetch_add(1, std::memory_order_relaxed);
             g_cb_fallback_calls.fetch_add(1, std::memory_order_relaxed);
             return g_orig_get_cb(a1, a2);
         }
@@ -181,6 +213,7 @@ void* __fastcall HookGetConstantBuffer(uintptr_t a1, uintptr_t* a2) {
     const uintptr_t dev_wrap = *reinterpret_cast<const uintptr_t*>(a1 + 688);
     void* ctx = dev_wrap ? *reinterpret_cast<void**>(dev_wrap + 8) : nullptr;
     if (!ctx) {
+        g_cb_fb_map_fail.fetch_add(1, std::memory_order_relaxed);
         g_cb_fallback_calls.fetch_add(1, std::memory_order_relaxed);
         return g_orig_get_cb(a1, a2);
     }
@@ -194,6 +227,7 @@ void* __fastcall HookGetConstantBuffer(uintptr_t a1, uintptr_t* a2) {
     D3D11MappedSubresourceCompat mapped{};
     const HRESULT hr = map_fn(ctx, cb, 0, 4 /* D3D11_MAP_WRITE_DISCARD */, 0, &mapped);
     if (FAILED(hr) || !mapped.pData) {
+        g_cb_fb_map_fail.fetch_add(1, std::memory_order_relaxed);
         g_cb_fallback_calls.fetch_add(1, std::memory_order_relaxed);
         return g_orig_get_cb(a1, a2);
     }
@@ -213,6 +247,24 @@ void* __fastcall HookGetConstantBuffer(uintptr_t a1, uintptr_t* a2) {
 
 CachedParamDef ResolveParamCached(uintptr_t params, const void* msvc_str) {
     const std::string_view sv = static_cast<const MsvcStringRaw*>(msvc_str)->View();
+    const uint64_t cur_epoch = g_cache_epoch.load(std::memory_order_acquire);
+    const bool use_l1 = (sv.size() <= kL1MaxNameLen);
+    thread_local L1ParamEntry tls_l1[kL1CacheSlots]{};
+
+    uint64_t l1_hash = 0;
+    L1ParamEntry* l1_slot = nullptr;
+    if (use_l1) {
+        l1_hash = HashL1Key(params, sv);
+        l1_slot = &tls_l1[l1_hash & (kL1CacheSlots - 1)];
+        if (l1_slot->epoch == cur_epoch &&
+            l1_slot->params == params &&
+            l1_slot->hash == l1_hash &&
+            l1_slot->name_len == sv.size() &&
+            std::memcmp(l1_slot->name, sv.data(), sv.size()) == 0) {
+            g_ff_param_hits.fetch_add(1, std::memory_order_relaxed);
+            return l1_slot->def;
+        }
+    }
 
     ::AcquireSRWLockShared(&g_cache_lock);
     auto pit = g_param_cache.find(params);
@@ -221,6 +273,14 @@ CachedParamDef ResolveParamCached(uintptr_t params, const void* msvc_str) {
         if (kit != pit->second.end()) {
             const CachedParamDef found = kit->second;
             ::ReleaseSRWLockShared(&g_cache_lock);
+            if (l1_slot && cur_epoch == g_cache_epoch.load(std::memory_order_acquire)) {
+                l1_slot->epoch = cur_epoch;
+                l1_slot->params = params;
+                l1_slot->hash = l1_hash;
+                l1_slot->def = found;
+                l1_slot->name_len = static_cast<uint8_t>(sv.size());
+                std::memcpy(l1_slot->name, sv.data(), sv.size());
+            }
             g_ff_param_hits.fetch_add(1, std::memory_order_relaxed);
             return found;
         }
@@ -240,6 +300,15 @@ CachedParamDef ResolveParamCached(uintptr_t params, const void* msvc_str) {
     ::AcquireSRWLockExclusive(&g_cache_lock);
     g_param_cache[params].emplace(std::move(key), resolved);
     ::ReleaseSRWLockExclusive(&g_cache_lock);
+
+    if (l1_slot && cur_epoch == g_cache_epoch.load(std::memory_order_acquire)) {
+        l1_slot->epoch = cur_epoch;
+        l1_slot->params = params;
+        l1_slot->hash = l1_hash;
+        l1_slot->def = resolved;
+        l1_slot->name_len = static_cast<uint8_t>(sv.size());
+        std::memcpy(l1_slot->name, sv.data(), sv.size());
+    }
     return resolved;
 }
 
@@ -304,8 +373,11 @@ void __fastcall HookOgreGpuParamsDtor(uintptr_t params) {
     uintptr_t expected = params;
     g_forward_ps_params.compare_exchange_strong(expected, 0, std::memory_order_relaxed);
     ::AcquireSRWLockExclusive(&g_cache_lock);
-    g_param_cache.erase(params);
+    const size_t erased = g_param_cache.erase(params);
     ::ReleaseSRWLockExclusive(&g_cache_lock);
+    if (erased > 0) {
+        g_cache_epoch.fetch_add(1, std::memory_order_release);
+    }
     g_orig_ogre_dtor(params);
 }
 
@@ -328,21 +400,22 @@ void AppendMovRaxImm64Call(std::vector<uint8_t>& out, uint64_t addr) {
 bool InstallRenderSkipStubs(uintptr_t base) {
     // Stub 1: replace 0x17539 (16 bytes)
     //   mov [rbp+18h], r14
+    //   mov esi, 10h (also needed later at 0x17834 sub esi, edx!)
     //   if ([r15+0EF0h] != 0 && [r15+0EF8h] != 0) jmp base+0x176C1
-    //   else lea rbx,[r15+1048h]; mov esi,10h; jmp base+0x17549
+    //   else lea rbx,[r15+1048h]; jmp base+0x17549
     std::vector<uint8_t> stub1 = {
         0x4C, 0x89, 0x75, 0x18,                          // mov qword ptr [rbp+18h], r14
+        0xBE, 0x10, 0x00, 0x00, 0x00,                    // mov esi, 10h
         0x49, 0x83, 0xBF, 0xF0, 0x0E, 0x00, 0x00, 0x00,  // cmp qword ptr [r15+0EF0h], 0
         0x74, 0x18,                                      // je slow (+24)
         0x49, 0x83, 0xBF, 0xF8, 0x0E, 0x00, 0x00, 0x00,  // cmp qword ptr [r15+0EF8h], 0
         0x74, 0x0E,                                      // je slow (+14)
     };
     AppendAbsJmp(stub1, base + kRvaRenderLoopSkipTarget);
-    const uint8_t stub1_slow[12] = {
+    const uint8_t stub1_slow[7] = {
         0x49, 0x8D, 0x9F, 0x48, 0x10, 0x00, 0x00,  // lea rbx, [r15+1048h]
-        0xBE, 0x10, 0x00, 0x00, 0x00,              // mov esi, 10h
     };
-    stub1.insert(stub1.end(), stub1_slow, stub1_slow + 12);
+    stub1.insert(stub1.end(), stub1_slow, stub1_slow + 7);
     AppendAbsJmp(stub1, base + kRvaRenderLoopResume);
 
     if (!g_patch_render_loop.InstallJumpToAllocatedStub(
@@ -477,12 +550,18 @@ void RemovePhase1FastPaths() {
     ::AcquireSRWLockExclusive(&g_cache_lock);
     g_param_cache.clear();
     ::ReleaseSRWLockExclusive(&g_cache_lock);
+    g_cache_epoch.fetch_add(1, std::memory_order_release);
 }
 
 FastPathStats GetFastPathStats() {
     FastPathStats s{};
     s.cb_fast_hits = g_cb_fast_hits.load(std::memory_order_relaxed);
     s.cb_fallback_calls = g_cb_fallback_calls.load(std::memory_order_relaxed);
+    s.cb_fb_null_cb = g_cb_fb_null_cb.load(std::memory_order_relaxed);
+    s.cb_fb_null_params = g_cb_fb_null_params.load(std::memory_order_relaxed);
+    s.cb_fb_uninit = g_cb_fb_uninit.load(std::memory_order_relaxed);
+    s.cb_fb_bounds = g_cb_fb_bounds.load(std::memory_order_relaxed);
+    s.cb_fb_map_fail = g_cb_fb_map_fail.load(std::memory_order_relaxed);
     s.ff_param_hits = g_ff_param_hits.load(std::memory_order_relaxed);
     s.ff_param_misses = g_ff_param_misses.load(std::memory_order_relaxed);
     s.ff_param_skipped_missing = g_ff_param_skipped_missing.load(std::memory_order_relaxed);
@@ -494,32 +573,34 @@ void SetActiveExplicitPsForwardTarget(uintptr_t explicit_ps_params) {
     g_forward_ps_params.store(explicit_ps_params, std::memory_order_relaxed);
 }
 
-bool WriteExplicitPsNamedFloat4(uintptr_t params, const char* name, const float v[4]) {
-    if (!params || !name || !v || !g_find_named_def) {
+bool WriteCachedFloatParamByMsvcStr(uintptr_t params, const void* msvc_str, const float* src, size_t size) {
+    if (!params || !msvc_str || !src || !g_find_named_def) {
         return false;
     }
-    static_assert(sizeof(std::string) == sizeof(MsvcStringRaw), "std::string ABI mismatch");
-    const std::string key(name);
-    const CachedParamDef def = ResolveParamCached(params, &key);
+    const CachedParamDef def = ResolveParamCached(params, msvc_str);
     if (!def.found) {
         return false;
     }
-    WriteCachedParam(params, def, v, sizeof(float) * 4);
+    WriteCachedParam(params, def, src, size);
     return true;
 }
 
-bool WriteExplicitPsNamedFloat(uintptr_t params, const char* name, float v) {
-    if (!params || !name || !g_find_named_def) {
+bool WriteExplicitPsNamedFloat4(uintptr_t params, const char* name, const float v[4]) {
+    if (!name) {
         return false;
     }
     static_assert(sizeof(std::string) == sizeof(MsvcStringRaw), "std::string ABI mismatch");
     const std::string key(name);
-    const CachedParamDef def = ResolveParamCached(params, &key);
-    if (!def.found) {
+    return WriteCachedFloatParamByMsvcStr(params, &key, v, sizeof(float) * 4);
+}
+
+bool WriteExplicitPsNamedFloat(uintptr_t params, const char* name, float v) {
+    if (!name) {
         return false;
     }
-    WriteCachedParam(params, def, &v, sizeof(float));
-    return true;
+    static_assert(sizeof(std::string) == sizeof(MsvcStringRaw), "std::string ABI mismatch");
+    const std::string key(name);
+    return WriteCachedFloatParamByMsvcStr(params, &key, &v, sizeof(float));
 }
 
 void ResetExplicitPsLightingScratch(uintptr_t params) {

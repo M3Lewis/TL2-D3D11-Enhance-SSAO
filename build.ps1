@@ -6,6 +6,7 @@ $SrcFiles = @(
     (Join-Path $RootDir "src\dxbc_cache.cpp"),
     (Join-Path $RootDir "src\hlsl_cbuffer_fastpath.cpp"),
     (Join-Path $RootDir "src\cegui_explicit_shader.cpp"),
+    (Join-Path $RootDir "src\fixed_func_manual_uniforms.cpp"),
     (Join-Path $RootDir "src\phase3_scene_pipeline.cpp"),
     (Join-Path $RootDir "src\plugin_main.cpp")
 )
@@ -35,7 +36,7 @@ $OutPdb = Join-Path $OutDir "Plugin_TL2_RouteB.pdb"
 $OutImplib = Join-Path $ObjDir "Plugin_TL2_RouteB.lib"
 $JoinedSrc = ($SrcFiles | ForEach-Object { "`"$_`"" }) -join " "
 
-$cmdLine = "call `"$vcvars`" >nul && cl.exe /nologo /utf-8 /O2 /EHsc /std:c++20 /W4 /WX /MD /Zi /Fo`"$ObjDir\\`" /Fd`"$OutPdb`" $JoinedSrc /link /DLL /OUT:`"$OutDll`" /IMPLIB:`"$OutImplib`" /DEBUG"
+$cmdLine = "call `"$vcvars`" >nul && cl.exe /nologo /utf-8 /O2 /EHsc /std:c++20 /W4 /WX /MD /Zi /FS /Fo`"$ObjDir\\`" /Fd`"$OutPdb`" $JoinedSrc /link /INCREMENTAL:NO /DLL /OUT:`"$OutDll`" /IMPLIB:`"$OutImplib`" /DEBUG"
 
 cmd.exe /c $cmdLine
 if ($LASTEXITCODE -ne 0 -or -not (Test-Path $OutDll)) {
@@ -44,7 +45,7 @@ if ($LASTEXITCODE -ne 0 -or -not (Test-Path $OutDll)) {
 
 Write-Host "[OK] Built $OutDll ($((Get-Item $OutDll).Length) bytes)" -ForegroundColor Green
 
-$TestNames = @("test_phase1_verify", "test_phase2_verify", "test_phase3_verify")
+$TestNames = @("test_phase1_verify", "test_phase2_verify", "test_phase3_verify", "test_shader_scripts")
 foreach ($t in $TestNames) {
     $testSrc = Join-Path $RootDir "tests\$t.cpp"
     $testExe = Join-Path $ObjDir "$t.exe"

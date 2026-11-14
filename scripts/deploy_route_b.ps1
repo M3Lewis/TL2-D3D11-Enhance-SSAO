@@ -44,6 +44,7 @@ $DeployList = @(
     @{ Src = "hlsl4\SimpleUI_ps.hlsl";    Dst = "hlsl4\SimpleUI_ps.hlsl" },
     @{ Src = "SimpleUI.program";          Dst = "SimpleUI.program" },
     @{ Src = "RenderScale.material";      Dst = "RenderScale.material" },
+    @{ Src = "shaders.program";           Dst = "shaders.program" },
     @{ Src = "Phase3_Scene.program";      Dst = "Phase3_Scene.program" },
     @{ Src = "hlsl4\DiffPass_ps.hlsl";    Dst = "hlsl4\DiffPass_ps.hlsl" },
     @{ Src = "hlsl4\SkinnedDiff_ps.hlsl"; Dst = "hlsl4\SkinnedDiff_ps.hlsl" },

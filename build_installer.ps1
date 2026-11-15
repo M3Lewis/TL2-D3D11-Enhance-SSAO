@@ -67,6 +67,24 @@ foreach ($p in $Payloads) {
 }
 $IncLines.Add("};")
 
+$UiAssets = @(
+    @{ Id = 201; RelSrc = "installer\assets\tl2_logo.png" },
+    @{ Id = 202; RelSrc = "installer\assets\vilderan_map.jpg" },
+    @{ Id = 203; RelSrc = "installer\assets\menu_frame.png" },
+    @{ Id = 204; RelSrc = "installer\assets\corner_tl.png" },
+    @{ Id = 205; RelSrc = "installer\assets\corner_tr.png" },
+    @{ Id = 206; RelSrc = "installer\assets\corner_bl.png" },
+    @{ Id = 207; RelSrc = "installer\assets\corner_br.png" }
+)
+foreach ($a in $UiAssets) {
+    $fullSrc = Join-Path $RootDir $a.RelSrc
+    if (-not (Test-Path $fullSrc)) {
+        throw "Missing UI asset file: $fullSrc"
+    }
+    $rcSrc = ($a.RelSrc) -replace "\\", "\\\\"
+    $RcLines.Add("$($a.Id) RCDATA `"$rcSrc`"")
+}
+
 $RcPath = Join-Path $ObjDir "installer_payload.rc"
 $IncPath = Join-Path $ObjDir "installer_payload_table.inc"
 [System.IO.File]::WriteAllLines($RcPath, $RcLines, [System.Text.Encoding]::ASCII)
@@ -85,7 +103,7 @@ $SetupExe = Join-Path $OutDir "TL2_DX11_Enhance_SSAO_Setup.exe"
 
 Push-Location $RootDir
 try {
-    $cmdLine = "call `"$vcvars`" >nul && rc.exe /nologo /fo `"$ResPath`" `"$RcPath`" && cl.exe /nologo /utf-8 /O2 /EHsc /std:c++20 /W4 /WX /MT /I`"$ObjDir`" /Fo`"$ObjDir\\`" `"$InstallerCpp`" `"$ResPath`" /link /SUBSYSTEM:WINDOWS /OUT:`"$SetupExe`" user32.lib gdi32.lib comctl32.lib shell32.lib ole32.lib advapi32.lib"
+    $cmdLine = "call `"$vcvars`" >nul && rc.exe /nologo /fo `"$ResPath`" `"$RcPath`" && cl.exe /nologo /utf-8 /O2 /EHsc /std:c++20 /W4 /WX /MT /I`"$ObjDir`" /Fo`"$ObjDir\\`" `"$InstallerCpp`" `"$ResPath`" /link /SUBSYSTEM:WINDOWS /OUT:`"$SetupExe`" user32.lib gdi32.lib gdiplus.lib shlwapi.lib comctl32.lib shell32.lib ole32.lib advapi32.lib"
     cmd.exe /c $cmdLine
     if ($LASTEXITCODE -ne 0 -or -not (Test-Path $SetupExe)) {
         throw "Installer build failed with exit code $LASTEXITCODE"

@@ -4,8 +4,11 @@
 #define NOMINMAX
 #include <windows.h>
 #include <commctrl.h>
+#include <objidl.h>
+#include <gdiplus.h>
 #include <shellapi.h>
 #include <shlobj.h>
+#include <shlwapi.h>
 #include <shobjidl.h>
 #include <tlhelp32.h>
 
@@ -52,6 +55,17 @@ constexpr int kCtrlInstallBtn = 1004;
 constexpr int kCtrlUninstallBtn = 1005;
 constexpr int kCtrlLogEdit = 1006;
 
+constexpr int kUiResLogo = 201;
+constexpr int kUiResMapBg = 202;
+constexpr int kUiResMenuFrame = 203;
+constexpr int kUiResCornerTl = 204;
+constexpr int kUiResCornerTr = 205;
+constexpr int kUiResCornerBl = 206;
+constexpr int kUiResCornerBr = 207;
+
+constexpr int kBaseWidth = 760;
+constexpr int kBaseHeight = 560;
+
 struct AppUi {
     HWND main_wnd = nullptr;
     HWND path_edit = nullptr;
@@ -60,8 +74,16 @@ struct AppUi {
     HWND install_btn = nullptr;
     HWND uninstall_btn = nullptr;
     HWND log_edit = nullptr;
+    HWND hovered_btn = nullptr;
     HFONT ui_font = nullptr;
-    HFONT title_font = nullptr;
+    HFONT log_font = nullptr;
+    HFONT btn_font = nullptr;
+    HBRUSH edit_bg_brush = nullptr;
+    HBRUSH log_bg_brush = nullptr;
+    HBITMAP bg_bmp = nullptr;
+    int client_w = kBaseWidth;
+    int client_h = kBaseHeight;
+    int dpi = 96;
 };
 
 AppUi g_ui{};
@@ -451,7 +473,7 @@ bool PerformInstall(const fs::path& game_dir, Logger& log) {
 
     log.Append(L"");
     log.Append(L"=== 安装完成！===");
-    log.Append(L"游戏内热键：按 F8 弹出鼠标交互式画质配置面板 (支持 P0/P1 增强开关、滤镜选择、保存及一键切换预设)。");
+    log.Append(L"游戏内热键：按 F8 弹出交互式配置面板 (支持 P0/P1/P2 画质开关、水面 SSR、3D LUT、全选对比及 10 组预设)。");
     return true;
 }
 
@@ -666,77 +688,623 @@ void ApplyFontRecursive(HWND wnd, HFONT font) {
     ::SendMessageW(wnd, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
 }
 
+int S(int px) {
+    return ::MulDiv(px, g_ui.dpi, 96);
+}
+
+float Sf(float px) {
+    return px * (static_cast<float>(g_ui.dpi) / 96.0f);
+}
+
+Gdiplus::Bitmap* LoadEmbeddedPngOrJpg(int resource_id) {
+    HRSRC res = ::FindResourceW(nullptr, MAKEINTRESOURCEW(resource_id), RT_RCDATA);
+    if (!res) {
+        return nullptr;
+    }
+    HGLOBAL loaded = ::LoadResource(nullptr, res);
+    if (!loaded) {
+        return nullptr;
+    }
+    const DWORD size = ::SizeofResource(nullptr, res);
+    const void* data = ::LockResource(loaded);
+    if (!data || size == 0) {
+        return nullptr;
+    }
+    IStream* stream = ::SHCreateMemStream(static_cast<const BYTE*>(data), static_cast<UINT>(size));
+    if (!stream) {
+        return nullptr;
+    }
+    Gdiplus::Bitmap* bmp = Gdiplus::Bitmap::FromStream(stream, FALSE);
+    stream->Release();
+    if (!bmp || bmp->GetLastStatus() != Gdiplus::Ok) {
+        delete bmp;
+        return nullptr;
+    }
+    return bmp;
+}
+
+void DrawImageCover(
+    Gdiplus::Graphics& g,
+    Gdiplus::Image* img,
+    const Gdiplus::RectF& dst,
+    float alpha) {
+    if (!img || img->GetWidth() == 0 || img->GetHeight() == 0) {
+        return;
+    }
+    const float src_w = static_cast<float>(img->GetWidth());
+    const float src_h = static_cast<float>(img->GetHeight());
+    const float scale = (std::max)(dst.Width / src_w, dst.Height / src_h);
+    const float crop_w = dst.Width / scale;
+    const float crop_h = dst.Height / scale;
+    const float crop_x = (src_w - crop_w) * 0.5f;
+    const float crop_y = (src_h - crop_h) * 0.5f;
+
+    Gdiplus::ImageAttributes ia;
+    Gdiplus::ColorMatrix cm = {{
+        {1.0f, 0.0f, 0.0f, 0.0f, 0.0f},
+        {0.0f, 1.0f, 0.0f, 0.0f, 0.0f},
+        {0.0f, 0.0f, 1.0f, 0.0f, 0.0f},
+        {0.0f, 0.0f, 0.0f, alpha, 0.0f},
+        {0.0f, 0.0f, 0.0f, 0.0f, 1.0f},
+    }};
+    ia.SetColorMatrix(&cm, Gdiplus::ColorMatrixFlagsDefault, Gdiplus::ColorAdjustTypeBitmap);
+    g.DrawImage(img, dst, crop_x, crop_y, crop_w, crop_h, Gdiplus::UnitPixel, &ia);
+}
+
+void AddRoundRectPath(Gdiplus::GraphicsPath& path, const Gdiplus::RectF& r, float radius) {
+    const float d = radius * 2.0f;
+    path.AddArc(r.X, r.Y, d, d, 180.0f, 90.0f);
+    path.AddArc(r.X + r.Width - d, r.Y, d, d, 270.0f, 90.0f);
+    path.AddArc(r.X + r.Width - d, r.Y + r.Height - d, d, d, 0.0f, 90.0f);
+    path.AddArc(r.X, r.Y + r.Height - d, d, d, 90.0f, 90.0f);
+    path.CloseFigure();
+}
+
+void DrawTextWithShadow(
+    Gdiplus::Graphics& g,
+    const wchar_t* text,
+    const Gdiplus::Font& font,
+    const Gdiplus::RectF& rect,
+    const Gdiplus::StringFormat& fmt,
+    const Gdiplus::Color& fg,
+    float shadow_offset_px) {
+    if (shadow_offset_px > 0.0f) {
+        Gdiplus::RectF sr = rect;
+        sr.X += shadow_offset_px;
+        sr.Y += shadow_offset_px;
+        Gdiplus::SolidBrush shadow_br(Gdiplus::Color(220, 0, 0, 0));
+        g.DrawString(text, -1, &font, sr, &fmt, &shadow_br);
+    }
+    Gdiplus::SolidBrush fg_br(fg);
+    g.DrawString(text, -1, &font, rect, &fmt, &fg_br);
+}
+
+void BuildBackdropBitmap(HWND hwnd) {
+    if (g_ui.bg_bmp) {
+        ::DeleteObject(g_ui.bg_bmp);
+        g_ui.bg_bmp = nullptr;
+    }
+    HDC screen_dc = ::GetDC(hwnd);
+    if (!screen_dc) {
+        return;
+    }
+    const int w = g_ui.client_w;
+    const int h = g_ui.client_h;
+
+    BITMAPINFO bmi{};
+    bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    bmi.bmiHeader.biWidth = w;
+    bmi.bmiHeader.biHeight = -h;
+    bmi.bmiHeader.biPlanes = 1;
+    bmi.bmiHeader.biBitCount = 32;
+    bmi.bmiHeader.biCompression = BI_RGB;
+    void* bits = nullptr;
+    HBITMAP dib = ::CreateDIBSection(screen_dc, &bmi, DIB_RGB_COLORS, &bits, nullptr, 0);
+    if (!dib) {
+        ::ReleaseDC(hwnd, screen_dc);
+        return;
+    }
+    HDC mem_dc = ::CreateCompatibleDC(screen_dc);
+    HGDIOBJ old_bmp = ::SelectObject(mem_dc, dib);
+
+    {
+        Gdiplus::Graphics g(mem_dc);
+        g.SetSmoothingMode(Gdiplus::SmoothingModeHighQuality);
+        g.SetInterpolationMode(Gdiplus::InterpolationModeHighQualityBicubic);
+        g.SetTextRenderingHint(Gdiplus::TextRenderingHintClearTypeGridFit);
+
+        const Gdiplus::RectF full_rect(0.0f, 0.0f, static_cast<float>(w), static_cast<float>(h));
+        Gdiplus::SolidBrush obsidian(Gdiplus::Color(255, 8, 9, 14));
+        g.FillRectangle(&obsidian, full_rect);
+
+        // Background 1: Torchlight II Vilderan parchment map with moody dark vignette
+        Gdiplus::Bitmap* map_bmp = LoadEmbeddedPngOrJpg(kUiResMapBg);
+        if (map_bmp) {
+            DrawImageCover(g, map_bmp, full_rect, 0.24f);
+            delete map_bmp;
+        }
+        {
+            Gdiplus::GraphicsPath vig_path;
+            vig_path.AddEllipse(-w * 0.15f, -h * 0.15f, w * 1.30f, h * 1.30f);
+            Gdiplus::PathGradientBrush vig(&vig_path);
+            vig.SetCenterColor(Gdiplus::Color(40, 8, 9, 14));
+            Gdiplus::Color edge_col(225, 4, 5, 8);
+            int cnt = 1;
+            vig.SetSurroundColors(&edge_col, &cnt);
+            g.FillRectangle(&vig, full_rect);
+        }
+
+        // Main ornate card panel (matching comp.html .tl-card aesthetic)
+        const Gdiplus::RectF card(Sf(16), Sf(14), Sf(728), Sf(532));
+        {
+            Gdiplus::SolidBrush card_bg(Gdiplus::Color(232, 13, 16, 24));
+            g.FillRectangle(&card_bg, card);
+
+            // Sample rich interior parchment/leather texture from Torchlight II menu_frame.png
+            Gdiplus::Bitmap* frame_bmp = LoadEmbeddedPngOrJpg(kUiResMenuFrame);
+            if (frame_bmp) {
+                Gdiplus::ImageAttributes ia;
+                Gdiplus::ColorMatrix cm = {{
+                    {1.0f, 0.0f, 0.0f, 0.0f, 0.0f},
+                    {0.0f, 1.0f, 0.0f, 0.0f, 0.0f},
+                    {0.0f, 0.0f, 1.0f, 0.0f, 0.0f},
+                    {0.0f, 0.0f, 0.0f, 0.22f, 0.0f},
+                    {0.0f, 0.0f, 0.0f, 0.0f, 1.0f},
+                }};
+                ia.SetColorMatrix(&cm, Gdiplus::ColorMatrixFlagsDefault, Gdiplus::ColorAdjustTypeBitmap);
+                g.DrawImage(frame_bmp, card, 28.0f, 70.0f, 454.0f, 490.0f, Gdiplus::UnitPixel, &ia);
+                delete frame_bmp;
+            }
+
+            // Double bronze border + subtle amber inner glow outline
+            Gdiplus::Pen outer_pen(Gdiplus::Color(255, 128, 96, 48), Sf(2.0f));
+            g.DrawRectangle(&outer_pen, card);
+            const Gdiplus::RectF inner_card(
+                card.X + Sf(4), card.Y + Sf(4), card.Width - Sf(8), card.Height - Sf(8));
+            Gdiplus::Pen inner_pen(Gdiplus::Color(85, 245, 166, 35), Sf(1.0f));
+            g.DrawRectangle(&inner_pen, inner_card);
+        }
+
+        // Authentic Torchlight II corner metal brackets
+        const float cs = Sf(30);
+        auto draw_corner = [&](int res_id, float cx, float cy) {
+            Gdiplus::Bitmap* cb = LoadEmbeddedPngOrJpg(res_id);
+            if (cb) {
+                g.DrawImage(cb, cx, cy, cs, cs);
+                delete cb;
+            }
+        };
+        draw_corner(kUiResCornerTl, Sf(14), Sf(12));
+        draw_corner(kUiResCornerTr, Sf(746) - cs, Sf(12));
+        draw_corner(kUiResCornerBl, Sf(14), Sf(548) - cs);
+        draw_corner(kUiResCornerBr, Sf(746) - cs, Sf(548) - cs);
+
+        // Header left: Official Torchlight II 3D emblem logo
+        Gdiplus::Bitmap* logo_bmp = LoadEmbeddedPngOrJpg(kUiResLogo);
+        if (logo_bmp) {
+            const float lw = Sf(174);
+            const float lh = Sf(61);
+            // Soft amber aura behind logo
+            Gdiplus::GraphicsPath glow_p;
+            glow_p.AddEllipse(Sf(26), Sf(20), lw + Sf(20), lh + Sf(16));
+            Gdiplus::PathGradientBrush glow_br(&glow_p);
+            glow_br.SetCenterColor(Gdiplus::Color(68, 245, 166, 35));
+            Gdiplus::Color g_end(0, 245, 166, 35);
+            int cnt = 1;
+            glow_br.SetSurroundColors(&g_end, &cnt);
+            g.FillEllipse(&glow_br, Sf(26), Sf(20), lw + Sf(20), lh + Sf(16));
+
+            Gdiplus::ImageAttributes logo_ia;
+            logo_ia.SetWrapMode(Gdiplus::WrapModeTileFlipXY);
+            g.DrawImage(
+                logo_bmp,
+                Gdiplus::RectF(Sf(36), Sf(25), lw, lh),
+                0.0f, 0.0f,
+                static_cast<float>(logo_bmp->GetWidth()),
+                static_cast<float>(logo_bmp->GetHeight()),
+                Gdiplus::UnitPixel,
+                &logo_ia);
+            delete logo_bmp;
+        }
+
+        // Header right: Title & complete 2-line subtitle (HotkeyPrefixNone preserves '&')
+        Gdiplus::FontFamily ff(L"Microsoft YaHei UI");
+        Gdiplus::Font title_f(&ff, Sf(19.5f), Gdiplus::FontStyleBold, Gdiplus::UnitPixel);
+        Gdiplus::Font sub_f(&ff, Sf(12.0f), Gdiplus::FontStyleRegular, Gdiplus::UnitPixel);
+        Gdiplus::Font chip_f(&ff, Sf(11.5f), Gdiplus::FontStyleBold, Gdiplus::UnitPixel);
+        Gdiplus::Font label_f(&ff, Sf(13.5f), Gdiplus::FontStyleRegular, Gdiplus::UnitPixel);
+        Gdiplus::Font foot_f(&ff, Sf(11.5f), Gdiplus::FontStyleRegular, Gdiplus::UnitPixel);
+
+        Gdiplus::StringFormat fmt_left;
+        fmt_left.SetAlignment(Gdiplus::StringAlignmentNear);
+        fmt_left.SetLineAlignment(Gdiplus::StringAlignmentCenter);
+        fmt_left.SetHotkeyPrefix(Gdiplus::HotkeyPrefixNone);
+
+        Gdiplus::StringFormat fmt_top_left;
+        fmt_top_left.SetAlignment(Gdiplus::StringAlignmentNear);
+        fmt_top_left.SetLineAlignment(Gdiplus::StringAlignmentNear);
+        fmt_top_left.SetHotkeyPrefix(Gdiplus::HotkeyPrefixNone);
+
+        Gdiplus::StringFormat fmt_center;
+        fmt_center.SetAlignment(Gdiplus::StringAlignmentCenter);
+        fmt_center.SetLineAlignment(Gdiplus::StringAlignmentCenter);
+        fmt_center.SetHotkeyPrefix(Gdiplus::HotkeyPrefixNone);
+
+        Gdiplus::StringFormat fmt_right;
+        fmt_right.SetAlignment(Gdiplus::StringAlignmentFar);
+        fmt_right.SetLineAlignment(Gdiplus::StringAlignmentCenter);
+        fmt_right.SetHotkeyPrefix(Gdiplus::HotkeyPrefixNone);
+
+        DrawTextWithShadow(
+            g,
+            L"D3D11 画质增强 & SSAO 安装器 (2026 x64)",
+            title_f,
+            Gdiplus::RectF(Sf(224), Sf(22), Sf(500), Sf(28)),
+            fmt_left,
+            Gdiplus::Color(255, 255, 214, 130),
+            Sf(2.0f));
+
+        DrawTextWithShadow(
+            g,
+            L"内嵌 Plugin_TL2_DX11_Enhance_SSAO.dll 与全套 16 枚 HLSL4 着色器\n支持原版无损备份 · 游戏内按 [F8] 调出交互式画质配置面板",
+            sub_f,
+            Gdiplus::RectF(Sf(224), Sf(52), Sf(500), Sf(36)),
+            fmt_top_left,
+            Gdiplus::Color(255, 218, 208, 190),
+            Sf(1.0f));
+
+        // Feature chips bar (4 Torchlight-style dark amber pills)
+        struct ChipSpec {
+            float w;
+            const wchar_t* label;
+        };
+        const ChipSpec chips[4] = {
+            {180.0f, L"P0 法线凹凸 / 金属高光 / SSCS"},
+            {134.0f, L"P1 屏幕空间软粒子"},
+            {192.0f, L"P2 水面 SSR · 透视 · 3D LUT"},
+            {158.0f, L"F8 全选对比 · 10 槽位"},
+        };
+        float cx = Sf(36);
+        const float cy = Sf(96);
+        const float ch = Sf(26);
+        const float gap = Sf(8);
+        for (const auto& chip : chips) {
+            const float cw = Sf(chip.w);
+            const Gdiplus::RectF cr(cx, cy, cw, ch);
+            Gdiplus::GraphicsPath cp;
+            AddRoundRectPath(cp, cr, Sf(4.0f));
+            Gdiplus::SolidBrush c_fill(Gdiplus::Color(220, 18, 22, 32));
+            Gdiplus::Pen c_pen(Gdiplus::Color(215, 128, 96, 48), Sf(1.0f));
+            g.FillPath(&c_fill, &cp);
+            g.DrawPath(&c_pen, &cp);
+            DrawTextWithShadow(
+                g, chip.label, chip_f, cr, fmt_center,
+                Gdiplus::Color(255, 248, 198, 108), Sf(1.0f));
+            cx += cw + gap;
+        }
+
+        // Bronze horizontal divider
+        {
+            Gdiplus::LinearGradientBrush div_br(
+                Gdiplus::PointF(Sf(36), Sf(131)),
+                Gdiplus::PointF(Sf(724), Sf(131)),
+                Gdiplus::Color(20, 128, 96, 48),
+                Gdiplus::Color(20, 128, 96, 48));
+            Gdiplus::Color cols[3] = {
+                Gdiplus::Color(25, 128, 96, 48),
+                Gdiplus::Color(220, 214, 156, 68),
+                Gdiplus::Color(25, 128, 96, 48),
+            };
+            float pos[3] = {0.0f, 0.5f, 1.0f};
+            div_br.SetInterpolationColors(cols, pos, 3);
+            Gdiplus::Pen div_pen(&div_br, Sf(1.2f));
+            g.DrawLine(&div_pen, Sf(36), Sf(131), Sf(724), Sf(131));
+        }
+
+        // Directory section label & bronze border around path EDIT
+        DrawTextWithShadow(
+            g,
+            L"游戏根目录（含 Torchlight2.exe）：",
+            label_f,
+            Gdiplus::RectF(Sf(36), Sf(140), Sf(400), Sf(22)),
+            fmt_left,
+            Gdiplus::Color(255, 232, 220, 196),
+            Sf(1.0f));
+
+        {
+            const Gdiplus::RectF edit_box(Sf(36), Sf(166), Sf(580), Sf(32));
+            Gdiplus::SolidBrush e_fill(Gdiplus::Color(255, 11, 14, 22));
+            Gdiplus::Pen e_pen(Gdiplus::Color(255, 128, 96, 48), Sf(1.4f));
+            g.FillRectangle(&e_fill, edit_box);
+            g.DrawRectangle(&e_pen, edit_box);
+        }
+
+        // Log console bronze border around log EDIT
+        {
+            const Gdiplus::RectF log_box(Sf(36), Sf(264), Sf(688), Sf(248));
+            Gdiplus::SolidBrush l_fill(Gdiplus::Color(255, 10, 13, 20));
+            Gdiplus::Pen l_pen(Gdiplus::Color(255, 112, 84, 44), Sf(1.4f));
+            g.FillRectangle(&l_fill, log_box);
+            g.DrawRectangle(&l_pen, log_box);
+        }
+
+        // Subtle footer hints
+        DrawTextWithShadow(
+            g,
+            L"自动备份原版配置与着色器至 TL2_DX11_Enhance_Backup，随时可无损还原",
+            foot_f,
+            Gdiplus::RectF(Sf(36), Sf(518), Sf(470), Sf(20)),
+            fmt_left,
+            Gdiplus::Color(255, 162, 152, 136),
+            Sf(1.0f));
+        DrawTextWithShadow(
+            g,
+            L"命令行: --check / --install / --uninstall",
+            foot_f,
+            Gdiplus::RectF(Sf(510), Sf(518), Sf(214), Sf(20)),
+            fmt_right,
+            Gdiplus::Color(255, 132, 124, 112),
+            Sf(1.0f));
+    }
+
+    ::SelectObject(mem_dc, old_bmp);
+    ::DeleteDC(mem_dc);
+    ::ReleaseDC(hwnd, screen_dc);
+    g_ui.bg_bmp = dib;
+}
+
+void DrawOwnerButton(const DRAWITEMSTRUCT* dis) {
+    if (!dis || !dis->hDC) {
+        return;
+    }
+    const RECT rc = dis->rcItem;
+    const int w = rc.right - rc.left;
+    const int h = rc.bottom - rc.top;
+    if (w <= 0 || h <= 0) {
+        return;
+    }
+
+    HDC mem_dc = ::CreateCompatibleDC(dis->hDC);
+    HBITMAP mem_bmp = ::CreateCompatibleBitmap(dis->hDC, w, h);
+    HGDIOBJ old_bmp = ::SelectObject(mem_dc, mem_bmp);
+
+    {
+        Gdiplus::Graphics g(mem_dc);
+        g.SetSmoothingMode(Gdiplus::SmoothingModeHighQuality);
+        g.SetTextRenderingHint(Gdiplus::TextRenderingHintClearTypeGridFit);
+
+        const bool pressed = (dis->itemState & ODS_SELECTED) != 0;
+        const bool hovered = (dis->hwndItem == g_ui.hovered_btn);
+        const bool focused = (dis->itemState & ODS_FOCUS) != 0;
+
+        // Clear outer pixels to main panel background so rounded corners stay crisp
+        Gdiplus::SolidBrush outer_clear(Gdiplus::Color(255, 14, 17, 25));
+        g.FillRectangle(&outer_clear, 0, 0, w, h);
+
+        Gdiplus::Color top_col, bot_col, border_col, txt_col;
+        if (dis->CtlID == kCtrlInstallBtn) {
+            top_col = pressed ? Gdiplus::Color(255, 132, 72, 12)
+                              : (hovered ? Gdiplus::Color(255, 212, 124, 24) : Gdiplus::Color(255, 184, 102, 18));
+            bot_col = pressed ? Gdiplus::Color(255, 92, 48, 8)
+                              : (hovered ? Gdiplus::Color(255, 134, 68, 12) : Gdiplus::Color(255, 112, 56, 10));
+            border_col = hovered ? Gdiplus::Color(255, 255, 212, 110) : Gdiplus::Color(255, 245, 166, 35);
+            txt_col = Gdiplus::Color(255, 255, 246, 224);
+        } else if (dis->CtlID == kCtrlCheckBtn) {
+            top_col = pressed ? Gdiplus::Color(255, 22, 34, 54)
+                              : (hovered ? Gdiplus::Color(255, 38, 58, 92) : Gdiplus::Color(255, 28, 44, 70));
+            bot_col = pressed ? Gdiplus::Color(255, 16, 24, 38)
+                              : (hovered ? Gdiplus::Color(255, 24, 36, 58) : Gdiplus::Color(255, 18, 28, 46));
+            border_col = hovered ? Gdiplus::Color(255, 116, 168, 232) : Gdiplus::Color(255, 78, 118, 168);
+            txt_col = Gdiplus::Color(255, 220, 236, 255);
+        } else if (dis->CtlID == kCtrlUninstallBtn) {
+            top_col = pressed ? Gdiplus::Color(255, 44, 18, 20)
+                              : (hovered ? Gdiplus::Color(255, 76, 30, 34) : Gdiplus::Color(255, 58, 22, 26));
+            bot_col = pressed ? Gdiplus::Color(255, 30, 12, 14)
+                              : (hovered ? Gdiplus::Color(255, 50, 18, 22) : Gdiplus::Color(255, 36, 14, 16));
+            border_col = hovered ? Gdiplus::Color(255, 212, 104, 104) : Gdiplus::Color(255, 142, 62, 62);
+            txt_col = Gdiplus::Color(255, 248, 212, 212);
+        } else {
+            top_col = pressed ? Gdiplus::Color(255, 28, 32, 42)
+                              : (hovered ? Gdiplus::Color(255, 48, 52, 64) : Gdiplus::Color(255, 34, 38, 48));
+            bot_col = pressed ? Gdiplus::Color(255, 18, 20, 28)
+                              : (hovered ? Gdiplus::Color(255, 32, 34, 44) : Gdiplus::Color(255, 22, 24, 32));
+            border_col = hovered ? Gdiplus::Color(255, 214, 162, 78) : Gdiplus::Color(255, 128, 96, 48);
+            txt_col = Gdiplus::Color(255, 238, 226, 202);
+        }
+
+        const Gdiplus::RectF btn_r(0.5f, 0.5f, static_cast<float>(w) - 1.5f, static_cast<float>(h) - 1.5f);
+        Gdiplus::GraphicsPath gp;
+        AddRoundRectPath(gp, btn_r, Sf(5.0f));
+        Gdiplus::LinearGradientBrush bg_br(
+            Gdiplus::PointF(0.0f, 0.0f),
+            Gdiplus::PointF(0.0f, static_cast<float>(h)),
+            top_col,
+            bot_col);
+        g.FillPath(&bg_br, &gp);
+
+        Gdiplus::Pen b_pen(border_col, Sf(focused ? 1.8f : 1.3f));
+        g.DrawPath(&b_pen, &gp);
+
+        // Top metallic specular highlight line
+        const Gdiplus::RectF hi_r(
+            Sf(2.0f), Sf(2.0f), static_cast<float>(w) - Sf(4.0f), Sf(1.0f));
+        Gdiplus::SolidBrush hi_br(Gdiplus::Color(hovered ? 75 : 42, 255, 244, 210));
+        g.FillRectangle(&hi_br, hi_r);
+
+        wchar_t text[128]{};
+        ::GetWindowTextW(dis->hwndItem, text, 128);
+        Gdiplus::FontFamily ff(L"Microsoft YaHei UI");
+        const int weight = (dis->CtlID == kCtrlInstallBtn) ? Gdiplus::FontStyleBold : Gdiplus::FontStyleRegular;
+        Gdiplus::Font btn_f(&ff, Sf(14.0f), weight, Gdiplus::UnitPixel);
+        Gdiplus::StringFormat fmt;
+        fmt.SetAlignment(Gdiplus::StringAlignmentCenter);
+        fmt.SetLineAlignment(Gdiplus::StringAlignmentCenter);
+        fmt.SetHotkeyPrefix(Gdiplus::HotkeyPrefixNone);
+        Gdiplus::RectF txt_r(0.0f, pressed ? Sf(1.0f) : 0.0f, static_cast<float>(w), static_cast<float>(h));
+        DrawTextWithShadow(g, text, btn_f, txt_r, fmt, txt_col, Sf(1.2f));
+    }
+
+    ::BitBlt(dis->hDC, 0, 0, w, h, mem_dc, 0, 0, SRCCOPY);
+    ::SelectObject(mem_dc, old_bmp);
+    ::DeleteObject(mem_bmp);
+    ::DeleteDC(mem_dc);
+}
+
+LRESULT CALLBACK ButtonHoverSubclassProc(
+    HWND hwnd,
+    UINT msg,
+    WPARAM wparam,
+    LPARAM lparam,
+    UINT_PTR,
+    DWORD_PTR) {
+    if (msg == WM_MOUSEMOVE) {
+        if (g_ui.hovered_btn != hwnd) {
+            g_ui.hovered_btn = hwnd;
+            TRACKMOUSEEVENT tme{sizeof(tme), TME_LEAVE, hwnd, 0};
+            ::TrackMouseEvent(&tme);
+            ::InvalidateRect(hwnd, nullptr, FALSE);
+        }
+    } else if (msg == WM_MOUSELEAVE) {
+        if (g_ui.hovered_btn == hwnd) {
+            g_ui.hovered_btn = nullptr;
+            ::InvalidateRect(hwnd, nullptr, FALSE);
+        }
+    }
+    return ::DefSubclassProc(hwnd, msg, wparam, lparam);
+}
+
+void TryApplyDarkTitleBar(HWND hwnd) {
+    HMODULE dwm = ::LoadLibraryW(L"dwmapi.dll");
+    if (!dwm) {
+        return;
+    }
+    using DwmSetWindowAttrFn = HRESULT(WINAPI*)(HWND, DWORD, LPCVOID, DWORD);
+    auto fn = reinterpret_cast<DwmSetWindowAttrFn>(::GetProcAddress(dwm, "DwmSetWindowAttribute"));
+    if (fn) {
+        const BOOL dark = TRUE;
+        fn(hwnd, 20, &dark, sizeof(dark));  // DWMWA_USE_IMMERSIVE_DARK_MODE
+    }
+    ::FreeLibrary(dwm);
+}
+
+void TryApplyDarkScrollbar(HWND hwnd) {
+    HMODULE ux = ::LoadLibraryW(L"uxtheme.dll");
+    if (!ux) {
+        return;
+    }
+    using SetWindowThemeFn = HRESULT(WINAPI*)(HWND, LPCWSTR, LPCWSTR);
+    auto fn = reinterpret_cast<SetWindowThemeFn>(::GetProcAddress(ux, "SetWindowTheme"));
+    if (fn) {
+        fn(hwnd, L"DarkMode_Explorer", nullptr);
+    }
+    ::FreeLibrary(ux);
+}
+
 LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
     switch (msg) {
         case WM_CREATE: {
+            g_ui.main_wnd = hwnd;
+            TryApplyDarkTitleBar(hwnd);
+
             g_ui.ui_font = ::CreateFontW(
-                -15, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
+                -S(14), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
                 OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Microsoft YaHei UI");
-            g_ui.title_font = ::CreateFontW(
-                -19, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
+            g_ui.log_font = ::CreateFontW(
+                -S(13), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
                 OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Microsoft YaHei UI");
-
-            HWND title = ::CreateWindowW(
-                L"STATIC", L"火炬之光 2 D3D11 画质增强 & SSAO 安装器 (2026 x64)",
-                WS_CHILD | WS_VISIBLE, 20, 16, 620, 26, hwnd, nullptr, nullptr, nullptr);
-            ApplyFontRecursive(title, g_ui.title_font);
-
-            HWND sub = ::CreateWindowW(
-                L"STATIC",
-                L"包含: Plugin_TL2_DX11_Enhance_SSAO.dll + 16 个着色器 (P0 + P1 软粒子) | 按 F8 打开鼠标配置面板",
-                WS_CHILD | WS_VISIBLE, 20, 44, 620, 20, hwnd, nullptr, nullptr, nullptr);
-            ApplyFontRecursive(sub, g_ui.ui_font);
-
-            HWND lbl_dir = ::CreateWindowW(
-                L"STATIC", L"游戏根目录（含 Torchlight2.exe）：",
-                WS_CHILD | WS_VISIBLE, 20, 76, 300, 20, hwnd, nullptr, nullptr, nullptr);
-            ApplyFontRecursive(lbl_dir, g_ui.ui_font);
+            g_ui.btn_font = ::CreateFontW(
+                -S(14), 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
+                OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Microsoft YaHei UI");
+            g_ui.edit_bg_brush = ::CreateSolidBrush(RGB(11, 14, 22));
+            g_ui.log_bg_brush = ::CreateSolidBrush(RGB(10, 13, 20));
 
             g_ui.path_edit = ::CreateWindowExW(
-                WS_EX_CLIENTEDGE, L"EDIT", L"",
-                WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
-                20, 98, 520, 26, hwnd, reinterpret_cast<HMENU>(static_cast<intptr_t>(kCtrlPathEdit)), nullptr, nullptr);
+                0, L"EDIT", L"",
+                WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL,
+                S(44), S(172), S(564), S(21),
+                hwnd, reinterpret_cast<HMENU>(static_cast<intptr_t>(kCtrlPathEdit)), nullptr, nullptr);
             ApplyFontRecursive(g_ui.path_edit, g_ui.ui_font);
 
-            g_ui.browse_btn = ::CreateWindowW(
-                L"BUTTON", L"浏览...",
-                WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-                550, 97, 90, 28, hwnd, reinterpret_cast<HMENU>(static_cast<intptr_t>(kCtrlBrowseBtn)), nullptr, nullptr);
-            ApplyFontRecursive(g_ui.browse_btn, g_ui.ui_font);
+            auto make_btn = [&](const wchar_t* text, int x, int y, int bw, int bh, int id) -> HWND {
+                HWND b = ::CreateWindowW(
+                    L"BUTTON", text,
+                    WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW,
+                    S(x), S(y), S(bw), S(bh),
+                    hwnd, reinterpret_cast<HMENU>(static_cast<intptr_t>(id)), nullptr, nullptr);
+                ApplyFontRecursive(b, (id == kCtrlInstallBtn) ? g_ui.btn_font : g_ui.ui_font);
+                ::SetWindowSubclass(b, &ButtonHoverSubclassProc, 1, 0);
+                return b;
+            };
 
-            g_ui.check_btn = ::CreateWindowW(
-                L"BUTTON", L"检测版本兼容性",
-                WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-                20, 138, 150, 32, hwnd, reinterpret_cast<HMENU>(static_cast<intptr_t>(kCtrlCheckBtn)), nullptr, nullptr);
-            ApplyFontRecursive(g_ui.check_btn, g_ui.ui_font);
-
-            g_ui.install_btn = ::CreateWindowW(
-                L"BUTTON", L"一键安装 / 升级",
-                WS_CHILD | WS_VISIBLE | BS_DEFPUSHBUTTON,
-                186, 138, 220, 32, hwnd, reinterpret_cast<HMENU>(static_cast<intptr_t>(kCtrlInstallBtn)), nullptr, nullptr);
-            ApplyFontRecursive(g_ui.install_btn, g_ui.ui_font);
-
-            g_ui.uninstall_btn = ::CreateWindowW(
-                L"BUTTON", L"卸载并恢复原版",
-                WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-                422, 138, 218, 32, hwnd, reinterpret_cast<HMENU>(static_cast<intptr_t>(kCtrlUninstallBtn)), nullptr, nullptr);
-            ApplyFontRecursive(g_ui.uninstall_btn, g_ui.ui_font);
+            g_ui.browse_btn = make_btn(L"浏览...", 626, 166, 98, 32, kCtrlBrowseBtn);
+            g_ui.check_btn = make_btn(L"检测版本兼容性", 36, 212, 166, 38, kCtrlCheckBtn);
+            g_ui.install_btn = make_btn(L"一键安装 / 升级", 214, 212, 292, 38, kCtrlInstallBtn);
+            g_ui.uninstall_btn = make_btn(L"卸载并恢复原版", 518, 212, 206, 38, kCtrlUninstallBtn);
 
             g_ui.log_edit = ::CreateWindowExW(
-                WS_EX_CLIENTEDGE, L"EDIT", L"",
+                0, L"EDIT", L"",
                 WS_CHILD | WS_VISIBLE | WS_VSCROLL | ES_MULTILINE | ES_AUTOVSCROLL | ES_READONLY,
-                20, 184, 620, 250, hwnd, reinterpret_cast<HMENU>(static_cast<intptr_t>(kCtrlLogEdit)), nullptr, nullptr);
-            ApplyFontRecursive(g_ui.log_edit, g_ui.ui_font);
+                S(44), S(271), S(672), S(234),
+                hwnd, reinterpret_cast<HMENU>(static_cast<intptr_t>(kCtrlLogEdit)), nullptr, nullptr);
+            ApplyFontRecursive(g_ui.log_edit, g_ui.log_font);
+            TryApplyDarkScrollbar(g_ui.log_edit);
+
+            BuildBackdropBitmap(hwnd);
 
             const std::wstring detected = DetectTorchlight2Directory();
             g_gui_log.Clear();
             if (!detected.empty()) {
                 ::SetWindowTextW(g_ui.path_edit, detected.c_str());
                 g_gui_log.Append(L"[自动探测] 已找到游戏目录: " + detected);
+                g_gui_log.Append(L"[提示] 点击上方「一键安装 / 升级」即可覆盖部署最新增强插件与着色器。");
             } else {
                 g_gui_log.Append(L"[提示] 未自动定位游戏目录，请点击“浏览...”选择含 Torchlight2.exe 的文件夹。");
             }
             return 0;
+        }
+        case WM_ERASEBKGND:
+            return 1;
+        case WM_PAINT: {
+            PAINTSTRUCT ps{};
+            HDC hdc = ::BeginPaint(hwnd, &ps);
+            if (!g_ui.bg_bmp) {
+                BuildBackdropBitmap(hwnd);
+            }
+            if (g_ui.bg_bmp) {
+                HDC mem_dc = ::CreateCompatibleDC(hdc);
+                HGDIOBJ old = ::SelectObject(mem_dc, g_ui.bg_bmp);
+                ::BitBlt(hdc, 0, 0, g_ui.client_w, g_ui.client_h, mem_dc, 0, 0, SRCCOPY);
+                ::SelectObject(mem_dc, old);
+                ::DeleteDC(mem_dc);
+            }
+            ::EndPaint(hwnd, &ps);
+            return 0;
+        }
+        case WM_DRAWITEM: {
+            const auto* dis = reinterpret_cast<const DRAWITEMSTRUCT*>(lparam);
+            if (dis && dis->CtlType == ODT_BUTTON) {
+                DrawOwnerButton(dis);
+                return TRUE;
+            }
+            break;
+        }
+        case WM_CTLCOLOREDIT: {
+            HDC hdc = reinterpret_cast<HDC>(wparam);
+            ::SetTextColor(hdc, RGB(240, 230, 210));
+            ::SetBkColor(hdc, RGB(11, 14, 22));
+            return reinterpret_cast<LRESULT>(g_ui.edit_bg_brush);
+        }
+        case WM_CTLCOLORSTATIC: {
+            HDC hdc = reinterpret_cast<HDC>(wparam);
+            HWND ctl = reinterpret_cast<HWND>(lparam);
+            if (ctl == g_ui.log_edit) {
+                ::SetTextColor(hdc, RGB(214, 223, 238));
+                ::SetBkColor(hdc, RGB(10, 13, 20));
+                return reinterpret_cast<LRESULT>(g_ui.log_bg_brush);
+            }
+            ::SetTextColor(hdc, RGB(232, 220, 196));
+            ::SetBkColor(hdc, RGB(13, 16, 24));
+            return reinterpret_cast<LRESULT>(g_ui.edit_bg_brush);
         }
         case WM_COMMAND: {
             const int ctrl_id = LOWORD(wparam);
@@ -757,9 +1325,9 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
                 const bool ok = PerformInstall(dir, g_gui_log);
                 ::MessageBoxW(
                     hwnd,
-                    ok ? L"安装成功！\n已自动备份原版配置与着色器。\n\n游戏内按 F8 弹出交互式配置面板：可鼠标勾选 Phase3 / 16xAF+点光 / P0-1 RimLit+_GLO / SSAO / P0-2 SSCS+冷色调 / P1 软粒子、切换滤镜，并保存与一键切换预设。"
+                    ok ? L"安装成功！\n已自动备份原版配置与着色器。\n\n游戏内按 F8 弹出交互式配置面板：可切换 P0/P1/P2 画质开关、水面 SSR、3D LUT 调色、使用 [全部开启/全部关闭] 快速对比，并保存多达 10 组预设。"
                        : L"安装未完成，请查看日志窗口中的错误信息。",
-                    L"火炬之光 2 D3D11 画质增强安装器",
+                    L"火炬之光 2 D3D11 画质增强 & SSAO 安装器",
                     ok ? (MB_OK | MB_ICONINFORMATION) : (MB_OK | MB_ICONERROR));
                 return 0;
             }
@@ -775,21 +1343,25 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
                 ::MessageBoxW(
                     hwnd,
                     ok ? L"已卸载插件并恢复原版配置！" : L"卸载过程中出现错误，请查看日志窗口。",
-                    L"火炬之光 2 D3D11 画质增强安装器",
+                    L"火炬之光 2 D3D11 画质增强 & SSAO 安装器",
                     ok ? (MB_OK | MB_ICONINFORMATION) : (MB_OK | MB_ICONWARNING));
                 return 0;
             }
             break;
         }
         case WM_DESTROY: {
-            if (g_ui.ui_font) {
-                ::DeleteObject(g_ui.ui_font);
-                g_ui.ui_font = nullptr;
-            }
-            if (g_ui.title_font) {
-                ::DeleteObject(g_ui.title_font);
-                g_ui.title_font = nullptr;
-            }
+            auto del_obj = [](auto& obj) {
+                if (obj) {
+                    ::DeleteObject(obj);
+                    obj = nullptr;
+                }
+            };
+            del_obj(g_ui.bg_bmp);
+            del_obj(g_ui.edit_bg_brush);
+            del_obj(g_ui.log_bg_brush);
+            del_obj(g_ui.ui_font);
+            del_obj(g_ui.log_font);
+            del_obj(g_ui.btn_font);
             ::PostQuitMessage(0);
             return 0;
         }
@@ -841,28 +1413,49 @@ int WINAPI wWinMain(HINSTANCE hinst, HINSTANCE, PWSTR, int nCmdShow) {
         ::LocalFree(argv);
     }
 
+    Gdiplus::GdiplusStartupInput gp_in;
+    ULONG_PTR gp_token = 0;
+    Gdiplus::GdiplusStartup(&gp_token, &gp_in, nullptr);
+
+    {
+        HDC dc = ::GetDC(nullptr);
+        if (dc) {
+            g_ui.dpi = (std::max)(96, ::GetDeviceCaps(dc, LOGPIXELSX));
+            ::ReleaseDC(nullptr, dc);
+        }
+    }
+    g_ui.client_w = S(kBaseWidth);
+    g_ui.client_h = S(kBaseHeight);
+
     WNDCLASSEXW wc{};
     wc.cbSize = sizeof(wc);
     wc.lpfnWndProc = &MainWndProc;
     wc.hInstance = hinst;
     wc.hCursor = ::LoadCursorW(nullptr, IDC_ARROW);
-    wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_BTNFACE + 1);
+    wc.hbrBackground = reinterpret_cast<HBRUSH>(::GetStockObject(BLACK_BRUSH));
     wc.lpszClassName = L"TL2DX11EnhanceSetupWnd";
     ::RegisterClassExW(&wc);
 
-    RECT rc{0, 0, 660, 456};
+    RECT rc{0, 0, g_ui.client_w, g_ui.client_h};
     const DWORD style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
     ::AdjustWindowRect(&rc, style, FALSE);
+
+    const int win_w = rc.right - rc.left;
+    const int win_h = rc.bottom - rc.top;
+    const int scr_w = ::GetSystemMetrics(SM_CXSCREEN);
+    const int scr_h = ::GetSystemMetrics(SM_CYSCREEN);
+    const int win_x = (scr_w > win_w) ? (scr_w - win_w) / 2 : CW_USEDEFAULT;
+    const int win_y = (scr_h > win_h) ? (scr_h - win_h) / 2 : CW_USEDEFAULT;
 
     HWND hwnd = ::CreateWindowExW(
         0,
         wc.lpszClassName,
         L"火炬之光 2 D3D11 画质增强 & SSAO 安装器",
         style,
-        CW_USEDEFAULT,
-        CW_USEDEFAULT,
-        rc.right - rc.left,
-        rc.bottom - rc.top,
+        win_x,
+        win_y,
+        win_w,
+        win_h,
         nullptr,
         nullptr,
         hinst,
@@ -873,10 +1466,15 @@ int WINAPI wWinMain(HINSTANCE hinst, HINSTANCE, PWSTR, int nCmdShow) {
 
     MSG msg{};
     while (::GetMessageW(&msg, nullptr, 0, 0) > 0) {
-        ::TranslateMessage(&msg);
-        ::DispatchMessageW(&msg);
+        if (!::IsDialogMessageW(hwnd, &msg)) {
+            ::TranslateMessage(&msg);
+            ::DispatchMessageW(&msg);
+        }
     }
 
+    if (gp_token) {
+        Gdiplus::GdiplusShutdown(gp_token);
+    }
     ::CoUninitialize();
     return 0;
 }

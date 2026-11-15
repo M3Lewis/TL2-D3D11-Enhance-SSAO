@@ -47,6 +47,7 @@ constexpr ExpectedPeModule kRequiredPeModules[] = {
 };
 
 constexpr wchar_t kBackupDirName[] = L"TL2_DX11_Enhance_Backup";
+constexpr wchar_t kGithubUrl[] = L"https://github.com/M3Lewis";
 
 constexpr int kCtrlPathEdit = 1001;
 constexpr int kCtrlBrowseBtn = 1002;
@@ -81,6 +82,10 @@ struct AppUi {
     HBRUSH edit_bg_brush = nullptr;
     HBRUSH log_bg_brush = nullptr;
     HBITMAP bg_bmp = nullptr;
+    RECT github_rc{};
+    float github_x = 0.0f;
+    float github_y = 0.0f;
+    bool github_hovered = false;
     int client_w = kBaseWidth;
     int client_h = kBaseHeight;
     int dpi = 96;
@@ -1021,19 +1026,19 @@ void BuildBackdropBitmap(HWND hwnd) {
 
         // Log console bronze border around log EDIT
         {
-            const Gdiplus::RectF log_box(Sf(36), Sf(264), Sf(688), Sf(248));
+            const Gdiplus::RectF log_box(Sf(36), Sf(264), Sf(688), Sf(222));
             Gdiplus::SolidBrush l_fill(Gdiplus::Color(255, 10, 13, 20));
             Gdiplus::Pen l_pen(Gdiplus::Color(255, 112, 84, 44), Sf(1.4f));
             g.FillRectangle(&l_fill, log_box);
             g.DrawRectangle(&l_pen, log_box);
         }
 
-        // Subtle footer hints
+        // Row 1: backup & CLI hints
         DrawTextWithShadow(
             g,
             L"自动备份原版配置与着色器至 TL2_DX11_Enhance_Backup，随时可无损还原",
             foot_f,
-            Gdiplus::RectF(Sf(36), Sf(518), Sf(470), Sf(20)),
+            Gdiplus::RectF(Sf(36), Sf(493), Sf(450), Sf(18)),
             fmt_left,
             Gdiplus::Color(255, 162, 152, 136),
             Sf(1.0f));
@@ -1041,10 +1046,65 @@ void BuildBackdropBitmap(HWND hwnd) {
             g,
             L"命令行: --check / --install / --uninstall",
             foot_f,
-            Gdiplus::RectF(Sf(510), Sf(518), Sf(214), Sf(20)),
+            Gdiplus::RectF(Sf(490), Sf(493), Sf(234), Sf(18)),
             fmt_right,
             Gdiplus::Color(255, 132, 124, 112),
             Sf(1.0f));
+
+        // Hairline divider before author credit bar
+        {
+            Gdiplus::Pen hair_pen(Gdiplus::Color(90, 128, 96, 48), Sf(1.0f));
+            g.DrawLine(&hair_pen, Sf(36), Sf(515), Sf(724), Sf(515));
+        }
+
+        // Row 2: Author credit & clickable GitHub link
+        {
+            Gdiplus::Font author_lbl_f(&ff, Sf(12.0f), Gdiplus::FontStyleRegular, Gdiplus::UnitPixel);
+            Gdiplus::Font author_name_f(&ff, Sf(12.0f), Gdiplus::FontStyleBold, Gdiplus::UnitPixel);
+            Gdiplus::Font link_f(&ff, Sf(12.0f), Gdiplus::FontStyleUnderline, Gdiplus::UnitPixel);
+
+            Gdiplus::StringFormat fmt_typo(Gdiplus::StringFormat::GenericTypographic());
+            fmt_typo.SetFormatFlags(fmt_typo.GetFormatFlags() | Gdiplus::StringFormatFlagsMeasureTrailingSpaces);
+            fmt_typo.SetHotkeyPrefix(Gdiplus::HotkeyPrefixNone);
+
+            const wchar_t* auth_prefix = L"作者: ";
+            const wchar_t* auth_name = L"M3Lewis";
+            Gdiplus::RectF box_ap;
+            Gdiplus::RectF box_an;
+            g.MeasureString(auth_prefix, -1, &author_lbl_f, Gdiplus::PointF(0.0f, 0.0f), &fmt_typo, &box_ap);
+            g.MeasureString(auth_name, -1, &author_name_f, Gdiplus::PointF(0.0f, 0.0f), &fmt_typo, &box_an);
+            const float row2_y = Sf(519) + (Sf(22) - box_an.Height) * 0.5f;
+            DrawTextWithShadow(
+                g, auth_prefix, author_lbl_f,
+                Gdiplus::RectF(Sf(36), row2_y, box_ap.Width + Sf(4), Sf(22)),
+                fmt_typo, Gdiplus::Color(255, 190, 180, 162), Sf(1.0f));
+            DrawTextWithShadow(
+                g, auth_name, author_name_f,
+                Gdiplus::RectF(Sf(36) + box_ap.Width, row2_y, box_an.Width + Sf(8), Sf(22)),
+                fmt_typo, Gdiplus::Color(255, 255, 210, 125), Sf(1.0f));
+
+            const wchar_t* gh_prefix = L"GitHub: ";
+            const wchar_t* gh_text = L"github.com/M3Lewis";
+            Gdiplus::RectF box_gp;
+            Gdiplus::RectF box_gt;
+            g.MeasureString(gh_prefix, -1, &author_lbl_f, Gdiplus::PointF(0.0f, 0.0f), &fmt_typo, &box_gp);
+            g.MeasureString(gh_text, -1, &link_f, Gdiplus::PointF(0.0f, 0.0f), &fmt_typo, &box_gt);
+            const float link_y = Sf(519) + (Sf(22) - box_gt.Height) * 0.5f;
+            const float link_x = Sf(724) - box_gt.Width;
+            const float pref_x = link_x - box_gp.Width;
+            DrawTextWithShadow(
+                g, gh_prefix, author_lbl_f,
+                Gdiplus::RectF(pref_x, link_y, box_gp.Width + Sf(4), Sf(22)),
+                fmt_typo, Gdiplus::Color(255, 190, 180, 162), Sf(1.0f));
+
+            g_ui.github_x = link_x;
+            g_ui.github_y = link_y;
+            g_ui.github_rc = RECT{
+                static_cast<LONG>(link_x - Sf(3)),
+                static_cast<LONG>(link_y - Sf(2)),
+                static_cast<LONG>(Sf(724) + Sf(3)),
+                static_cast<LONG>(link_y + box_gt.Height + Sf(4))};
+        }
     }
 
     ::SelectObject(mem_dc, old_bmp);
@@ -1244,7 +1304,7 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
             g_ui.log_edit = ::CreateWindowExW(
                 0, L"EDIT", L"",
                 WS_CHILD | WS_VISIBLE | WS_VSCROLL | ES_MULTILINE | ES_AUTOVSCROLL | ES_READONLY,
-                S(44), S(271), S(672), S(234),
+                S(44), S(271), S(672), S(208),
                 hwnd, reinterpret_cast<HMENU>(static_cast<intptr_t>(kCtrlLogEdit)), nullptr, nullptr);
             ApplyFontRecursive(g_ui.log_edit, g_ui.log_font);
             TryApplyDarkScrollbar(g_ui.log_edit);
@@ -1277,8 +1337,71 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
                 ::SelectObject(mem_dc, old);
                 ::DeleteDC(mem_dc);
             }
+            {
+                Gdiplus::Graphics g(hdc);
+                g.SetTextRenderingHint(Gdiplus::TextRenderingHintClearTypeGridFit);
+                Gdiplus::FontFamily ff(L"Microsoft YaHei UI");
+                Gdiplus::Font link_f(&ff, Sf(12.0f), Gdiplus::FontStyleUnderline, Gdiplus::UnitPixel);
+                Gdiplus::StringFormat fmt_typo(Gdiplus::StringFormat::GenericTypographic());
+                fmt_typo.SetHotkeyPrefix(Gdiplus::HotkeyPrefixNone);
+                const Gdiplus::Color link_col = g_ui.github_hovered
+                    ? Gdiplus::Color(255, 255, 232, 160)
+                    : Gdiplus::Color(255, 245, 184, 72);
+                DrawTextWithShadow(
+                    g,
+                    L"github.com/M3Lewis",
+                    link_f,
+                    Gdiplus::RectF(g_ui.github_x, g_ui.github_y, Sf(200), Sf(22)),
+                    fmt_typo,
+                    link_col,
+                    Sf(1.0f));
+            }
             ::EndPaint(hwnd, &ps);
             return 0;
+        }
+        case WM_SETCURSOR: {
+            if (LOWORD(lparam) == HTCLIENT) {
+                POINT pt{};
+                ::GetCursorPos(&pt);
+                ::ScreenToClient(hwnd, &pt);
+                if (::PtInRect(&g_ui.github_rc, pt)) {
+                    ::SetCursor(::LoadCursorW(nullptr, IDC_HAND));
+                    return TRUE;
+                }
+            }
+            break;
+        }
+        case WM_MOUSEMOVE: {
+            const POINT pt{
+                static_cast<int>(static_cast<short>(LOWORD(lparam))),
+                static_cast<int>(static_cast<short>(HIWORD(lparam)))};
+            const bool over = (::PtInRect(&g_ui.github_rc, pt) != FALSE);
+            if (over != g_ui.github_hovered) {
+                g_ui.github_hovered = over;
+                if (over) {
+                    TRACKMOUSEEVENT tme{sizeof(tme), TME_LEAVE, hwnd, 0};
+                    ::TrackMouseEvent(&tme);
+                }
+                ::InvalidateRect(hwnd, &g_ui.github_rc, FALSE);
+            }
+            return 0;
+        }
+        case WM_MOUSELEAVE: {
+            if (g_ui.github_hovered) {
+                g_ui.github_hovered = false;
+                ::InvalidateRect(hwnd, &g_ui.github_rc, FALSE);
+            }
+            return 0;
+        }
+        case WM_LBUTTONUP: {
+            const POINT pt{
+                static_cast<int>(static_cast<short>(LOWORD(lparam))),
+                static_cast<int>(static_cast<short>(HIWORD(lparam)))};
+            if (::PtInRect(&g_ui.github_rc, pt)) {
+                ::ShellExecuteW(hwnd, L"open", kGithubUrl, nullptr, nullptr, SW_SHOWNORMAL);
+                return 0;
+            }
+            break;
         }
         case WM_DRAWITEM: {
             const auto* dis = reinterpret_cast<const DRAWITEMSTRUCT*>(lparam);

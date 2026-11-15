@@ -47,7 +47,7 @@ if ($LASTEXITCODE -ne 0 -or -not (Test-Path $OutDll)) {
 
 Write-Host "[OK] Built $OutDll ($((Get-Item $OutDll).Length) bytes)" -ForegroundColor Green
 
-$TestNames = @("test_phase1_verify", "test_phase2_verify", "test_phase3_verify", "test_shader_scripts")
+$TestNames = @("test_phase1_verify", "test_phase2_verify", "test_phase3_verify", "test_route_c_verify", "test_shader_scripts")
 foreach ($t in $TestNames) {
     $testSrc = Join-Path $RootDir "tests\$t.cpp"
     $testExe = Join-Path $ObjDir "$t.exe"

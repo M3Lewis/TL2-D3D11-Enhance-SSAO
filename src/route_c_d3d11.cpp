@@ -79,10 +79,10 @@ bool EnvFlagIsZero(const char* name) {
 
 struct AoTuneConfig {
     bool initialized = false;
-    float radius_world = 0.75f;
-    float bias_cos = 0.12f;
-    float strength = 1.15f;
-    float min_ao_floor = 0.62f;
+    float radius_world = 0.95f;
+    float bias_cos = 0.10f;
+    float strength = 1.35f;
+    float min_ao_floor = 0.55f;
     float depth_edge_scale = 55.0f;
     float fade_start = 42.0f;
     float fade_end_cap = 78.0f;
@@ -93,10 +93,10 @@ const AoTuneConfig& GetAoTuneConfig(RouteCD3DLogFn logger) {
     static AoTuneConfig cfg{};
     if (!cfg.initialized) {
         cfg.initialized = true;
-        cfg.radius_world = ReadEnvFloat("TL2_C_AO_RADIUS", 0.75f, 0.10f, 8.0f);
-        cfg.bias_cos = ReadEnvFloat("TL2_C_AO_BIAS", 0.12f, 0.01f, 0.50f);
-        cfg.strength = ReadEnvFloat("TL2_C_AO_STRENGTH", 1.15f, 0.0f, 4.0f);
-        cfg.min_ao_floor = ReadEnvFloat("TL2_C_AO_FLOOR", 0.62f, 0.20f, 0.98f);
+        cfg.radius_world = ReadEnvFloat("TL2_C_AO_RADIUS", 0.95f, 0.10f, 8.0f);
+        cfg.bias_cos = ReadEnvFloat("TL2_C_AO_BIAS", 0.10f, 0.01f, 0.50f);
+        cfg.strength = ReadEnvFloat("TL2_C_AO_STRENGTH", 1.35f, 0.0f, 4.0f);
+        cfg.min_ao_floor = ReadEnvFloat("TL2_C_AO_FLOOR", 0.55f, 0.20f, 0.98f);
         cfg.depth_edge_scale = ReadEnvFloat("TL2_C_AO_EDGE", 55.0f, 5.0f, 300.0f);
         cfg.fade_start = ReadEnvFloat("TL2_C_AO_FADESTART", 42.0f, 5.0f, 150.0f);
         cfg.fade_end_cap = ReadEnvFloat("TL2_C_AO_FADEEND", 78.0f, 10.0f, 250.0f);
@@ -109,7 +109,7 @@ const AoTuneConfig& GetAoTuneConfig(RouteCD3DLogFn logger) {
         }
         if (logger) {
             logger(
-                "[RouteC][C2] Config radius=%.2f bias=%.2f strength=%.2f floor=%.2f edge=%.1f fade=(%.1f,%.1f) bench=%d",
+                "[RouteC][C3] Config halfRes=1 radius=%.2f bias=%.2f strength=%.2f floor=%.2f edge=%.1f fade=(%.1f,%.1f) bench=%d",
                 cfg.radius_world,
                 cfg.bias_cos,
                 cfg.strength,
@@ -278,7 +278,9 @@ float4 PS_C1DepthNormalDebug(VsOut input) : SV_Target0
 
 float4 PS_AoRaw(VsOut input) : SV_Target0
 {
-    int2 pix = int2(input.pos.xy);
+    // Pass 1 executes at half resolution; map hpix -> exact even full-res depth pixel.
+    int2 hpix = int2(input.pos.xy);
+    int2 pix = clamp(hpix * 2, gVpClamp.xy, gVpClamp.zw);
     float rawDepth = 1.0f;
     float3 P = ReconstructPosVS(pix, rawDepth);
     if (rawDepth >= 0.99998f)
@@ -296,10 +298,19 @@ float4 PS_AoRaw(VsOut input) : SV_Target0
     float3 n = ReconstructNormalVS(pix, P);
     float R = gAoParams.x;
     float pixPerUnit = 0.5f * gVpRect.w * gProjXY.y / max(d, 0.25f);
-    float pixRadius = clamp(R * pixPerUnit, 4.0f, 44.0f);
+    float pixRadius = clamp(R * pixPerUnit, 5.0f, 48.0f);
 
-    float ignA = frac(52.9829189f * frac(dot(float2(pix), float2(0.06711056f, 0.00583715f))));
-    float ignS = frac(52.9829189f * frac(dot(float2(pix) + float2(19.0f, 37.0f), float2(0.06711056f, 0.00583715f))));
+    float ignA = frac(52.9829189f * frac(dot(float2(hpix), float2(0.06711056f, 0.00583715f))));
+    float ignS = frac(52.9829189f * frac(dot(float2(hpix) + float2(19.0f, 37.0f), float2(0.06711056f, 0.00583715f))));
+
+    float s0, c0;
+    sincos(ignA * 1.5707963f, s0, c0);
+    float2 dirs[4] = {
+        float2( c0,  s0),
+        float2(-s0,  c0),
+        float2(-c0, -s0),
+        float2( s0, -c0)
+    };
 
     float occSum = 0.0f;
     float biasCos = gAoParams.y;
@@ -309,15 +320,14 @@ float4 PS_AoRaw(VsOut input) : SV_Target0
     [unroll]
     for (int k = 0; k < 4; ++k)
     {
-        float ang = (float(k) + ignA) * 1.5707963f;
-        float2 dir = float2(cos(ang), sin(ang));
+        float2 dir = dirs[k];
         float maxDirOcc = 0.0f;
 
         [unroll]
         for (int s = 1; s <= 4; ++s)
         {
             float tFrac = (float(s) - 0.5f + 0.65f * (ignS - 0.5f)) * 0.25f;
-            float stepPx = max(tFrac * pixRadius, 1.5f);
+            float stepPx = max(tFrac * pixRadius, 2.0f);
             int2 off = int2(round(dir * stepPx));
             if (off.x != 0 || off.y != 0)
             {
@@ -344,9 +354,12 @@ float4 PS_AoRaw(VsOut input) : SV_Target0
     return float4(ao, ao, ao, 1.0f);
 }
 
-float BilateralBlur1D(int2 pix, int2 axisDir)
+float BilateralBlur1D(int2 hpix, int2 axisDir)
 {
-    int2 cpix = clamp(pix, gVpClamp.xy, gVpClamp.zw);
+    int2 vpHalfMin = gVpClamp.xy >> 1;
+    int2 vpHalfMax = gVpClamp.zw >> 1;
+    int2 chpix = clamp(hpix, vpHalfMin, vpHalfMax);
+    int2 cpix = clamp(chpix * 2, gVpClamp.xy, gVpClamp.zw);
     float rawC = LoadRawDepth(cpix);
     if (rawC >= 0.99998f)
     {
@@ -354,24 +367,25 @@ float BilateralBlur1D(int2 pix, int2 axisDir)
     }
 
     float dCenter = max(RawToLinearDist(rawC), 1e-3f);
-    float sumAo = gAoInputTex.Load(int3(cpix, 0)).r;
+    float sumAo = gAoInputTex.Load(int3(chpix, 0)).r;
     float sumW = 1.0f;
     float edgeScale = gBlurAndMode.z;
 
     [unroll]
-    for (int i = -4; i <= 4; ++i)
+    for (int i = -3; i <= 3; ++i)
     {
         if (i != 0)
         {
-            int2 spix = clamp(pix + axisDir * i, gVpClamp.xy, gVpClamp.zw);
+            int2 shpix = clamp(hpix + axisDir * i, vpHalfMin, vpHalfMax);
+            int2 spix = clamp(shpix * 2, gVpClamp.xy, gVpClamp.zw);
             float rawS = LoadRawDepth(spix);
             if (rawS < 0.99998f)
             {
                 float dS = RawToLinearDist(rawS);
                 float relDiff = abs(dS - dCenter) / dCenter;
                 float ed = relDiff * edgeScale;
-                float w = exp(-0.125f * float(i * i) - ed * ed);
-                sumAo += gAoInputTex.Load(int3(spix, 0)).r * w;
+                float w = exp(-0.22f * float(i * i) - ed * ed);
+                sumAo += gAoInputTex.Load(int3(shpix, 0)).r * w;
                 sumW += w;
             }
         }
@@ -393,8 +407,50 @@ float4 PS_BlurV(VsOut input) : SV_Target0
 
 float4 PS_AoComposite(VsOut input) : SV_Target0
 {
-    int2 cpix = clamp(int2(input.pos.xy), gVpClamp.xy, gVpClamp.zw);
-    float ao = gAoInputTex.Load(int3(cpix, 0)).r;
+    int2 pix = clamp(int2(input.pos.xy), gVpClamp.xy, gVpClamp.zw);
+    float rawC = LoadRawDepth(pix);
+    if (rawC >= 0.99998f)
+    {
+        return float4(1.0f, 1.0f, 1.0f, 1.0f);
+    }
+
+    float dC = max(RawToLinearDist(rawC), 1e-3f);
+    float edgeScale = gBlurAndMode.z;
+    int2 vpHalfMin = gVpClamp.xy >> 1;
+    int2 vpHalfMax = gVpClamp.zw >> 1;
+    int2 h0 = pix >> 1;
+    float fx = (pix.x & 1) ? 0.5f : 0.0f;
+    float fy = (pix.y & 1) ? 0.5f : 0.0f;
+    float wx[2] = {1.0f - fx, fx};
+    float wy[2] = {1.0f - fy, fy};
+
+    float sumAo = 0.0f;
+    float sumW = 0.0f;
+
+    [unroll]
+    for (int dy = 0; dy <= 1; ++dy)
+    {
+        [unroll]
+        for (int dx = 0; dx <= 1; ++dx)
+        {
+            float wSpat = wx[dx] * wy[dy];
+            if (wSpat > 0.0f)
+            {
+                int2 shpix = clamp(h0 + int2(dx, dy), vpHalfMin, vpHalfMax);
+                int2 spix = clamp(shpix * 2, gVpClamp.xy, gVpClamp.zw);
+                float rawS = LoadRawDepth(spix);
+                float dS = max(RawToLinearDist(rawS), 1e-3f);
+                float relDiff = abs(dS - dC) / dC;
+                float ed = relDiff * edgeScale;
+                float wDepth = (rawS < 0.99998f) ? exp(-(ed * ed)) : 0.0f;
+                float w = wSpat * (wDepth + 1e-4f);
+                sumAo += gAoInputTex.Load(int3(shpix, 0)).r * w;
+                sumW += w;
+            }
+        }
+    }
+
+    float ao = (sumW > 1e-5f) ? (sumAo / sumW) : 1.0f;
     return float4(ao, ao, ao, 1.0f);
 }
 )HLSL";
@@ -549,6 +605,7 @@ struct DepthVariantShaders {
     ID3D11PixelShader* ps_ao_raw = nullptr;
     ID3D11PixelShader* ps_blur_h = nullptr;
     ID3D11PixelShader* ps_blur_v = nullptr;
+    ID3D11PixelShader* ps_composite = nullptr;
 };
 
 struct BenchSlot {
@@ -560,7 +617,6 @@ struct BenchSlot {
 struct RouteCD3DState {
     ID3D11Device* device = nullptr;
     ID3D11VertexShader* vs_fullscreen = nullptr;
-    ID3D11PixelShader* ps_composite = nullptr;
     DepthVariantShaders shaders_single{};
     DepthVariantShaders shaders_msaa{};
     bool msaa_shaders_ready = false;
@@ -628,6 +684,7 @@ double g_sum_comp_ms = 0.0;
 double g_sum_total_ms = 0.0;
 
 void ReleaseDepthVariantShaders(DepthVariantShaders& s) {
+    SafeRelease(s.ps_composite);
     SafeRelease(s.ps_blur_v);
     SafeRelease(s.ps_blur_h);
     SafeRelease(s.ps_ao_raw);
@@ -672,7 +729,6 @@ void ReleaseAllDeviceObjects() {
     SafeRelease(g_st.cb_params);
     ReleaseDepthVariantShaders(g_st.shaders_msaa);
     ReleaseDepthVariantShaders(g_st.shaders_single);
-    SafeRelease(g_st.ps_composite);
     SafeRelease(g_st.vs_fullscreen);
     SafeRelease(g_st.device);
     g_st.msaa_shaders_ready = false;
@@ -741,7 +797,8 @@ bool CreateDepthVariantShaders(
         CompileAndCreatePixelShader(dev, compile_fn, "PS_C1DepthNormalDebug", ps_profile, defines, &out.ps_c1_debug, logger) &&
         CompileAndCreatePixelShader(dev, compile_fn, "PS_AoRaw", ps_profile, defines, &out.ps_ao_raw, logger) &&
         CompileAndCreatePixelShader(dev, compile_fn, "PS_BlurH", ps_profile, defines, &out.ps_blur_h, logger) &&
-        CompileAndCreatePixelShader(dev, compile_fn, "PS_BlurV", ps_profile, defines, &out.ps_blur_v, logger);
+        CompileAndCreatePixelShader(dev, compile_fn, "PS_BlurV", ps_profile, defines, &out.ps_blur_v, logger) &&
+        CompileAndCreatePixelShader(dev, compile_fn, "PS_AoComposite", ps_profile, defines, &out.ps_composite, logger);
     if (!ok) {
         ReleaseDepthVariantShaders(out);
     }
@@ -758,7 +815,7 @@ bool EnsurePipelineObjects(ID3D11Device* dev, RouteCD3DLogFn logger) {
     if (g_st.init_failed) {
         return false;
     }
-    if (g_st.vs_fullscreen && g_st.ps_composite && g_st.shaders_single.ps_ao_raw &&
+    if (g_st.vs_fullscreen && g_st.shaders_single.ps_ao_raw && g_st.shaders_single.ps_composite &&
         g_st.cb_params && g_st.blend_debug_rgb && g_st.blend_mul_rgb &&
         g_st.dss_disabled && g_st.rs_fullscreen) {
         return true;
@@ -781,7 +838,6 @@ bool EnsurePipelineObjects(ID3D11Device* dev, RouteCD3DLogFn logger) {
     ID3DBlob* vs_blob = nullptr;
     bool ok = CompileShaderBlob(compile_fn, "VS_Fullscreen", "vs_4_0", macro_single, &vs_blob, logger) &&
               SUCCEEDED(dev->CreateVertexShader(vs_blob->GetBufferPointer(), vs_blob->GetBufferSize(), nullptr, &g_st.vs_fullscreen)) &&
-              CompileAndCreatePixelShader(dev, compile_fn, "PS_AoComposite", "ps_4_0", macro_single, &g_st.ps_composite, logger) &&
               CreateDepthVariantShaders(dev, compile_fn, "ps_4_0", macro_single, g_st.shaders_single, logger);
     SafeRelease(vs_blob);
 
@@ -936,10 +992,12 @@ bool EnsureAoTargets(
         return false;
     }
 
-    if (!CreateR8AoTarget(dev, src_desc.Width, src_desc.Height, &g_st.ao_rt_tex, &g_st.ao_rt_rtv, &g_st.ao_rt_srv) ||
-        !CreateR8AoTarget(dev, src_desc.Width, src_desc.Height, &g_st.ao_blur_tex, &g_st.ao_blur_rtv, &g_st.ao_blur_srv)) {
+    const uint32_t ao_w = (std::max)(1U, (src_desc.Width + 1U) / 2U);
+    const uint32_t ao_h = (std::max)(1U, (src_desc.Height + 1U) / 2U);
+    if (!CreateR8AoTarget(dev, ao_w, ao_h, &g_st.ao_rt_tex, &g_st.ao_rt_rtv, &g_st.ao_rt_srv) ||
+        !CreateR8AoTarget(dev, ao_w, ao_h, &g_st.ao_blur_tex, &g_st.ao_blur_rtv, &g_st.ao_blur_srv)) {
         if (logger) {
-            logger("[RouteC][D3D11] FAILED creating R8_UNORM AO targets (%ux%u).", src_desc.Width, src_desc.Height);
+            logger("[RouteC][D3D11] FAILED creating R8_UNORM half-res AO targets (%ux%u).", ao_w, ao_h);
         }
         ReleaseTargets();
         return false;
@@ -1220,9 +1278,18 @@ bool ExecuteRouteCAoPass(const RouteCAoRenderRequest& req, RouteCD3DLogFn logger
     ao_vp.MinDepth = 0.0f;
     ao_vp.MaxDepth = 1.0f;
 
+    const int half_w = (std::max)(1, ((req.vp_left + req.vp_width - 1) >> 1) - (req.vp_left >> 1) + 1);
+    const int half_h = (std::max)(1, ((req.vp_top + req.vp_height - 1) >> 1) - (req.vp_top >> 1) + 1);
+    D3D11_VIEWPORT ao_vp_half{};
+    ao_vp_half.TopLeftX = static_cast<float>(req.vp_left >> 1);
+    ao_vp_half.TopLeftY = static_cast<float>(req.vp_top >> 1);
+    ao_vp_half.Width = static_cast<float>(half_w);
+    ao_vp_half.Height = static_cast<float>(half_h);
+    ao_vp_half.MinDepth = 0.0f;
+    ao_vp_half.MaxDepth = 1.0f;
+
     req.ctx->OMSetDepthStencilState(g_st.dss_disabled, 0);
     req.ctx->RSSetState(g_st.rs_fullscreen);
-    req.ctx->RSSetViewports(1, &ao_vp);
     req.ctx->RSSetScissorRects(0, nullptr);
     req.ctx->IASetInputLayout(nullptr);
     req.ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
@@ -1231,6 +1298,7 @@ bool ExecuteRouteCAoPass(const RouteCAoRenderRequest& req, RouteCD3DLogFn logger
     req.ctx->PSSetConstantBuffers(0, 1, &g_st.cb_params);
 
     if (req.debug_mode == 3) {
+        req.ctx->RSSetViewports(1, &ao_vp);
         req.ctx->OMSetRenderTargets(1, &target_rtv, nullptr);
         req.ctx->OMSetBlendState(g_st.blend_debug_rgb, nullptr, 0xFFFFFFFFU);
         req.ctx->PSSetShader(ds.ps_c1_debug, nullptr, 0);
@@ -1242,7 +1310,8 @@ bool ExecuteRouteCAoPass(const RouteCAoRenderRequest& req, RouteCD3DLogFn logger
         RecordTimestamp(req.ctx, bench_slot, 4);
         RecordTimestamp(req.ctx, bench_slot, 5);
     } else {
-        // Pass 1: HBAO/GTAO-Lite Raw -> ao_rt_rtv (full overwrite).
+        // Pass 1 (Half-Res): HBAO/GTAO-Lite Raw -> ao_rt_rtv
+        req.ctx->RSSetViewports(1, &ao_vp_half);
         req.ctx->OMSetBlendState(nullptr, nullptr, 0xFFFFFFFFU);
         req.ctx->OMSetRenderTargets(1, &g_st.ao_rt_rtv, nullptr);
         req.ctx->PSSetShader(ds.ps_ao_raw, nullptr, 0);
@@ -1252,7 +1321,7 @@ bool ExecuteRouteCAoPass(const RouteCAoRenderRequest& req, RouteCD3DLogFn logger
         RecordTimestamp(req.ctx, bench_slot, 2);
 
         if (req.debug_mode != 1) {
-            // Pass 2: Bilateral Blur Horizontal -> ao_blur_rtv
+            // Pass 2 (Half-Res): Bilateral Blur Horizontal -> ao_blur_rtv
             req.ctx->OMSetRenderTargets(1, &g_st.ao_blur_rtv, nullptr);
             req.ctx->PSSetShader(ds.ps_blur_h, nullptr, 0);
             ID3D11ShaderResourceView* srvs_p2[2] = {g_st.depth_copy_srv, g_st.ao_rt_srv};
@@ -1260,7 +1329,7 @@ bool ExecuteRouteCAoPass(const RouteCAoRenderRequest& req, RouteCD3DLogFn logger
             req.ctx->Draw(3, 0);
             RecordTimestamp(req.ctx, bench_slot, 3);
 
-            // Pass 3: Bilateral Blur Vertical -> ao_rt_rtv
+            // Pass 3 (Half-Res): Bilateral Blur Vertical -> ao_rt_rtv
             ID3D11ShaderResourceView* unbind_t1[2] = {g_st.depth_copy_srv, nullptr};
             req.ctx->PSSetShaderResources(0, 2, unbind_t1);
             req.ctx->OMSetRenderTargets(1, &g_st.ao_rt_rtv, nullptr);
@@ -1274,15 +1343,16 @@ bool ExecuteRouteCAoPass(const RouteCAoRenderRequest& req, RouteCD3DLogFn logger
             RecordTimestamp(req.ctx, bench_slot, 4);
         }
 
-        // Pass 4: RGB-only Multiplicative Composite (debugMode=0) or AO Grayscale Debug (1/2) -> target_rtv
+        // Pass 4 (Full-Res Joint-Bilateral Upsample): RGB-only Multiplicative Composite or Grayscale Debug -> target_rtv
         req.ctx->PSSetShaderResources(0, 2, null_srvs);
+        req.ctx->RSSetViewports(1, &ao_vp);
         req.ctx->OMSetRenderTargets(1, &target_rtv, nullptr);
         req.ctx->OMSetBlendState(
             (req.debug_mode == 0) ? g_st.blend_mul_rgb : g_st.blend_debug_rgb,
             nullptr,
             0xFFFFFFFFU);
-        req.ctx->PSSetShader(g_st.ps_composite, nullptr, 0);
-        ID3D11ShaderResourceView* srvs_p4[2] = {nullptr, g_st.ao_rt_srv};
+        req.ctx->PSSetShader(ds.ps_composite, nullptr, 0);
+        ID3D11ShaderResourceView* srvs_p4[2] = {g_st.depth_copy_srv, g_st.ao_rt_srv};
         req.ctx->PSSetShaderResources(0, 2, srvs_p4);
         req.ctx->Draw(3, 0);
         RecordTimestamp(req.ctx, bench_slot, 5);
@@ -1317,6 +1387,7 @@ bool VerifyRouteCShadersCompile(RouteCD3DLogFn logger) {
     const Spec specs[] = {
         {"VS_Fullscreen", "vs_4_0", macro_single},
         {"PS_AoComposite", "ps_4_0", macro_single},
+        {"PS_AoComposite", "ps_4_1", macro_msaa},
         {"PS_C1DepthNormalDebug", "ps_4_0", macro_single},
         {"PS_C1DepthNormalDebug", "ps_4_1", macro_msaa},
         {"PS_AoRaw", "ps_4_0", macro_single},

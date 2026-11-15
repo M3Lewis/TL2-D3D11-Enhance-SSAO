@@ -479,6 +479,7 @@ bool PerformInstall(const fs::path& game_dir, Logger& log) {
     log.Append(L"");
     log.Append(L"=== 安装完成！===");
     log.Append(L"游戏内热键：按 F8 弹出交互式配置面板 (支持 P0/P1/P2 画质开关、水面 SSR、3D LUT、全选对比及 10 组预设)。");
+    log.Append(L"外部 3D LUT 用法：将自定义 3D .cube 文件改名为 TL2_CustomLUT.cube 放入游戏根目录（含 Torchlight2.exe），再在 F8 中选择「外部 .cube」（支持运行时热重载）。");
     return true;
 }
 
@@ -1320,6 +1321,7 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
             } else {
                 g_gui_log.Append(L"[提示] 未自动定位游戏目录，请点击“浏览...”选择含 Torchlight2.exe 的文件夹。");
             }
+            g_gui_log.Append(L"[外部 LUT] 如需加载第三方 3D .cube 调色，请改名为 TL2_CustomLUT.cube 放入游戏根目录后在 F8 面板启用。");
             return 0;
         }
         case WM_ERASEBKGND:
@@ -1448,7 +1450,7 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
                 const bool ok = PerformInstall(dir, g_gui_log);
                 ::MessageBoxW(
                     hwnd,
-                    ok ? L"安装成功！\n已自动备份原版配置与着色器。\n\n游戏内按 F8 弹出交互式配置面板：可切换 P0/P1/P2 画质开关、水面 SSR、3D LUT 调色、使用 [全部开启/全部关闭] 快速对比，并保存多达 10 组预设。"
+                    ok ? L"安装成功！\n已自动备份原版配置与着色器。\n\n游戏内按 F8 弹出交互式配置面板：可切换 P0/P1/P2 画质开关、水面 SSR、3D LUT 调色、使用 [全部开启/全部关闭] 快速对比，并保存多达 10 组预设。\n\n外部 .cube 调色说明：\n将自定义 3D .cube 文件重命名为 TL2_CustomLUT.cube 并放入游戏根目录（Torchlight2.exe 同级目录），即可在 F8 面板选择「外部 .cube」加载（支持热重载）。"
                        : L"安装未完成，请查看日志窗口中的错误信息。",
                     L"火炬之光 2 D3D11 画质增强 & SSAO 安装器",
                     ok ? (MB_OK | MB_ICONINFORMATION) : (MB_OK | MB_ICONERROR));

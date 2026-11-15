@@ -612,6 +612,9 @@ void PaintPanelToDibLocked() {
 
     // Section 3: P2 3D LUT Color Grading pills
     DrawSectionHeader(dc, 376, L"P2 3D LUT 电影调色");
+    DrawTextBox(dc, g_panel.font_small, RGB(218, 182, 116),
+                RECT{kPaddingX + 145, 376, static_cast<LONG>(kPanelWidth - kPaddingX), 394},
+                L"外部需改名 TL2_CustomLUT.cube 放游戏根目录", DT_RIGHT | DT_VCENTER);
     for (int i = 0; i < 4; ++i) {
         const size_t z_idx = static_cast<size_t>(15 + i);
         const RECT& r = zones[z_idx].rect;
@@ -684,13 +687,21 @@ void PaintPanelToDibLocked() {
     }
 
     // Bottom footer bar
+    const wchar_t* footer_text = g_panel.status_text.c_str();
+    if (g_panel.hover_index >= 0 &&
+        static_cast<size_t>(g_panel.hover_index) < zones.size() &&
+        zones[static_cast<size_t>(g_panel.hover_index)].kind == HitTargetKind::LutCustomCube) {
+        footer_text = IsP2CustomCubeLutLoaded()
+                          ? L"已检测到 <游戏根目录>\\TL2_CustomLUT.cube，点击即可启用（支持热重载）"
+                          : L"用法: 将 3D .cube 改名为 TL2_CustomLUT.cube 放游戏根目录（支持热重载）";
+    }
     FillSolidRect(dc, RECT{0, static_cast<LONG>(kPanelHeight - 30),
                            static_cast<LONG>(kPanelWidth), static_cast<LONG>(kPanelHeight)},
                   RGB(14, 18, 26));
     DrawTextBox(dc, g_panel.font_small, RGB(154, 186, 224),
                 RECT{kPaddingX, static_cast<LONG>(kPanelHeight - 28),
                      static_cast<LONG>(kPanelWidth - kPaddingX), static_cast<LONG>(kPanelHeight - 2)},
-                g_panel.status_text.c_str(), DT_LEFT | DT_VCENTER);
+                footer_text, DT_LEFT | DT_VCENTER);
 
     g_panel.dirty = false;
 }
@@ -806,8 +817,8 @@ void HandleHitClickLocked(int hit_idx) {
             SetP2LutPreset(3);
             g_panel.active_custom_slot = -1;
             g_panel.status_text = IsP2CustomCubeLutLoaded()
-                                      ? L"3D LUT 已载入: TL2_CustomLUT.cube"
-                                      : L"等待外部文件: <游戏目录>\\TL2_CustomLUT.cube";
+                                      ? L"3D LUT 已载入: <游戏根目录>\\TL2_CustomLUT.cube"
+                                      : L"未找到文件: 请将 3D .cube 改名为 TL2_CustomLUT.cube 放游戏根目录";
             break;
         case HitTargetKind::BuiltinFullHd:
             ApplyVisualConfigToEngine(MakeBuiltinPreset(0));

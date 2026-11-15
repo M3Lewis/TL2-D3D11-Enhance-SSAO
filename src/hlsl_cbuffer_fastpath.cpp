@@ -607,22 +607,37 @@ void ResetExplicitPsLightingScratch(uintptr_t params) {
     if (!params || !g_find_named_def) {
         return;
     }
-    static const std::string kDir0Diff = "DirectionalLight0_Diffuse";
-    static const std::string kDir0Dir = "DirectionalLight0_Direction";
-    static const std::string kBaseAmbient = "BaseLightAmbient";
+    struct ScratchResetSpec {
+        std::string name;
+        size_t size;
+    };
+    static const ScratchResetSpec kResetSpecs[] = {
+        {"DirectionalLight0_Diffuse", sizeof(float) * 4},
+        {"DirectionalLight0_Direction", sizeof(float) * 4},
+        {"BaseLightAmbient", sizeof(float) * 4},
+        {"PointLight0_Diffuse", sizeof(float) * 4},
+        {"PointLight0_Specular", sizeof(float) * 4},
+        {"PointLight0_Position", sizeof(float) * 3},
+        {"PointLight0_Range", sizeof(float)},
+        {"PointLight0_Attenuation", sizeof(float) * 3},
+        {"PointLight1_Diffuse", sizeof(float) * 4},
+        {"PointLight1_Specular", sizeof(float) * 4},
+        {"PointLight1_Position", sizeof(float) * 3},
+        {"PointLight1_Range", sizeof(float)},
+        {"PointLight1_Attenuation", sizeof(float) * 3},
+        {"PointLight2_Diffuse", sizeof(float) * 4},
+        {"PointLight2_Specular", sizeof(float) * 4},
+        {"PointLight2_Position", sizeof(float) * 3},
+        {"PointLight2_Range", sizeof(float)},
+        {"PointLight2_Attenuation", sizeof(float) * 3},
+    };
     static constexpr float kZero4[4] = {0.0f, 0.0f, 0.0f, 0.0f};
 
-    const CachedParamDef d0 = ResolveParamCached(params, &kDir0Diff);
-    if (d0.found) {
-        WriteCachedParam(params, d0, kZero4, sizeof(float) * 4);
-    }
-    const CachedParamDef d1 = ResolveParamCached(params, &kDir0Dir);
-    if (d1.found) {
-        WriteCachedParam(params, d1, kZero4, sizeof(float) * 4);
-    }
-    const CachedParamDef d2 = ResolveParamCached(params, &kBaseAmbient);
-    if (d2.found) {
-        WriteCachedParam(params, d2, kZero4, sizeof(float) * 4);
+    for (const auto& spec : kResetSpecs) {
+        const CachedParamDef d = ResolveParamCached(params, &spec.name);
+        if (d.found) {
+            WriteCachedParam(params, d, kZero4, spec.size);
+        }
     }
 }
 

@@ -18,7 +18,10 @@ struct Phase3Stats {
     uint64_t vs_texcoord_injections = 0;
     uint64_t vs_missing_vcol_fixes = 0;
     uint64_t ff_explicit_syncs = 0;
+    uint64_t sampler_hook_calls = 0;
+    uint64_t sampler_af_upgrades = 0;
     bool hooked = false;
+    bool sampler_hooked = false;
     bool shared_params_ready = false;
 };
 
@@ -53,6 +56,10 @@ void LogPhase3PassDiagnostics(Phase3LogFn logger);
 void SetPhase3RuntimeEnhanceEnabled(bool enabled);
 bool IsPhase3RuntimeEnhanceEnabled();
 bool TogglePhase3RuntimeEnhance();
+
+void SetF11VisualEnhanceEnabled(bool enabled);
+bool IsF11VisualEnhanceEnabled();
+bool ToggleF11VisualEnhance();
 
 void SetP2FilterPreset(int preset);
 int GetP2FilterPreset();

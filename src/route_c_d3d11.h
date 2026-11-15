@@ -73,6 +73,7 @@ bool ExecuteRouteCToastOverlay(
     bool dll_enhance_on,
     bool ao_on,
     int filter_preset,
+    bool ap_on,
     float fade_alpha,
     RouteCD3DLogFn logger);
 bool VerifyRouteCShadersCompile(RouteCD3DLogFn logger);

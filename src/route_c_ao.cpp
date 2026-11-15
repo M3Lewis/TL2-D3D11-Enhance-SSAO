@@ -740,10 +740,12 @@ void PollRuntimeToggleHotkeys() {
     static bool prev_f8 = false;
     static bool prev_f9 = false;
     static bool prev_f10 = false;
+    static bool prev_f11 = false;
     if (!IsGameProcessForeground()) {
         prev_f8 = false;
         prev_f9 = false;
         prev_f10 = false;
+        prev_f11 = false;
         return;
     }
 
@@ -777,6 +779,16 @@ void PollRuntimeToggleHotkeys() {
         }
     }
     prev_f10 = down_f10;
+
+    const bool down_f11 = (::GetAsyncKeyState(VK_F11) & 0x8000) != 0;
+    if (down_f11 && !prev_f11) {
+        const bool now_on = ToggleF11VisualEnhance();
+        g_toast_expire_tick_ms.store(::GetTickCount64() + 2000ULL, std::memory_order_relaxed);
+        if (g_log) {
+            g_log("[RouteB][Hotkey] F11 -> 16x AF + PointLight relief: %s", now_on ? "ON" : "OFF");
+        }
+    }
+    prev_f11 = down_f11;
 }
 
 void DrawToastOverlayForRenderTarget(void* rw) {
@@ -804,6 +816,7 @@ void DrawToastOverlayForRenderTarget(void* rw) {
             IsPhase3RuntimeEnhanceEnabled(),
             IsRouteCAoRuntimeEnabled(),
             GetP2FilterPreset(),
+            IsF11VisualEnhanceEnabled(),
             fade,
             g_log);
     }
@@ -1226,10 +1239,11 @@ bool InstallRouteCAoPipeline(void* ogre_main_base, RouteCLogFn logger) {
 
     if (g_log) {
         const int p2_preset = GetP2FilterPreset();
-        g_log("[RouteC][C2] Hooks installed (ao=%s, debugMode=%d, p2Filter=%s, c0_survey=%s, injectQueue=86, hotkeys=F8:Enhance/F9:AO/F10:Filter).",
+        g_log("[RouteC][C2] Hooks installed (ao=%s, debugMode=%d, p2Filter=%s, f11=%s, c0_survey=%s, injectQueue=86, hotkeys=F8:Enhance/F9:AO/F10:Filter/F11:AF+Point).",
               ao_init_on ? "ON" : "OFF",
               dbg_mode,
               P2FilterPresetName(p2_preset),
+              IsF11VisualEnhanceEnabled() ? "ON" : "OFF",
               survey_on ? "ON" : "OFF");
     }
     return true;

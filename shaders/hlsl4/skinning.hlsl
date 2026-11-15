@@ -69,7 +69,11 @@ void PopulateViewSpaceExtras(
     float3 viewNormal = normalize(mul((float3x3)viewMatrix, worldNorm));
     float3 viewPos = mul(viewMatrix, float4(blendPos.xyz, 1.0)).xyz;
     float3 viewLightDir0 = normalize(mul((float3x3)viewMatrix, lightDir0));
+    float3 lightDir1 = normalize(lightPos[1].xyz - (blendPos.xyz * lightPos[1].w));
+    float3 viewLightDir1 = normalize(mul((float3x3)viewMatrix, lightDir1));
+    float l1Lum = dot(saturate(diffuse.rgb * lightDiffuseColour[1].rgb), float3(0.299, 0.587, 0.114));
 
+    result.Texcoord3 = float4(viewLightDir1, l1Lum);
     result.Texcoord4 = float4(saturate(diffuse.rgb * lightDiffuseColour[0].rgb), 1.0);
     result.Texcoord5 = float4(viewLightDir0, saturate(dot(worldNorm, lightDir0)));
     result.Texcoord6 = float4(viewNormal, 1.0);

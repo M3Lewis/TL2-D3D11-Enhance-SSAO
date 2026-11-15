@@ -24,6 +24,7 @@ namespace routeb {
 namespace {
 
 // Verified RVAs for Torchlight II 2026 x64 (TimeDateStamp 0x6af5fabf / 0x6af5faa0)
+constexpr uintptr_t kRvaGetOrCreateSamplerState = 0x11240;
 constexpr uintptr_t kRvaGetFixedFuncShaderSource = 0x352B0;
 constexpr uintptr_t kRvaSetFixedFuncParams = 0x37ED0;
 constexpr uintptr_t kRvaRenderBindSrvs = 0x179FF;
@@ -48,6 +49,8 @@ constexpr size_t kResVtblIsLoaded = 216 / sizeof(uintptr_t);               // 27
 constexpr uintptr_t kSmOffDestRenderSystem = 72;
 constexpr uintptr_t kSmOffSuppressRenderState = 17457;
 
+constexpr uint8_t kExpectedGetSamplerState[16] = {
+    0x48, 0x89, 0x5C, 0x24, 0x10, 0x48, 0x89, 0x7C, 0x24, 0x18, 0x41, 0x56, 0x48, 0x83, 0xEC, 0x20};
 constexpr uint8_t kExpectedSetPass[14] = {
     0x48, 0x8B, 0xC4, 0x48, 0x89, 0x58, 0x18, 0x55, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55};
 constexpr uint8_t kExpectedGetShaderSource[14] = {
@@ -136,6 +139,11 @@ struct ActiveExplicitBinding {
 using SceneMgrSetPassFn = const void*(__fastcall*)(uintptr_t sm, const void* pass, bool even_if_suppressed, bool shadow_deriv);
 using GetFfShaderSourceFn = void*(__fastcall*)(uintptr_t self, std::string* out_src, const void* ve, const void* fe, const void* vdecl, const void* state);
 using SetFfProgramsParamsFn = void(__fastcall*)(uintptr_t ff_progs, uintptr_t ff_state);
+using GetOrCreateSamplerStateFn = HRESULT(__fastcall*)(
+    void* cached_slot,
+    ID3D11Device* device,
+    const D3D11_SAMPLER_DESC* desc,
+    ID3D11SamplerState** out_sampler);
 
 using GetSingletonPtrFn = uintptr_t(__cdecl*)();
 using GetByNameFn = void(__fastcall*)(uintptr_t mgr, OgreSharedPtr* out_sp, const std::string& name, bool is_manual);
@@ -241,11 +249,13 @@ OgreApiTable g_api{};
 Phase3Toggles g_toggles{};
 Phase3LogFn g_log = nullptr;
 
+Detour64 g_detour_get_sampler;
 Detour64 g_detour_set_pass;
 Detour64 g_detour_get_shader_src;
 Detour64 g_detour_set_ff_params;
 RawPatch64 g_patch_render_bind_srvs;
 
+GetOrCreateSamplerStateFn g_orig_get_sampler = nullptr;
 SceneMgrSetPassFn g_orig_set_pass = nullptr;
 GetFfShaderSourceFn g_orig_get_shader_src = nullptr;
 SetFfProgramsParamsFn g_orig_set_ff_params = nullptr;
@@ -297,8 +307,12 @@ std::atomic<uint64_t> g_rimlit_cube_binds{0};
 std::atomic<uint64_t> g_vs_texcoord_injections{0};
 std::atomic<uint64_t> g_vs_missing_vcol_fixes{0};
 std::atomic<uint64_t> g_ff_explicit_syncs{0};
+std::atomic<uint64_t> g_sampler_hook_calls{0};
+std::atomic<uint64_t> g_sampler_af_upgrades{0};
 std::atomic<bool> g_hooked{false};
+std::atomic<bool> g_sampler_hooked{false};
 std::atomic<bool> g_runtime_enhance_enabled{true};
+std::atomic<bool> g_f11_enhance_enabled{true};
 std::atomic<int> g_p2_filter_preset{1};
 std::atomic<uint64_t> g_p2_bloom_last_tick_ms{0};
 std::atomic<uint64_t> g_p2_fxaa_last_tick_ms{0};
@@ -1167,6 +1181,13 @@ void ApplyPassFogAndAlphaToExplicitPs(
         arch == PassArchetype::SkinnedDiffOpaque ||
         arch == PassArchetype::SkinnedDiffAlpha) {
         WriteExplicitPsNamedFloat4(ps_params, "p3Flags2", flags2);
+        const float enhance_flags[4] = {
+            g_f11_enhance_enabled.load(std::memory_order_relaxed) ? 1.0f : 0.0f,
+            0.0f,
+            0.0f,
+            0.0f,
+        };
+        WriteExplicitPsNamedFloat4(ps_params, "p3EnhanceFlags", enhance_flags);
     }
 
     const float fc[4] = {fog_color.r, fog_color.g, fog_color.b, fog_color.a};
@@ -1599,6 +1620,45 @@ void* __fastcall HookGetFixedFuncShaderSource(
     return ret;
 }
 
+bool IsEligibleSceneSamplerForAniso(const D3D11_SAMPLER_DESC& d) {
+    const bool is_linear =
+        (d.Filter == D3D11_FILTER_MIN_MAG_LINEAR_MIP_POINT ||
+         d.Filter == D3D11_FILTER_MIN_MAG_MIP_LINEAR ||
+         d.Filter == D3D11_FILTER_ANISOTROPIC);
+    if (!is_linear) {
+        return false;
+    }
+    const bool wrap_or_mirror_u =
+        (d.AddressU == D3D11_TEXTURE_ADDRESS_WRAP || d.AddressU == D3D11_TEXTURE_ADDRESS_MIRROR);
+    const bool wrap_or_mirror_v =
+        (d.AddressV == D3D11_TEXTURE_ADDRESS_WRAP || d.AddressV == D3D11_TEXTURE_ADDRESS_MIRROR);
+    return wrap_or_mirror_u && wrap_or_mirror_v;
+}
+
+HRESULT __fastcall HookD3D11GetOrCreateSamplerState(
+    void* cached_slot,
+    ID3D11Device* device,
+    const D3D11_SAMPLER_DESC* desc,
+    ID3D11SamplerState** out_sampler) {
+    g_sampler_hook_calls.fetch_add(1, std::memory_order_relaxed);
+    if (!g_orig_get_sampler) {
+        return E_FAIL;
+    }
+    if (!desc) {
+        return g_orig_get_sampler(cached_slot, device, desc, out_sampler);
+    }
+    if (g_f11_enhance_enabled.load(std::memory_order_relaxed) &&
+        IsEligibleSceneSamplerForAniso(*desc)) {
+        D3D11_SAMPLER_DESC upgraded = *desc;
+        upgraded.Filter = D3D11_FILTER_ANISOTROPIC;
+        upgraded.MaxAnisotropy = (std::max)(upgraded.MaxAnisotropy, 16U);
+        upgraded.MipLODBias = (std::clamp)(upgraded.MipLODBias - 0.30f, -16.0f, 15.99f);
+        g_sampler_af_upgrades.fetch_add(1, std::memory_order_relaxed);
+        return g_orig_get_sampler(cached_slot, device, &upgraded, out_sampler);
+    }
+    return g_orig_get_sampler(cached_slot, device, desc, out_sampler);
+}
+
 void __fastcall HookSetFixedFuncProgramsParameters(uintptr_t ff_progs, uintptr_t ff_state) {
     const ActiveExplicitBinding binding = g_active_binding;
     const bool sync_explicit =
@@ -1699,6 +1759,7 @@ bool InstallPhase3ScenePipeline(void* d3d11_base, void* ogre_main_base, Phase3Lo
     g_toggles.light_pass = !EnvFlagIsOne("TL2_P3_DISABLE_LIGHT");
     g_toggles.rim_lit = !EnvFlagIsOne("TL2_P3_DISABLE_RIM");
     g_runtime_enhance_enabled.store(!EnvFlagIsOne("TL2_B_DISABLE_ENHANCE"), std::memory_order_relaxed);
+    g_f11_enhance_enabled.store(!EnvFlagIsOne("TL2_B_DISABLE_F11"), std::memory_order_relaxed);
     g_p2_filter_preset.store(ResolveInitialP2Preset(), std::memory_order_relaxed);
     g_p2_bloom_last_tick_ms.store(0, std::memory_order_relaxed);
     g_p2_fxaa_last_tick_ms.store(0, std::memory_order_relaxed);
@@ -1760,18 +1821,34 @@ bool InstallPhase3ScenePipeline(void* d3d11_base, void* ogre_main_base, Phase3Lo
     g_orig_set_ff_params = reinterpret_cast<SetFfProgramsParamsFn>(orig_ff_params);
 
     EnsureSharedPerFrameLighting();
+    void* orig_get_sampler = nullptr;
+    const bool sampler_hook_ok = g_detour_get_sampler.Install(
+        reinterpret_cast<void*>(d3d_base + kRvaGetOrCreateSamplerState),
+        kExpectedGetSamplerState,
+        sizeof(kExpectedGetSamplerState),
+        reinterpret_cast<void*>(&HookD3D11GetOrCreateSamplerState),
+        &orig_get_sampler);
+    if (sampler_hook_ok) {
+        g_orig_get_sampler = reinterpret_cast<GetOrCreateSamplerStateFn>(orig_get_sampler);
+    } else if (g_log) {
+        g_log("[RouteB][Phase3] WARNING: Failed detour on D3D11 sampler cache (0x11240); 16x AF disabled.");
+    }
+    g_sampler_hooked.store(sampler_hook_ok, std::memory_order_relaxed);
+
     const bool srv_hook_ok = InstallRenderBindSrvsStub(d3d_base);
     const bool ff_manual_ok = InstallFixedFuncManualUniforms(d3d11_base, g_log);
     g_hooked.store(true, std::memory_order_relaxed);
     if (g_log) {
         g_log(
-            "[RouteB][Phase3] Scene pipeline installed (diff=%d skin=%d light=%d rim=%d ffManual=%d normSpecSrv=%d)",
+            "[RouteB][Phase3] Scene pipeline installed (diff=%d skin=%d light=%d rim=%d ffManual=%d normSpecSrv=%d samplerAF=%d f11=%s)",
             g_toggles.diff_pass ? 1 : 0,
             g_toggles.skinned_diff ? 1 : 0,
             g_toggles.light_pass ? 1 : 0,
             g_toggles.rim_lit ? 1 : 0,
             ff_manual_ok ? 1 : 0,
-            srv_hook_ok ? 1 : 0);
+            srv_hook_ok ? 1 : 0,
+            sampler_hook_ok ? 1 : 0,
+            g_f11_enhance_enabled.load(std::memory_order_relaxed) ? "ON" : "OFF");
     }
     return true;
 }
@@ -1779,9 +1856,12 @@ bool InstallPhase3ScenePipeline(void* d3d11_base, void* ogre_main_base, Phase3Lo
 void RemovePhase3ScenePipeline() {
     g_pass_observer.store(nullptr, std::memory_order_release);
     g_hooked.store(false, std::memory_order_relaxed);
+    g_sampler_hooked.store(false, std::memory_order_relaxed);
     SetActiveExplicitPsForwardTarget(0);
     g_active_binding = {};
 
+    g_detour_get_sampler.Remove();
+    g_orig_get_sampler = nullptr;
     g_patch_render_bind_srvs.Remove();
     ClearCompanionCache();
     RemoveFixedFuncManualUniforms();
@@ -1813,7 +1893,10 @@ Phase3Stats GetPhase3Stats() {
     s.vs_texcoord_injections = g_vs_texcoord_injections.load(std::memory_order_relaxed);
     s.vs_missing_vcol_fixes = g_vs_missing_vcol_fixes.load(std::memory_order_relaxed);
     s.ff_explicit_syncs = g_ff_explicit_syncs.load(std::memory_order_relaxed);
+    s.sampler_hook_calls = g_sampler_hook_calls.load(std::memory_order_relaxed);
+    s.sampler_af_upgrades = g_sampler_af_upgrades.load(std::memory_order_relaxed);
     s.hooked = g_hooked.load(std::memory_order_relaxed);
+    s.sampler_hooked = g_sampler_hooked.load(std::memory_order_relaxed);
     s.shared_params_ready = g_shared_params_ready;
     return s;
 }
@@ -1910,6 +1993,21 @@ bool IsPhase3RuntimeEnhanceEnabled() {
 bool TogglePhase3RuntimeEnhance() {
     bool expected = g_runtime_enhance_enabled.load(std::memory_order_relaxed);
     while (!g_runtime_enhance_enabled.compare_exchange_weak(expected, !expected, std::memory_order_relaxed)) {
+    }
+    return !expected;
+}
+
+void SetF11VisualEnhanceEnabled(bool enabled) {
+    g_f11_enhance_enabled.store(enabled, std::memory_order_relaxed);
+}
+
+bool IsF11VisualEnhanceEnabled() {
+    return g_f11_enhance_enabled.load(std::memory_order_relaxed);
+}
+
+bool ToggleF11VisualEnhance() {
+    bool expected = g_f11_enhance_enabled.load(std::memory_order_relaxed);
+    while (!g_f11_enhance_enabled.compare_exchange_weak(expected, !expected, std::memory_order_relaxed)) {
     }
     return !expected;
 }

@@ -459,48 +459,51 @@ constexpr const char kToastShaderSource[] = R"HLSL(
 cbuffer CbToastParams : register(b0) {
     float4 gToastRect;    // x=left, y=top, z=width, w=height
     float4 gToastParams;  // x=dllOn, y=aoOn, z=fadeAlpha, w=scale
-    float4 gToastExtra;   // x=filterMode (0=OFF, 1=HOB, 2=DRK)
+    float4 gToastExtra;   // x=filterMode (0=OFF, 1=HOB, 2=DRK), y=apOn (F11: 16xAF + PointLight)
 };
 
 struct VS_OUT {
     float4 pos : SV_Position;
 };
 
-uint GetToastChar(int idx, bool dllOn, bool aoOn, int fxMode) {
-    // Format (40 chars): "[F8] DLL:ON    [F9] AO:ON   [F10] FX:HOB"
-    if (idx == 0 || idx == 15 || idx == 28) return 91u;   // '['
-    if (idx == 3 || idx == 18 || idx == 32) return 93u;   // ']'
-    if (idx == 1 || idx == 16 || idx == 29 || idx == 34) return 70u;  // 'F'
-    if (idx == 2) return 56u;                             // '8'
-    if (idx == 17) return 57u;                            // '9'
-    if (idx == 30) return 49u;                            // '1'
-    if (idx == 31) return 48u;                            // '0'
-    if (idx == 5) return 68u;                             // 'D'
-    if (idx == 6 || idx == 7) return 76u;                 // 'L'
-    if (idx == 8 || idx == 22 || idx == 36) return 58u;   // ':'
-    if (idx == 9 || idx == 21 || idx == 23) return 79u;   // 'O'
-    if (idx == 10) return dllOn ? 78u : 70u;              // 'N' : 'F'
-    if (idx == 11) return dllOn ? 32u : 70u;              // ' ' : 'F'
-    if (idx == 20) return 65u;                            // 'A'
-    if (idx == 24) return aoOn ? 78u : 70u;               // 'N' : 'F'
-    if (idx == 25) return aoOn ? 32u : 70u;               // ' ' : 'F'
-    if (idx == 35) return 88u;                            // 'X'
-    if (idx == 37) {
-        if (fxMode == 1) return 72u;                      // 'H'
-        if (fxMode == 2) return 68u;                      // 'D'
-        return 79u;                                       // 'O'
+uint GetToastChar(int idx, bool dllOn, bool aoOn, int fxMode, bool apOn) {
+    // Format (45 chars): "[F8]DL:ON  [F9]AO:ON  [F10]FX:HOB [F11]AP:ON "
+    if (idx == 0 || idx == 11 || idx == 22 || idx == 34) return 91u;   // '['
+    if (idx == 3 || idx == 14 || idx == 26 || idx == 38) return 93u;   // ']'
+    if (idx == 1 || idx == 12 || idx == 23 || idx == 27 || idx == 35) return 70u;  // 'F'
+    if (idx == 2) return 56u;                                          // '8'
+    if (idx == 13) return 57u;                                         // '9'
+    if (idx == 24 || idx == 36 || idx == 37) return 49u;               // '1'
+    if (idx == 25) return 48u;                                         // '0'
+    if (idx == 4) return 68u;                                          // 'D'
+    if (idx == 5) return 76u;                                          // 'L'
+    if (idx == 6 || idx == 17 || idx == 29 || idx == 41) return 58u;   // ':'
+    if (idx == 7 || idx == 16 || idx == 18 || idx == 42) return 79u;   // 'O'
+    if (idx == 8) return dllOn ? 78u : 70u;                            // 'N' : 'F'
+    if (idx == 9) return dllOn ? 32u : 70u;                            // ' ' : 'F'
+    if (idx == 15 || idx == 39) return 65u;                            // 'A'
+    if (idx == 19) return aoOn ? 78u : 70u;                            // 'N' : 'F'
+    if (idx == 20) return aoOn ? 32u : 70u;                            // ' ' : 'F'
+    if (idx == 28) return 88u;                                         // 'X'
+    if (idx == 30) {
+        if (fxMode == 1) return 72u;                                   // 'H'
+        if (fxMode == 2) return 68u;                                   // 'D'
+        return 79u;                                                    // 'O'
     }
-    if (idx == 38) {
-        if (fxMode == 1) return 79u;                      // 'O'
-        if (fxMode == 2) return 82u;                      // 'R'
-        return 70u;                                       // 'F'
+    if (idx == 31) {
+        if (fxMode == 1) return 79u;                                   // 'O'
+        if (fxMode == 2) return 82u;                                   // 'R'
+        return 70u;                                                    // 'F'
     }
-    if (idx == 39) {
-        if (fxMode == 1) return 66u;                      // 'B'
-        if (fxMode == 2) return 75u;                      // 'K'
-        return 70u;                                       // 'F'
+    if (idx == 32) {
+        if (fxMode == 1) return 66u;                                   // 'B'
+        if (fxMode == 2) return 75u;                                   // 'K'
+        return 70u;                                                    // 'F'
     }
-    return 32u;                                           // ' '
+    if (idx == 40) return 80u;                                         // 'P'
+    if (idx == 43) return apOn ? 78u : 70u;                            // 'N' : 'F'
+    if (idx == 44) return apOn ? 32u : 70u;                            // ' ' : 'F'
+    return 32u;                                                        // ' '
 }
 
 uint GetGlyph5x7Row(uint ch, uint row) {
@@ -560,6 +563,11 @@ uint GetGlyph5x7Row(uint ch, uint row) {
         if (row == 3u) return 24u;
         return 17u;
     }
+    if (ch == 80u) {                                                                       // 'P'
+        if (row == 0u || row == 3u) return 30u;
+        if (row <= 2u) return 17u;
+        return 16u;
+    }
     return 0u;
 }
 
@@ -571,14 +579,15 @@ float4 PS_ToastOverlay(VS_OUT input) : SV_Target0 {
     float2 textPos = local - float2(12.0f, 8.0f);
     int2 cell = int2(floor(textPos / scale));
     int fxMode = (int)round(gToastExtra.x);
+    bool apOn = (gToastExtra.y > 0.5f);
 
     bool hit = false;
     int charIdx = -1;
     if (cell.y >= 0 && cell.y < 7 && cell.x >= 0) {
         charIdx = cell.x / 6;
         int gx = cell.x - charIdx * 6;
-        if (charIdx >= 0 && charIdx < 40 && gx >= 0 && gx < 5) {
-            uint ch = GetToastChar(charIdx, gToastParams.x > 0.5f, gToastParams.y > 0.5f, fxMode);
+        if (charIdx >= 0 && charIdx < 45 && gx >= 0 && gx < 5) {
+            uint ch = GetToastChar(charIdx, gToastParams.x > 0.5f, gToastParams.y > 0.5f, fxMode, apOn);
             uint bits = GetGlyph5x7Row(ch, (uint)cell.y);
             hit = ((bits >> (4u - (uint)gx)) & 1u) != 0u;
         }
@@ -589,11 +598,11 @@ float4 PS_ToastOverlay(VS_OUT input) : SV_Target0 {
         bool dllOn = (gToastParams.x > 0.5f);
         bool aoOn = (gToastParams.y > 0.5f);
         float3 fg = float3(0.95f, 0.96f, 0.98f);
-        if (charIdx >= 9 && charIdx <= 11) {
+        if (charIdx >= 7 && charIdx <= 9) {
             fg = dllOn ? float3(0.38f, 0.96f, 0.58f) : float3(1.00f, 0.44f, 0.42f);
-        } else if (charIdx >= 23 && charIdx <= 25) {
+        } else if (charIdx >= 18 && charIdx <= 20) {
             fg = aoOn ? float3(0.38f, 0.96f, 0.58f) : float3(1.00f, 0.44f, 0.42f);
-        } else if (charIdx >= 37 && charIdx <= 39) {
+        } else if (charIdx >= 30 && charIdx <= 32) {
             if (fxMode == 1) {
                 fg = float3(1.00f, 0.84f, 0.36f);
             } else if (fxMode == 2) {
@@ -601,6 +610,8 @@ float4 PS_ToastOverlay(VS_OUT input) : SV_Target0 {
             } else {
                 fg = float3(1.00f, 0.44f, 0.42f);
             }
+        } else if (charIdx >= 42 && charIdx <= 44) {
+            fg = apOn ? float3(0.38f, 0.96f, 0.58f) : float3(1.00f, 0.44f, 0.42f);
         }
         return float4(fg, fade);
     }
@@ -1834,6 +1845,7 @@ bool ExecuteRouteCToastOverlay(
     bool dll_enhance_on,
     bool ao_on,
     int filter_preset,
+    bool ap_on,
     float fade_alpha,
     RouteCD3DLogFn logger) {
     if (!ctx || !target_rtv || fade_alpha <= 0.001f) {
@@ -1880,11 +1892,11 @@ bool ExecuteRouteCToastOverlay(
     }
 
     float scale = (rt_desc.Height >= 1400U) ? 3.0f : 2.0f;
-    if (24.0f + (40.0f * 6.0f - 1.0f) * scale + 16.0f > static_cast<float>(rt_desc.Width) ||
+    if (24.0f + (45.0f * 6.0f - 1.0f) * scale + 16.0f > static_cast<float>(rt_desc.Width) ||
         16.0f + 7.0f * scale + 16.0f > static_cast<float>(rt_desc.Height)) {
         scale = 1.0f;
     }
-    const float box_w = 24.0f + (40.0f * 6.0f - 1.0f) * scale;
+    const float box_w = 24.0f + (45.0f * 6.0f - 1.0f) * scale;
     const float box_h = 16.0f + 7.0f * scale;
     const float box_x = std::floor((std::max)(8.0f, (static_cast<float>(rt_desc.Width) - box_w) * 0.5f));
     const float box_y = (scale >= 3.0f) ? 26.0f : ((scale >= 2.0f) ? 18.0f : 8.0f);
@@ -1906,7 +1918,7 @@ bool ExecuteRouteCToastOverlay(
     cb->params[2] = fade_alpha;
     cb->params[3] = scale;
     cb->extra[0] = static_cast<float>(filter_preset);
-    cb->extra[1] = 0.0f;
+    cb->extra[1] = ap_on ? 1.0f : 0.0f;
     cb->extra[2] = 0.0f;
     cb->extra[3] = 0.0f;
     ctx->Unmap(g_st.cb_toast, 0);

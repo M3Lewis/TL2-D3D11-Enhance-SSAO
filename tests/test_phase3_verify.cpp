@@ -15,6 +15,7 @@ namespace {
 using PluginFn = void (*)();
 using GenLayerBlendOpFn = std::string*(__fastcall*)(std::string* out, const routeb::OgreLayerBlendModeExRaw* blend, uint8_t is_alpha);
 
+constexpr uintptr_t kRvaGetOrCreateSamplerState = 0x11240U;
 constexpr uintptr_t kRvaSetPass = 0x1903C0U;
 constexpr uintptr_t kRvaGetFixedFuncSrc = 0x352B0U;
 constexpr uintptr_t kRvaSetFixedFuncParams = 0x37ED0U;
@@ -22,6 +23,8 @@ constexpr uintptr_t kRvaGetFfShaderPrograms = 0x32480U;
 constexpr uintptr_t kRvaGenLayerBlendOp = 0x33580U;
 constexpr uintptr_t kRvaGenLayerBlendOperand = 0x34F10U;
 
+constexpr uint8_t kExpectedGetSamplerState[16] = {
+    0x48, 0x89, 0x5C, 0x24, 0x10, 0x48, 0x89, 0x7C, 0x24, 0x18, 0x41, 0x56, 0x48, 0x83, 0xEC, 0x20};
 constexpr uint8_t kExpectedSetPass[14] = {
     0x48, 0x8B, 0xC4, 0x48, 0x89, 0x58, 0x18, 0x55, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55};
 constexpr uint8_t kExpectedGetShaderSrc[14] = {
@@ -206,6 +209,7 @@ int main() {
 
     const auto ogre_base = reinterpret_cast<uintptr_t>(ogre);
     const auto d3d_base = reinterpret_cast<uintptr_t>(d3d);
+    const auto* p_sampler = reinterpret_cast<const uint8_t*>(d3d_base + kRvaGetOrCreateSamplerState);
     const auto* p_setpass = reinterpret_cast<const uint8_t*>(ogre_base + kRvaSetPass);
     const auto* p_getsrc = reinterpret_cast<const uint8_t*>(d3d_base + kRvaGetFixedFuncSrc);
     const auto* p_setff = reinterpret_cast<const uint8_t*>(d3d_base + kRvaSetFixedFuncParams);
@@ -213,7 +217,8 @@ int main() {
     const auto* p_blendop = reinterpret_cast<const uint8_t*>(d3d_base + kRvaGenLayerBlendOp);
     const auto* p_operand = reinterpret_cast<const uint8_t*>(d3d_base + kRvaGenLayerBlendOperand);
 
-    if (std::memcmp(p_setpass, kExpectedSetPass, sizeof(kExpectedSetPass)) != 0 ||
+    if (std::memcmp(p_sampler, kExpectedGetSamplerState, sizeof(kExpectedGetSamplerState)) != 0 ||
+        std::memcmp(p_setpass, kExpectedSetPass, sizeof(kExpectedSetPass)) != 0 ||
         std::memcmp(p_getsrc, kExpectedGetShaderSrc, sizeof(kExpectedGetShaderSrc)) != 0 ||
         std::memcmp(p_setff, kExpectedSetFfParams, sizeof(kExpectedSetFfParams)) != 0 ||
         std::memcmp(p_getprog, kExpectedGetFfPrograms, sizeof(kExpectedGetFfPrograms)) != 0 ||
@@ -225,7 +230,8 @@ int main() {
 
     start_fn();
 
-    if (*reinterpret_cast<const uint16_t*>(p_setpass) != 0x25FF ||
+    if (*reinterpret_cast<const uint16_t*>(p_sampler) != 0x25FF ||
+        *reinterpret_cast<const uint16_t*>(p_setpass) != 0x25FF ||
         *reinterpret_cast<const uint16_t*>(p_getsrc) != 0x25FF ||
         *reinterpret_cast<const uint16_t*>(p_setff) != 0x25FF ||
         *reinterpret_cast<const uint16_t*>(p_getprog) != 0x25FF ||
@@ -261,7 +267,8 @@ int main() {
 
     stop_fn();
 
-    if (std::memcmp(p_setpass, kExpectedSetPass, sizeof(kExpectedSetPass)) != 0 ||
+    if (std::memcmp(p_sampler, kExpectedGetSamplerState, sizeof(kExpectedGetSamplerState)) != 0 ||
+        std::memcmp(p_setpass, kExpectedSetPass, sizeof(kExpectedSetPass)) != 0 ||
         std::memcmp(p_getsrc, kExpectedGetShaderSrc, sizeof(kExpectedGetShaderSrc)) != 0 ||
         std::memcmp(p_setff, kExpectedSetFfParams, sizeof(kExpectedSetFfParams)) != 0 ||
         std::memcmp(p_getprog, kExpectedGetFfPrograms, sizeof(kExpectedGetFfPrograms)) != 0 ||
@@ -273,7 +280,8 @@ int main() {
 
     const std::string log = ReadWholeLog("TL2_RouteB_D3D11.log");
     if (log.find("scene_p3=ON") == std::string::npos ||
-        log.find("[RouteB][Phase3][Stats] Scene hooked=1") == std::string::npos ||
+        log.find("samplerAF=1") == std::string::npos ||
+        log.find("[RouteB][Phase3][Stats] Scene hooked=1 samplerHook=1") == std::string::npos ||
         log.find("vsVColFix=") == std::string::npos ||
         log.find("[RouteB][FFManual][Stats] hooked=1") == std::string::npos ||
         log.find("nullCb=") == std::string::npos) {

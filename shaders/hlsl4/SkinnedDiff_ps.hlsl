@@ -39,6 +39,10 @@ float4 p3Flags = float4(0.0, 1.0, 0.0, 1.0);
 //   w = companion _tl2s spec/cavity map bound in t4 (0/1)
 float4 p3Flags2 = float4(0.0, 0.0, 0.0, 0.0);
 
+// p3EnhanceFlags:
+//   x = F11 dynamic PointLight micro-normal relief + Blinn-Phong specular toggle (0/1)
+float4 p3EnhanceFlags = float4(0.0, 0.0, 0.0, 0.0);
+
 float3 ApplyStage1Op(float3 baseColor, float2 uv, int op)
 {
     float4 t1 = Texture1.Sample(Sampler1, uv);
@@ -253,6 +257,7 @@ float4 ShadeSkinnedDiff(VS_OUTPUT input, bool doAlphaReject)
     //   Texcoord7.xyz = ViewDir
     //   Texcoord5.xyz = ViewLightDir0, .w = NdotL0
     //   Texcoord4.rgb = diffuse.rgb * lightDiffuseColour[0].rgb
+    //   Texcoord3.xyz = ViewLightDir1, .w = lum(diffuse * lightDiffuseColour[1])
     if (hasNormal)
     {
         float3 Nmicro = sd.microNormal;
@@ -260,6 +265,11 @@ float4 ShadeSkinnedDiff(VS_OUTPUT input, bool doAlphaReject)
 
         float bevel = dot(Nmicro, V) - dot(N, V);
         litEnv *= saturate(1.0 + bevel * (0.34 * sd.detailFade));
+
+        float specPow = lerp(20.0, 48.0, max(sd.smoothness, sd.metalMask));
+        float matSpec = lerp(0.05, 0.16, sd.smoothness) + sd.metalMask * 0.07;
+        float tintWeight = lerp(0.45, 0.80, sd.metalMask);
+        float3 sheenTint = lerp(float3(1.0, 1.0, 1.0), sd.albedo, tintWeight);
 
         float l0LenSq = dot(input.Texcoord5.xyz, input.Texcoord5.xyz);
         if (l0LenSq > 1e-6 && dot(input.Texcoord4.rgb, float3(0.299, 0.587, 0.114)) > 1e-4)
@@ -272,14 +282,28 @@ float4 ShadeSkinnedDiff(VS_OUTPUT input, bool doAlphaReject)
             float ndh = max(dot(Nmicro, H), 0.0);
             float ndlMask = saturate(dot(Nmicro, L0) * 2.5 + 0.18);
 
-            float specPow = lerp(20.0, 48.0, max(sd.smoothness, sd.metalMask));
-            float matSpec = lerp(0.05, 0.16, sd.smoothness) + sd.metalMask * 0.07;
             float specScalar = pow(ndh, specPow) * matSpec * ndlMask;
             float rim = pow(1.0 - NdotV, 3.2) * lerp(0.05, 0.11, max(sd.smoothness, sd.metalMask));
 
-            float tintWeight = lerp(0.45, 0.80, sd.metalMask);
-            float3 sheenTint = lerp(float3(1.0, 1.0, 1.0), sd.albedo, tintWeight);
             specAdd = input.Texcoord4.rgb * sheenTint * (specScalar + rim);
+        }
+
+        float l1LenSq = dot(input.Texcoord3.xyz, input.Texcoord3.xyz);
+        if (p3EnhanceFlags.x > 0.5 && input.Texcoord3.w > 1e-4 && l1LenSq > 1e-6)
+        {
+            float3 L1 = input.Texcoord3.xyz * rsqrt(l1LenSq);
+            float relief1 = saturate(dot(Nmicro, L1)) - saturate(dot(N, L1));
+            float l1Strength = saturate(input.Texcoord3.w);
+            float3 envTint = input.Color.rgb / max(max(input.Color.r, max(input.Color.g, input.Color.b)), 0.05);
+            float3 l1Tint = lerp(float3(1.0, 0.92, 0.82), saturate(envTint), 0.65);
+
+            litEnv = max(litEnv + l1Tint * (relief1 * l1Strength * 0.85 * sd.detailFade), float3(0.0, 0.0, 0.0));
+
+            float3 H1 = normalize(L1 + V);
+            float ndh1 = max(dot(Nmicro, H1), 0.0);
+            float ndlMask1 = saturate(dot(Nmicro, L1) * 2.5 + 0.15);
+            float specScalar1 = pow(ndh1, specPow) * matSpec * ndlMask1 * l1Strength;
+            specAdd += l1Tint * sheenTint * specScalar1;
         }
     }
 

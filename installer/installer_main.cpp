@@ -451,7 +451,7 @@ bool PerformInstall(const fs::path& game_dir, Logger& log) {
 
     log.Append(L"");
     log.Append(L"=== 安装完成！===");
-    log.Append(L"游戏内热键：F8 开关画质增强 | F9 开关 SSAO | F10 切换 Hob 滤镜 (HOB/DRK/OFF，顶部带 2 秒提示)。");
+    log.Append(L"游戏内热键：F8 开关画质增强 | F9 开关 SSAO | F10 切换 Hob 滤镜 | F11 开关 16xAF+点光浮雕 (顶部带 2 秒提示)。");
     return true;
 }
 
@@ -683,7 +683,7 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
 
             HWND sub = ::CreateWindowW(
                 L"STATIC",
-                L"包含: Plugin_TL2_DX11_Enhance_SSAO.dll + 16 个 HLSL/Material 着色器 | 热键: F8 增强, F9 SSAO, F10 滤镜",
+                L"包含: Plugin_TL2_DX11_Enhance_SSAO.dll + 16 个 HLSL/Material 着色器 | 热键: F8 增强, F9 SSAO, F10 滤镜, F11 清晰+点光",
                 WS_CHILD | WS_VISIBLE, 20, 44, 620, 20, hwnd, nullptr, nullptr, nullptr);
             ApplyFontRecursive(sub, g_ui.ui_font);
 
@@ -757,7 +757,7 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
                 const bool ok = PerformInstall(dir, g_gui_log);
                 ::MessageBoxW(
                     hwnd,
-                    ok ? L"安装成功！\n已自动备份原版配置与着色器。\n\n游戏内按 F8 开关画质增强，F9 开关 SSAO，F10 切换 Hob 电影滤镜 (HOB/DRK/OFF)。"
+                    ok ? L"安装成功！\n已自动备份原版配置与着色器。\n\n游戏内热键：F8 画质增强，F9 SSAO，F10 Hob 滤镜 (HOB/DRK/OFF)，F11 16x各向异性+点光源浮雕高光。"
                        : L"安装未完成，请查看日志窗口中的错误信息。",
                     L"火炬之光 2 D3D11 画质增强安装器",
                     ok ? (MB_OK | MB_ICONINFORMATION) : (MB_OK | MB_ICONERROR));

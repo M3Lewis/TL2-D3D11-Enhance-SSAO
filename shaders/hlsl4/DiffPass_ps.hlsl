@@ -27,6 +27,21 @@ float4x4 View;
 float4 BaseLightAmbient;
 float4 DirectionalLight0_Direction;
 float4 DirectionalLight0_Diffuse;
+float4 PointLight0_Diffuse;
+float4 PointLight0_Specular;
+float3 PointLight0_Position;
+float  PointLight0_Range;
+float3 PointLight0_Attenuation;
+float4 PointLight1_Diffuse;
+float4 PointLight1_Specular;
+float3 PointLight1_Position;
+float  PointLight1_Range;
+float3 PointLight1_Attenuation;
+float4 PointLight2_Diffuse;
+float4 PointLight2_Specular;
+float3 PointLight2_Position;
+float  PointLight2_Range;
+float3 PointLight2_Attenuation;
 float4 MaterialAmbient;
 float4 MaterialDiffuse;
 float4 MaterialEmissive;
@@ -50,6 +65,10 @@ float4 p3Flags = float4(0.0, 1.0, 0.0, 0.0);
 //   z = companion _tl2n normal map bound in t3 (0/1)
 //   w = companion _tl2s spec/cavity map bound in t4 (0/1)
 float4 p3Flags2 = float4(0.0, 0.0, 0.0, 0.0);
+
+// p3EnhanceFlags:
+//   x = F11 dynamic PointLight micro-normal relief + Blinn-Phong specular toggle (0/1)
+float4 p3EnhanceFlags = float4(0.0, 0.0, 0.0, 0.0);
 
 float2 ResolveFixedFuncUv(float4 rawUv, bool isProjective)
 {
@@ -259,6 +278,57 @@ float3 PerturbNormalFromMap(float3 N, float3 V_unnorm, float2 uv, float3 tsNorma
     return normalize(mul(scaled, tbn));
 }
 
+void AccumulatePointLightRelief(
+    float3 lightWorldPos,
+    float3 lightDiffuseRgb,
+    float3 lightSpecularRgb,
+    float  lightRange,
+    float3 lightAtten,
+    float3 Pview,
+    float3 N,
+    float3 Nmicro,
+    float3 V,
+    float  specPow,
+    float  fresnel,
+    float  matScale,
+    float3 surfTint,
+    float  reliefFade,
+    float  detailWeight,
+    inout float3 pointReliefSum,
+    inout float3 specAdd)
+{
+    float lightLum = dot(lightDiffuseRgb, float3(0.299, 0.587, 0.114));
+    if (lightLum <= 1e-4 || lightRange <= 0.01)
+        return;
+
+    float3 lightViewPos = mul(float4(lightWorldPos, 1.0), View).xyz;
+    float3 deltaView = lightViewPos - Pview;
+    float distSq = dot(deltaView, deltaView);
+    if (distSq <= 1e-6 || distSq > lightRange * lightRange)
+        return;
+
+    float dist = sqrt(distSq);
+    float3 L = deltaView / dist;
+    float attenDenom = dot(lightAtten, float3(1.0, dist, distSq));
+    float atten = min(1.0 / max(attenDenom, 1e-5), 2.0);
+    float rangeT = dist / lightRange;
+    float rangeSq = rangeT * rangeT;
+    atten *= saturate(1.0 - rangeSq * rangeSq);
+
+    float ndlBase = saturate(dot(N, L));
+    float ndlMicro = saturate(dot(Nmicro, L));
+    float reliefDelta = ndlMicro - ndlBase;
+    pointReliefSum += lightDiffuseRgb * MaterialDiffuse.rgb * (reliefDelta * atten * 1.25 * reliefFade);
+
+    float3 H = normalize(L + V);
+    float ndh = max(dot(Nmicro, H), 0.0);
+    float termMask = saturate(dot(Nmicro, L) * 2.5 + 0.12);
+    float specScalar = pow(ndh, specPow) * matScale * fresnel * termMask * detailWeight * atten;
+    float specLum = dot(lightSpecularRgb, float3(0.299, 0.587, 0.114));
+    float3 effSpecCol = (specLum > 1e-4) ? lightSpecularRgb : (lightDiffuseRgb * 0.90);
+    specAdd += effSpecCol * MaterialDiffuse.rgb * surfTint * specScalar;
+}
+
 float4 ShadeDiffPass(VS_OUTPUT input, bool doAlphaReject)
 {
     float2 duvX = ddx(input.Texcoord0.xy);
@@ -335,6 +405,13 @@ float4 ShadeDiffPass(VS_OUTPUT input, bool doAlphaReject)
         float bevel = dot(Nmicro, V) - dot(N, V);
         litEnv *= saturate(1.0 + bevel * (0.48 * sd.reliefFade));
 
+        float basePow = clamp((MaterialPower > 1.0) ? MaterialPower : 24.0, 14.0, 64.0);
+        float specPow = lerp(basePow * 0.85, max(basePow, 52.0), max(sd.smoothness, sd.metalMask));
+        float fresnel = lerp(0.32, 0.95, pow(1.0 - NdotV, 2.5));
+        float matScale = lerp(0.035, 0.24, sd.smoothness * sd.smoothness) + sd.metalMask * 0.16;
+        float tintWeight = lerp(0.45, 0.80, sd.metalMask);
+        float3 surfTint = lerp(float3(1.0, 1.0, 1.0), sd.albedo, tintWeight);
+
         float dirLum = dot(DirectionalLight0_Diffuse.rgb, float3(0.299, 0.587, 0.114));
         if (dirLum > 1e-4)
         {
@@ -349,18 +426,33 @@ float4 ShadeDiffPass(VS_OUTPUT input, bool doAlphaReject)
                 float ndlRaw = dot(Nmicro, L0);
                 float3 H = normalize(L0 + V);
                 float ndh = max(dot(Nmicro, H), 0.0);
-
-                float basePow = clamp((MaterialPower > 1.0) ? MaterialPower : 24.0, 14.0, 64.0);
-                float specPow = lerp(basePow * 0.85, max(basePow, 52.0), max(sd.smoothness, sd.metalMask));
-                float fresnel = lerp(0.32, 0.95, pow(1.0 - NdotV, 2.5));
                 float termMask = saturate(ndlRaw * 2.5 + 0.15);
-                float matScale = lerp(0.035, 0.24, sd.smoothness * sd.smoothness) + sd.metalMask * 0.16;
                 float specScalar = pow(ndh, specPow) * matScale * fresnel * termMask * detailWeight;
 
-                float tintWeight = lerp(0.45, 0.80, sd.metalMask);
-                float3 surfTint = lerp(float3(1.0, 1.0, 1.0), sd.albedo, tintWeight);
                 specAdd = DirectionalLight0_Diffuse.rgb * MaterialDiffuse.rgb * surfTint * specScalar;
             }
+        }
+
+        if (p3EnhanceFlags.x > 0.5)
+        {
+            float3 Pview = -input.Texcoord7.xyz;
+            float3 pointReliefSum = float3(0.0, 0.0, 0.0);
+            AccumulatePointLightRelief(
+                PointLight0_Position, PointLight0_Diffuse.rgb, PointLight0_Specular.rgb,
+                PointLight0_Range, PointLight0_Attenuation,
+                Pview, N, Nmicro, V, specPow, fresnel, matScale, surfTint,
+                sd.reliefFade, detailWeight, pointReliefSum, specAdd);
+            AccumulatePointLightRelief(
+                PointLight1_Position, PointLight1_Diffuse.rgb, PointLight1_Specular.rgb,
+                PointLight1_Range, PointLight1_Attenuation,
+                Pview, N, Nmicro, V, specPow, fresnel, matScale, surfTint,
+                sd.reliefFade, detailWeight, pointReliefSum, specAdd);
+            AccumulatePointLightRelief(
+                PointLight2_Position, PointLight2_Diffuse.rgb, PointLight2_Specular.rgb,
+                PointLight2_Range, PointLight2_Attenuation,
+                Pview, N, Nmicro, V, specPow, fresnel, matScale, surfTint,
+                sd.reliefFade, detailWeight, pointReliefSum, specAdd);
+            litEnv = max(litEnv + pointReliefSum, float3(0.0, 0.0, 0.0));
         }
     }
 

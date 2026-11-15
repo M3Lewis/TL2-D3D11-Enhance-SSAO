@@ -308,23 +308,32 @@ const char* SkipReasonName(SkipReason r) {
     }
 }
 
-constexpr size_t kMaxPassDiagSlots = 64;
+constexpr size_t kSkipReasonCount = static_cast<size_t>(SkipReason::UnmatchedName) + 1;
+constexpr size_t kMaxPassDiagSlots = 512;
+constexpr uint32_t kMaxPassDiagEntries = 384;
+constexpr size_t kDiagProbeLimit = 16;
 
 struct PassDiagSlot {
     std::atomic<uint64_t> key{0};
     std::atomic<uint64_t> hits{0};
-    char summary[240]{};
+    bool skipped = false;
+    char summary[288]{};
 };
 
+std::atomic<uint64_t> g_skip_reason_hits[kSkipReasonCount]{};
 PassDiagSlot g_diag_slots[kMaxPassDiagSlots]{};
 std::atomic<uint32_t> g_diag_used{0};
 SRWLOCK g_diag_lock = SRWLOCK_INIT;
 
 void ResetPassDiagSlots() {
+    for (auto& cnt : g_skip_reason_hits) {
+        cnt.store(0, std::memory_order_relaxed);
+    }
     ::AcquireSRWLockExclusive(&g_diag_lock);
     for (auto& slot : g_diag_slots) {
         slot.key.store(0, std::memory_order_relaxed);
         slot.hits.store(0, std::memory_order_relaxed);
+        slot.skipped = false;
         slot.summary[0] = '\0';
     }
     g_diag_used.store(0, std::memory_order_relaxed);
@@ -398,12 +407,17 @@ void FormatPassDiagSummary(
 }
 
 void RecordPassDiag(const void* pass, PassArchetype arch, SkipReason reason) {
+    const size_t reason_idx = static_cast<size_t>(reason);
+    if (reason_idx < kSkipReasonCount) {
+        g_skip_reason_hits[reason_idx].fetch_add(1, std::memory_order_relaxed);
+    }
+
     const uint16_t num_tus = (pass && g_api.pass_get_num_tus) ? g_api.pass_get_num_tus(pass) : 0;
     const uint64_t key = ComputeQuickPassKey(pass, arch, reason, num_tus);
     const size_t mask = kMaxPassDiagSlots - 1;
     size_t idx = static_cast<size_t>(key) & mask;
 
-    for (size_t probe = 0; probe < 8; ++probe) {
+    for (size_t probe = 0; probe < kDiagProbeLimit; ++probe) {
         const size_t slot_idx = (idx + probe) & mask;
         const uint64_t existing = g_diag_slots[slot_idx].key.load(std::memory_order_acquire);
         if (existing == key) {
@@ -415,12 +429,12 @@ void RecordPassDiag(const void* pass, PassArchetype arch, SkipReason reason) {
         }
     }
 
-    if (g_diag_used.load(std::memory_order_relaxed) >= 48) {
+    if (g_diag_used.load(std::memory_order_relaxed) >= kMaxPassDiagEntries) {
         return;
     }
 
     ::AcquireSRWLockExclusive(&g_diag_lock);
-    for (size_t probe = 0; probe < 8; ++probe) {
+    for (size_t probe = 0; probe < kDiagProbeLimit; ++probe) {
         const size_t slot_idx = (idx + probe) & mask;
         const uint64_t existing = g_diag_slots[slot_idx].key.load(std::memory_order_relaxed);
         if (existing == key) {
@@ -429,8 +443,9 @@ void RecordPassDiag(const void* pass, PassArchetype arch, SkipReason reason) {
             return;
         }
         if (existing == 0) {
-            if (g_diag_used.load(std::memory_order_relaxed) < 48) {
+            if (g_diag_used.load(std::memory_order_relaxed) < kMaxPassDiagEntries) {
                 FormatPassDiagSummary(pass, arch, reason, g_diag_slots[slot_idx].summary, sizeof(g_diag_slots[slot_idx].summary));
+                g_diag_slots[slot_idx].skipped = (arch == PassArchetype::None);
                 g_diag_slots[slot_idx].hits.store(1, std::memory_order_relaxed);
                 g_diag_slots[slot_idx].key.store(key, std::memory_order_release);
                 g_diag_used.fetch_add(1, std::memory_order_relaxed);
@@ -1399,8 +1414,43 @@ void LogPhase3PassDiagnostics(Phase3LogFn logger) {
     if (!logger) {
         return;
     }
+
+    struct SkipEntry {
+        uint64_t hits = 0;
+        const char* name = nullptr;
+    };
+    SkipEntry skip_entries[kSkipReasonCount]{};
+    size_t skip_entry_count = 0;
+    uint64_t matched_hits = g_skip_reason_hits[0].load(std::memory_order_relaxed);
+    for (size_t i = 1; i < kSkipReasonCount; ++i) {
+        const uint64_t h = g_skip_reason_hits[i].load(std::memory_order_relaxed);
+        if (h > 0) {
+            skip_entries[skip_entry_count++] = {h, SkipReasonName(static_cast<SkipReason>(i))};
+        }
+    }
+    std::sort(skip_entries, skip_entries + skip_entry_count, [](const SkipEntry& a, const SkipEntry& b) {
+        return a.hits > b.hits;
+    });
+
+    char summary_buf[768]{};
+    int pos = std::snprintf(
+        summary_buf,
+        sizeof(summary_buf),
+        "ok=%llu",
+        static_cast<unsigned long long>(matched_hits));
+    for (size_t i = 0; i < skip_entry_count && pos > 0 && static_cast<size_t>(pos) + 32 < sizeof(summary_buf); ++i) {
+        pos += std::snprintf(
+            summary_buf + pos,
+            sizeof(summary_buf) - static_cast<size_t>(pos),
+            " %s=%llu",
+            skip_entries[i].name,
+            static_cast<unsigned long long>(skip_entries[i].hits));
+    }
+    logger("[RouteB][Phase3][SkipSummary] %s", summary_buf);
+
     struct Row {
         uint64_t hits = 0;
+        bool skipped = false;
         const char* summary = nullptr;
     };
     Row rows[kMaxPassDiagSlots]{};
@@ -1410,15 +1460,28 @@ void LogPhase3PassDiagnostics(Phase3LogFn logger) {
     for (const auto& slot : g_diag_slots) {
         const uint64_t h = slot.hits.load(std::memory_order_relaxed);
         if (slot.key.load(std::memory_order_relaxed) != 0 && h > 0 && slot.summary[0] != '\0') {
-            rows[count++] = {h, slot.summary};
+            rows[count++] = {h, slot.skipped, slot.summary};
         }
     }
     std::sort(rows, rows + count, [](const Row& a, const Row& b) { return a.hits > b.hits; });
-    const size_t limit = (count < 24) ? count : 24;
-    for (size_t i = 0; i < limit; ++i) {
-        logger("[RouteB][Phase3][PassDiag] hits=%llu %s",
-               static_cast<unsigned long long>(rows[i].hits),
-               rows[i].summary);
+
+    size_t matched_logged = 0;
+    size_t skipped_logged = 0;
+    for (size_t i = 0; i < count; ++i) {
+        if (!rows[i].skipped && matched_logged < 16) {
+            logger("[RouteB][Phase3][PassDiag] hits=%llu %s",
+                   static_cast<unsigned long long>(rows[i].hits),
+                   rows[i].summary);
+            ++matched_logged;
+        } else if (rows[i].skipped && skipped_logged < 32) {
+            logger("[RouteB][Phase3][PassDiag] hits=%llu %s",
+                   static_cast<unsigned long long>(rows[i].hits),
+                   rows[i].summary);
+            ++skipped_logged;
+        }
+        if (matched_logged >= 16 && skipped_logged >= 32) {
+            break;
+        }
     }
     ::ReleaseSRWLockShared(&g_diag_lock);
 }

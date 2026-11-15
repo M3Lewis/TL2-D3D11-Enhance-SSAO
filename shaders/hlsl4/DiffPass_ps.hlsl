@@ -109,78 +109,124 @@ struct SurfaceDetail
     float3 albedo;
     float3 microNormal;
     float  detailFade;
+    float  reliefFade;
     float  smoothness;
     float  metalMask;
 };
 
-SurfaceDetail AnalyzeSurfaceDetail(float2 uv, float2 duvX, float2 duvY, float3 centerAlbedo, float3 baseNormal, bool hasNormal)
+SurfaceDetail AnalyzeSurfaceDetail(
+    float2 uv,
+    float2 duvX,
+    float2 duvY,
+    float3 centerAlbedo,
+    float3 baseNormal,
+    bool hasNormal,
+    float detailWeight)
 {
     SurfaceDetail sd;
     sd.albedo = centerAlbedo;
     sd.microNormal = baseNormal;
     sd.detailFade = 0.0;
+    sd.reliefFade = 0.0;
 
     float lenX = length(duvX);
     float lenY = length(duvY);
     float uvFoot = max(lenX, lenY);
-    float fade = 1.0 - smoothstep(0.003, 0.012, uvFoot);
 
-    float3 avg4 = centerAlbedo;
-    float gx = 0.0;
-    float gy = 0.0;
+    // Isometric camera keeps walls/floors around uvFoot 0.004..0.025; keep relief active without horizon shimmer.
+    float fadeFine  = (1.0 - smoothstep(0.007, 0.024, uvFoot)) * detailWeight;
+    float fadeMacro = (1.0 - smoothstep(0.009, 0.030, uvFoot)) * detailWeight;
 
-    if (fade > 0.01 && uvFoot > 1e-6 && uvFoot < 0.03)
+    float3 avgFine = centerAlbedo;
+    float3 avgMacro = centerAlbedo;
+    float gxFine = 0.0;
+    float gyFine = 0.0;
+    float gxMacro = 0.0;
+    float gyMacro = 0.0;
+
+    if (fadeMacro > 0.01 && uvFoot > 1e-6 && uvFoot < 0.040)
     {
-        float maxStep = 0.0025;
-        float2 stepX = (lenX > maxStep) ? (duvX * (maxStep / lenX)) : duvX;
-        float2 stepY = (lenY > maxStep) ? (duvY * (maxStep / lenY)) : duvY;
+        float maxFineStep = 0.0045;
+        float2 fineX = (lenX > maxFineStep) ? (duvX * (maxFineStep / lenX)) : duvX;
+        float2 fineY = (lenY > maxFineStep) ? (duvY * (maxFineStep / lenY)) : duvY;
 
-        float3 sXp = Texture0.SampleGrad(Sampler0, uv + stepX * 0.75, duvX, duvY).rgb;
-        float3 sXm = Texture0.SampleGrad(Sampler0, uv - stepX * 0.75, duvX, duvY).rgb;
-        float3 sYp = Texture0.SampleGrad(Sampler0, uv + stepY * 0.75, duvX, duvY).rgb;
-        float3 sYm = Texture0.SampleGrad(Sampler0, uv - stepY * 0.75, duvX, duvY).rgb;
+        float maxMacroStep = 0.0065;
+        float2 macroX = (lenX > maxMacroStep) ? (duvX * (maxMacroStep / lenX)) : duvX;
+        float2 macroY = (lenY > maxMacroStep) ? (duvY * (maxMacroStep / lenY)) : duvY;
 
-        avg4 = (sXp + sXm + sYp + sYm) * 0.25;
+        float3 sXp = Texture0.SampleGrad(Sampler0, uv + fineX * 0.80, duvX, duvY).rgb;
+        float3 sXm = Texture0.SampleGrad(Sampler0, uv - fineX * 0.80, duvX, duvY).rgb;
+        float3 sYp = Texture0.SampleGrad(Sampler0, uv + fineY * 0.80, duvX, duvY).rgb;
+        float3 sYm = Texture0.SampleGrad(Sampler0, uv - fineY * 0.80, duvX, duvY).rgb;
+        avgFine = (sXp + sXm + sYp + sYm) * 0.25;
+
+        float3 dPP = Texture0.SampleGrad(Sampler0, uv + (macroX + macroY) * 1.25, duvX, duvY).rgb;
+        float3 dMP = Texture0.SampleGrad(Sampler0, uv + (-macroX + macroY) * 1.25, duvX, duvY).rgb;
+        float3 dPM = Texture0.SampleGrad(Sampler0, uv + (macroX - macroY) * 1.25, duvX, duvY).rgb;
+        float3 dMM = Texture0.SampleGrad(Sampler0, uv + (-macroX - macroY) * 1.25, duvX, duvY).rgb;
+        avgMacro = (dPP + dMP + dPM + dMM) * 0.25;
 
         const float3 lumaW = float3(0.299, 0.587, 0.114);
         float lumC = dot(centerAlbedo, lumaW);
-        float lumAvg = dot(avg4, lumaW);
-        gx = dot(sXp - sXm, lumaW);
-        gy = -dot(sYp - sYm, lumaW);
+        float lumFine = dot(avgFine, lumaW);
+        float lumMacro = dot(avgMacro, lumaW);
 
-        // Zero-mean 2x micro-detail clarity + subtle crevice etching (no average brightness shift)
+        gxFine = dot(sXp - sXm, lumaW);
+        gyFine = -dot(sYp - sYm, lumaW);
+        gxMacro = (dot(dPP + dPM, lumaW) - dot(dMP + dMM, lumaW)) * 0.5;
+        gyMacro = -(dot(dPP + dMP, lumaW) - dot(dPM + dMM, lumaW)) * 0.5;
+
+        // Avoid exaggerating faint 8-bit/DXT block noise on ultra-flat gradients while keeping real edges sharp.
+        float fineSignal = abs(lumC - lumFine) + max(abs(gxFine), abs(gyFine)) * 0.5;
+        float dxtGate = smoothstep(0.006, 0.025, fineSignal);
+
+        // Zero-mean two-scale detail clarity + brick/stone mortar crevice depth (no global brightness drift).
         float lumHeadroom = saturate(min(lumC, 1.0 - lumC) * 4.5);
-        float3 highFreq = clamp(centerAlbedo - avg4, -0.06, 0.06);
-        float3 enhanced = saturate(centerAlbedo + highFreq * (0.36 * fade * lumHeadroom));
+        float3 fineHF = clamp(centerAlbedo - avgFine, -0.075, 0.075);
+        float3 macroHF = clamp(centerAlbedo - avgMacro, -0.065, 0.065);
+        float3 enhanced = saturate(
+            centerAlbedo +
+            (fineHF * (0.40 * fadeFine * dxtGate) + macroHF * (0.28 * fadeMacro)) * lumHeadroom);
 
-        float dip = max(lumAvg - lumC, 0.0);
-        float crevice = 1.0 - saturate(dip * 1.05) * (0.13 * fade);
+        float dipFine = max(lumFine - lumC, 0.0);
+        float dipMacro = max(lumMacro - lumC, 0.0);
+        float dipBlend = dipFine * 0.45 + dipMacro * 0.75;
+        float crevice = 1.0 - saturate(dipBlend * 1.35) * (0.20 * fadeMacro * smoothstep(0.02, 0.12, lumMacro));
+
         sd.albedo = enhanced * crevice;
-        sd.detailFade = fade;
+        sd.detailFade = fadeFine;
+        sd.reliefFade = fadeMacro;
 
         if (hasNormal)
         {
+            float gx = gxFine * (0.55 * fadeFine * dxtGate) + gxMacro * (0.80 * fadeMacro);
+            float gy = gyFine * (0.55 * fadeFine * dxtGate) + gyMacro * (0.80 * fadeMacro);
             float3 rawGrad = float3(gx, gy, 0.0);
             float3 tanGrad = rawGrad - baseNormal * dot(rawGrad, baseNormal);
             float gradLen = length(tanGrad);
-            if (gradLen > 0.30)
-                tanGrad *= (0.30 / gradLen);
-            sd.microNormal = normalize(baseNormal - tanGrad * (0.95 * fade));
+            if (gradLen > 0.42)
+                tanGrad *= (0.42 / gradLen);
+            sd.microNormal = normalize(baseNormal - tanGrad * 1.30);
         }
     }
 
+    const float3 lumaW2 = float3(0.299, 0.587, 0.114);
     float maxC = max(sd.albedo.r, max(sd.albedo.g, sd.albedo.b));
     float minC = min(sd.albedo.r, min(sd.albedo.g, sd.albedo.b));
     float sat = (maxC > 1e-4) ? ((maxC - minC) / maxC) : 0.0;
-    float lum = dot(sd.albedo, float3(0.299, 0.587, 0.114));
-    float lumAvg = dot(avg4, float3(0.299, 0.587, 0.114));
-    float localNoise = saturate(abs(lum - lumAvg) * 3.5 + (abs(gx) + abs(gy)) * 1.5);
+    float lum = dot(sd.albedo, lumaW2);
+    float lumFine2 = dot(avgFine, lumaW2);
+    float lumMacro2 = dot(avgMacro, lumaW2);
 
-    sd.smoothness = saturate((1.0 - localNoise * 0.65) * smoothstep(0.10, 0.35, lum));
+    float fineRough = saturate(abs(lum - lumFine2) * 4.2 + (abs(gxFine) + abs(gyFine)) * 1.4);
+    float macroVar = saturate(abs(lum - lumMacro2) * 3.0 + (abs(gxMacro) + abs(gyMacro)) * 1.1);
+    float roughness = saturate(fineRough * 0.65 + macroVar * 0.35);
+
+    sd.smoothness = saturate((1.0 - roughness * 0.72) * smoothstep(0.08, 0.34, lum));
     sd.metalMask = (1.0 - smoothstep(0.14, 0.34, sat)) *
-                   smoothstep(0.14, 0.28, lum) *
-                   (1.0 - smoothstep(0.68, 0.85, lum)) *
-                   saturate(1.0 - localNoise * 0.5);
+                   smoothstep(0.16, 0.30, lum) *
+                   (1.0 - smoothstep(0.66, 0.82, lum)) *
+                   (1.0 - smoothstep(0.15, 0.45, fineRough));
     return sd;
 }
 
@@ -191,11 +237,17 @@ float4 ShadeDiffPass(VS_OUTPUT input, bool doAlphaReject)
     float4 albedo = Texture0.Sample(Sampler0, input.Texcoord0.xy);
     float outAlpha = saturate(albedo.a * input.Color.a);
 
+    float detailWeight = 1.0;
     if (doAlphaReject)
     {
         int cmpFunc = (int)(p3Flags.y + 0.5);
         if (!PassesAlphaReject(outAlpha, AlphaRejectValue, cmpFunc))
             discard;
+        if (cmpFunc >= 6 && AlphaRejectValue > 0.01)
+        {
+            float alphaInterior = smoothstep(AlphaRejectValue, min(AlphaRejectValue + 0.25, 0.96), outAlpha);
+            detailWeight = lerp(0.20, 1.0, alphaInterior);
+        }
     }
 
     bool hasNormal = false;
@@ -213,7 +265,7 @@ float4 ShadeDiffPass(VS_OUTPUT input, bool doAlphaReject)
         }
     }
 
-    SurfaceDetail sd = AnalyzeSurfaceDetail(input.Texcoord0.xy, duvX, duvY, albedo.rgb, N, hasNormal);
+    SurfaceDetail sd = AnalyzeSurfaceDetail(input.Texcoord0.xy, duvX, duvY, albedo.rgb, N, hasNormal, detailWeight);
 
     float3 litEnv = input.Color.rgb;
     float3 specAdd = float3(0.0, 0.0, 0.0);
@@ -223,9 +275,9 @@ float4 ShadeDiffPass(VS_OUTPUT input, bool doAlphaReject)
         float3 Nmicro = sd.microNormal;
         float NdotV = saturate(dot(Nmicro, V));
 
-        // Preserve original lighting feel while projecting micro-surface bevels cleanly
+        // Preserve original lighting feel while carving multi-scale stone/brick bevels
         float bevel = dot(Nmicro, V) - dot(N, V);
-        litEnv *= saturate(1.0 + bevel * (0.16 * sd.detailFade));
+        litEnv *= saturate(1.0 + bevel * (0.26 * sd.reliefFade));
 
         float dirLum = dot(DirectionalLight0_Diffuse.rgb, float3(0.299, 0.587, 0.114));
         if (dirLum > 1e-4)
@@ -236,18 +288,18 @@ float4 ShadeDiffPass(VS_OUTPUT input, bool doAlphaReject)
             {
                 float3 L0 = rawL0 * rsqrt(l0LenSq);
                 float relief = dot(Nmicro, L0) - dot(N, L0);
-                litEnv *= saturate(1.0 + relief * (0.35 * sd.detailFade));
+                litEnv *= saturate(1.0 + relief * (0.52 * sd.reliefFade));
 
                 float ndlRaw = dot(Nmicro, L0);
                 float3 H = normalize(L0 + V);
                 float ndh = max(dot(Nmicro, H), 0.0);
 
                 float basePow = clamp((MaterialPower > 1.0) ? MaterialPower : 24.0, 14.0, 64.0);
-                float specPow = lerp(basePow * 0.85, max(basePow, 44.0), max(sd.smoothness, sd.metalMask));
+                float specPow = lerp(basePow * 0.85, max(basePow, 48.0), max(sd.smoothness, sd.metalMask));
                 float fresnel = lerp(0.28, 0.90, pow(1.0 - NdotV, 2.8));
                 float termMask = saturate(ndlRaw * 2.5 + 0.15);
-                float matScale = lerp(0.04, 0.16, sd.smoothness) + sd.metalMask * 0.08;
-                float specScalar = pow(ndh, specPow) * matScale * fresnel * termMask;
+                float matScale = lerp(0.035, 0.16, sd.smoothness) + sd.metalMask * 0.09;
+                float specScalar = pow(ndh, specPow) * matScale * fresnel * termMask * detailWeight;
 
                 float tintWeight = lerp(0.45, 0.80, sd.metalMask);
                 float3 surfTint = lerp(float3(1.0, 1.0, 1.0), sd.albedo, tintWeight);

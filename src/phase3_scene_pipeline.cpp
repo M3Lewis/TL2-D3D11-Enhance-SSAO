@@ -144,6 +144,7 @@ using GetSharedParamsFn = void(__fastcall*)(uintptr_t mgr, OgreSharedPtr* out_sp
 using AddSharedConstDefFn = void(__fastcall*)(uintptr_t shared_params, const std::string& name, int const_type, size_t array_size);
 
 using PassGetStringFn = const std::string&(__fastcall*)(const void* pass);
+using PassGetFpParamsFn = OgreSharedPtr*(__fastcall*)(const void* pass, OgreSharedPtr* out_sp);
 using PassGetBoolFn = bool(__fastcall*)(const void* pass);
 using PassGetU16Fn = uint16_t(__fastcall*)(const void* pass);
 using PassGetTusFn = const void*(__fastcall*)(const void* pass, uint16_t index);
@@ -196,6 +197,7 @@ struct OgreApiTable {
     PassGetBoolFn pass_has_fp = nullptr;
     PassGetStringFn pass_get_vp_name = nullptr;
     PassGetStringFn pass_get_fp_name = nullptr;
+    PassGetFpParamsFn pass_get_fp_params = nullptr;
     PassGetU16Fn pass_get_num_tus = nullptr;
     PassGetTusFn pass_get_tus = nullptr;
     PassGetIntFn pass_get_alpha_reject_func = nullptr;
@@ -297,6 +299,9 @@ std::atomic<uint64_t> g_vs_missing_vcol_fixes{0};
 std::atomic<uint64_t> g_ff_explicit_syncs{0};
 std::atomic<bool> g_hooked{false};
 std::atomic<bool> g_runtime_enhance_enabled{true};
+std::atomic<int> g_p2_filter_preset{1};
+std::atomic<uint64_t> g_p2_bloom_last_tick_ms{0};
+std::atomic<uint64_t> g_p2_fxaa_last_tick_ms{0};
 std::atomic<Phase3PassObserverFn> g_pass_observer{nullptr};
 
 enum class SkipReason : uint8_t {
@@ -524,6 +529,66 @@ bool EnvFlagIsOne(const char* name) {
     char buf[8] = {};
     const DWORD len = ::GetEnvironmentVariableA(name, buf, static_cast<DWORD>(sizeof(buf)));
     return len > 0 && buf[0] == '1';
+}
+
+int ResolveInitialP2Preset() {
+    char buf[16] = {};
+    const DWORD len = ::GetEnvironmentVariableA("TL2_P2_FILTER_MODE", buf, static_cast<DWORD>(sizeof(buf)));
+    if (len == 0) {
+        return 1;
+    }
+    if (buf[0] == '0' || _stricmp(buf, "off") == 0) {
+        return 0;
+    }
+    if (buf[0] == '2' || _stricmp(buf, "drk") == 0 || _stricmp(buf, "dark") == 0) {
+        return 2;
+    }
+    return 1;
+}
+
+void MaybeApplyP2FilterUniformsToPass(const void* pass) {
+    if (!pass || !g_api.pass_has_fp || !g_api.pass_get_fp_name || !g_api.pass_get_fp_params) {
+        return;
+    }
+    if (!g_api.pass_has_fp(pass)) {
+        return;
+    }
+    const std::string& fp_name = g_api.pass_get_fp_name(pass);
+    const bool is_bright_bloom = (fp_name.find("BrightBloom2_ps") != std::string::npos);
+    const bool is_bloom_blend = (!is_bright_bloom && fp_name.find("Bloom2_ps") != std::string::npos);
+    const bool is_fxaa = (fp_name.rfind("TL2/FxaaPS", 0) == 0);
+    if (!is_bright_bloom && !is_bloom_blend && !is_fxaa) {
+        return;
+    }
+
+    const uint64_t now_ms = ::GetTickCount64();
+    if (is_bright_bloom || is_bloom_blend) {
+        g_p2_bloom_last_tick_ms.store(now_ms, std::memory_order_relaxed);
+    } else {
+        g_p2_fxaa_last_tick_ms.store(now_ms, std::memory_order_relaxed);
+    }
+
+    const uint64_t bloom_ms = g_p2_bloom_last_tick_ms.load(std::memory_order_relaxed);
+    const bool bloom_recent = (bloom_ms != 0 && (now_ms - bloom_ms) < 250ULL);
+    const float apply_tonemap = (is_bright_bloom || is_bloom_blend || !bloom_recent) ? 1.0f : 0.0f;
+    const float params[4] = {
+        static_cast<float>(g_p2_filter_preset.load(std::memory_order_relaxed)),
+        apply_tonemap,
+        0.0f,
+        0.0f,
+    };
+
+    OgreSharedPtr fp_params_sp{};
+    try {
+        g_api.pass_get_fp_params(pass, &fp_params_sp);
+        if (fp_params_sp.rep) {
+            static const std::string kP2FilterKey = "p2FilterParams";
+            WriteCachedFloatParamByMsvcStr(
+                reinterpret_cast<uintptr_t>(fp_params_sp.rep), &kP2FilterKey, params, sizeof(params));
+        }
+    } catch (...) {
+    }
+    ReleaseOgreSharedPtr(fp_params_sp);
 }
 
 bool ContainsAsciiInsensitive(std::string_view haystack, std::string_view needle) {
@@ -1420,6 +1485,13 @@ const void* __fastcall HookSceneManagerSetPass(
     g_active_binding = {};
     g_active_companion = {};
 
+    if (scene_mgr && pass) {
+        const bool pre_suppressed = (*reinterpret_cast<const uint8_t*>(scene_mgr + kSmOffSuppressRenderState) != 0);
+        if (!pre_suppressed || even_if_suppressed) {
+            MaybeApplyP2FilterUniformsToPass(pass);
+        }
+    }
+
     const void* used_pass = g_orig_set_pass(scene_mgr, pass, even_if_suppressed, shadow_derivation);
     if (!scene_mgr || !used_pass) {
         return used_pass;
@@ -1603,7 +1675,8 @@ bool ResolveAllOgreExports(HMODULE ogre_mod) {
     ok &= ResolveExport(ogre_mod, "?getColourBlendMode@TextureUnitState@Ogre@@QEBAAEBVLayerBlendModeEx@2@XZ", g_api.tus_get_colour_blend);
     ok &= ResolveExport(ogre_mod, "?getAlphaBlendMode@TextureUnitState@Ogre@@QEBAAEBVLayerBlendModeEx@2@XZ", g_api.tus_get_alpha_blend);
 
-    // Optional companion texture resolution exports (don't fail Phase 3 if absent).
+    // Optional pass FP parameter + companion texture resolution exports (don't fail Phase 3 if absent).
+    ResolveExport(ogre_mod, "?getFragmentProgramParameters@Pass@Ogre@@QEBA?AV?$SharedPtr@VGpuProgramParameters@Ogre@@@2@XZ", g_api.pass_get_fp_params);
     ResolveExport(ogre_mod, "?ms_Singleton@?$Singleton@VResourceGroupManager@Ogre@@@Ogre@@1PEAVResourceGroupManager@2@EA", g_api.rgm_singleton_ptr);
     ResolveExport(ogre_mod, "?ms_Singleton@?$Singleton@VTextureManager@Ogre@@@Ogre@@1PEAVTextureManager@2@EA", g_api.tex_mgr_singleton_ptr);
     ResolveExport(ogre_mod, "?resourceExistsInAnyGroup@ResourceGroupManager@Ogre@@QEAA_NAEBV?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@@Z", g_api.rgm_exists_any);
@@ -1626,6 +1699,9 @@ bool InstallPhase3ScenePipeline(void* d3d11_base, void* ogre_main_base, Phase3Lo
     g_toggles.light_pass = !EnvFlagIsOne("TL2_P3_DISABLE_LIGHT");
     g_toggles.rim_lit = !EnvFlagIsOne("TL2_P3_DISABLE_RIM");
     g_runtime_enhance_enabled.store(!EnvFlagIsOne("TL2_B_DISABLE_ENHANCE"), std::memory_order_relaxed);
+    g_p2_filter_preset.store(ResolveInitialP2Preset(), std::memory_order_relaxed);
+    g_p2_bloom_last_tick_ms.store(0, std::memory_order_relaxed);
+    g_p2_fxaa_last_tick_ms.store(0, std::memory_order_relaxed);
 
     auto* ogre_mod = static_cast<HMODULE>(ogre_main_base);
     if (!ResolveAllOgreExports(ogre_mod)) {
@@ -1836,6 +1912,45 @@ bool TogglePhase3RuntimeEnhance() {
     while (!g_runtime_enhance_enabled.compare_exchange_weak(expected, !expected, std::memory_order_relaxed)) {
     }
     return !expected;
+}
+
+void SetP2FilterPreset(int preset) {
+    const int clamped = (preset < 0 || preset > 2) ? 0 : preset;
+    g_p2_filter_preset.store(clamped, std::memory_order_relaxed);
+}
+
+int GetP2FilterPreset() {
+    return g_p2_filter_preset.load(std::memory_order_relaxed);
+}
+
+int CycleP2FilterPreset() {
+    int cur = g_p2_filter_preset.load(std::memory_order_relaxed);
+    int next = 0;
+    do {
+        next = (cur + 1) % 3;
+    } while (!g_p2_filter_preset.compare_exchange_weak(cur, next, std::memory_order_relaxed));
+    return next;
+}
+
+const char* P2FilterPresetName(int preset) {
+    switch (preset) {
+        case 1: return "HOB";
+        case 2: return "DRK";
+        default: return "OFF";
+    }
+}
+
+bool WasP2PostShaderSeenRecently() {
+    const uint64_t now_ms = ::GetTickCount64();
+    const uint64_t bloom_ms = g_p2_bloom_last_tick_ms.load(std::memory_order_relaxed);
+    const uint64_t fxaa_ms = g_p2_fxaa_last_tick_ms.load(std::memory_order_relaxed);
+    if (bloom_ms != 0 && (now_ms - bloom_ms) < 250ULL) {
+        return true;
+    }
+    if (fxaa_ms != 0 && (now_ms - fxaa_ms) < 250ULL) {
+        return true;
+    }
+    return false;
 }
 
 void SetPhase3PassObserver(Phase3PassObserverFn observer) {

@@ -28,7 +28,9 @@ $Payloads = @(
     @{ Id = 112; RelSrc = "shaders\hlsl4\LightPass_ps.hlsl";        Dst = "programs\hlsl4\LightPass_ps.hlsl";   Overwrite = $false },
     @{ Id = 113; RelSrc = "shaders\hlsl4\RimLit_ps.hlsl";           Dst = "programs\hlsl4\RimLit_ps.hlsl";      Overwrite = $false },
     @{ Id = 114; RelSrc = "shaders\hlsl4\skinning.hlsl";            Dst = "programs\hlsl4\skinning.hlsl";       Overwrite = $true  },
-    @{ Id = 115; RelSrc = "shaders\hlsl4\Fxaa_ps.hlsl";             Dst = "programs\hlsl4\Fxaa_ps.hlsl";        Overwrite = $true  }
+    @{ Id = 115; RelSrc = "shaders\hlsl4\Fxaa_ps.hlsl";             Dst = "programs\hlsl4\Fxaa_ps.hlsl";        Overwrite = $true  },
+    @{ Id = 116; RelSrc = "shaders\hlsl4\BrightBloom2_ps20.hlsl";   Dst = "programs\hlsl4\BrightBloom2_ps20.hlsl"; Overwrite = $true },
+    @{ Id = 117; RelSrc = "shaders\hlsl4\Bloom2_ps20.hlsl";         Dst = "programs\hlsl4\Bloom2_ps20.hlsl";  Overwrite = $true  }
 )
 
 $ManifestPath = Join-Path $ObjDir "installer_payload.manifest"

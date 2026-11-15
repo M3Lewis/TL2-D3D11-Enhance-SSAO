@@ -106,6 +106,8 @@ struct ActiveSceneFrame {
     bool world_candidate = false;
     bool ao_eligible = false;
     bool ao_injected = false;
+    bool filter_eligible = false;
+    bool filter_injected = false;
     uint32_t world_geom_draws = 0;
     int vp_l = 0;
     int vp_t = 0;
@@ -688,6 +690,42 @@ bool IsMainWorldRenderTargetName(const std::string& rt_name) {
     return true;
 }
 
+void TryDispatchP2FilterFallbackForFrame(ActiveSceneFrame& frame, uint8_t qid) {
+    if (frame.filter_injected || !frame.filter_eligible || WasP2PostShaderSeenRecently()) {
+        return;
+    }
+    const int preset = GetP2FilterPreset();
+    if (preset <= 0) {
+        return;
+    }
+    frame.filter_injected = true;
+
+    ID3D11DeviceContext* ctx = nullptr;
+    ID3D11RenderTargetView* rt_rtv = nullptr;
+    ID3D11DepthStencilView* rt_dsv = nullptr;
+    if (!TryGetContextFromRenderTarget(frame.rt, &ctx, &rt_rtv, &rt_dsv) || !ctx) {
+        SafeRelease(ctx);
+        return;
+    }
+
+    RouteCP2FilterRequest req{};
+    req.ctx = ctx;
+    req.fallback_rtv = rt_rtv;
+    req.vp_left = frame.vp_l;
+    req.vp_top = frame.vp_t;
+    req.vp_width = frame.vp_w;
+    req.vp_height = frame.vp_h;
+    req.filter_preset = preset;
+    const bool ok = ExecuteRouteCP2FilterPass(req, g_log);
+
+    static std::atomic<bool> s_logged_fb{false};
+    if (!s_logged_fb.exchange(true, std::memory_order_relaxed) && g_log) {
+        g_log("[RouteB][P2][Fallback] Applied scene filter preset=%s on main RT=\"%s\" q=%u ok=%d",
+              P2FilterPresetName(preset), frame.rt_name, static_cast<unsigned>(qid), ok ? 1 : 0);
+    }
+    SafeRelease(ctx);
+}
+
 bool IsGameProcessForeground() {
     const HWND fg = ::GetForegroundWindow();
     if (!fg) {
@@ -701,9 +739,11 @@ bool IsGameProcessForeground() {
 void PollRuntimeToggleHotkeys() {
     static bool prev_f8 = false;
     static bool prev_f9 = false;
+    static bool prev_f10 = false;
     if (!IsGameProcessForeground()) {
         prev_f8 = false;
         prev_f9 = false;
+        prev_f10 = false;
         return;
     }
 
@@ -726,6 +766,17 @@ void PollRuntimeToggleHotkeys() {
         }
     }
     prev_f9 = down_f9;
+
+    const bool down_f10 = (::GetAsyncKeyState(VK_F10) & 0x8000) != 0;
+    if (down_f10 && !prev_f10) {
+        const int next_preset = CycleP2FilterPreset();
+        g_toast_expire_tick_ms.store(::GetTickCount64() + 2000ULL, std::memory_order_relaxed);
+        if (g_log) {
+            g_log("[RouteB][Hotkey] F10 -> Scene filter preset: %s (%d)",
+                  P2FilterPresetName(next_preset), next_preset);
+        }
+    }
+    prev_f10 = down_f10;
 }
 
 void DrawToastOverlayForRenderTarget(void* rw) {
@@ -748,7 +799,13 @@ void DrawToastOverlayForRenderTarget(void* rw) {
     bool drawn = false;
     if (got_ctx && ctx && rtv) {
         drawn = ExecuteRouteCToastOverlay(
-            ctx, rtv, IsPhase3RuntimeEnhanceEnabled(), IsRouteCAoRuntimeEnabled(), fade, g_log);
+            ctx,
+            rtv,
+            IsPhase3RuntimeEnhanceEnabled(),
+            IsRouteCAoRuntimeEnabled(),
+            GetP2FilterPreset(),
+            fade,
+            g_log);
     }
     static bool logged_toast_diag = false;
     if (!logged_toast_diag && g_log) {
@@ -838,7 +895,8 @@ void __fastcall HookRenderScene(void* sm, void* cam, void* vp, uint8_t show_over
     const bool survey_on = g_c0_survey_active.load(std::memory_order_relaxed);
     const bool ao_on = g_ao_runtime_enabled.load(std::memory_order_relaxed);
     const int dbg_mode = ao_on ? g_ao_debug_mode.load(std::memory_order_relaxed) : -1;
-    if ((!survey_on && dbg_mode < 0) || g_scene_depth >= kMaxSceneStack || !sm || !vp) {
+    const bool need_filter_fallback = (GetP2FilterPreset() > 0) && !WasP2PostShaderSeenRecently();
+    if ((!survey_on && dbg_mode < 0 && !need_filter_fallback) || g_scene_depth >= kMaxSceneStack || !sm || !vp) {
         g_orig_render_scene(sm, cam, vp, show_overlays);
         return;
     }
@@ -866,12 +924,21 @@ void __fastcall HookRenderScene(void* sm, void* cam, void* vp, uint8_t show_over
         world_cand &&
         (sm_str == "SMInstance") &&
         (cam_str == "PlayerCam");
+    bool filter_eligible =
+        need_filter_fallback &&
+        world_cand &&
+        (sm_str == "SMInstance") &&
+        (cam_str == "PlayerCam") &&
+        (show_overlays != 0);
 
     const std::string* rt_str_ptr = nullptr;
-    if (survey_on || ao_eligible) {
+    if (survey_on || ao_eligible || filter_eligible) {
         rt_str_ptr = &g_api.rt_get_name(rt);
         if (ao_eligible && !IsMainWorldRenderTargetName(*rt_str_ptr)) {
             ao_eligible = false;
+        }
+        if (filter_eligible && rt_str_ptr->rfind("rtt/", 0) == 0) {
+            filter_eligible = false;
         }
     }
 
@@ -884,6 +951,7 @@ void __fastcall HookRenderScene(void* sm, void* cam, void* vp, uint8_t show_over
     frame.is_perspective = is_persp;
     frame.world_candidate = world_cand;
     frame.ao_eligible = ao_eligible;
+    frame.filter_eligible = filter_eligible;
     frame.vp_l = vp_l;
     frame.vp_t = vp_t;
     frame.vp_w = vp_w;
@@ -974,6 +1042,9 @@ uint8_t __fastcall HookFireRenderQueueStarted(void* sm, uint8_t queue_group_id, 
             // Fallback trigger if queue 86 was absent in an empty-entity scene: inject right before q>86 starts.
             if (queue_group_id > 86) {
                 TryDispatchAoForFrame(frame, "Started>86", queue_group_id);
+            }
+            if (queue_group_id >= 95) {
+                TryDispatchP2FilterFallbackForFrame(frame, queue_group_id);
             }
             if (g_c0_survey_active.load(std::memory_order_relaxed)) {
                 frame.queue = {};
@@ -1154,9 +1225,11 @@ bool InstallRouteCAoPipeline(void* ogre_main_base, RouteCLogFn logger) {
     g_hooked.store(true, std::memory_order_relaxed);
 
     if (g_log) {
-        g_log("[RouteC][C2] Hooks installed (ao=%s, debugMode=%d, c0_survey=%s, injectQueue=86, hotkeys=F8:Enhance/F9:AO).",
+        const int p2_preset = GetP2FilterPreset();
+        g_log("[RouteC][C2] Hooks installed (ao=%s, debugMode=%d, p2Filter=%s, c0_survey=%s, injectQueue=86, hotkeys=F8:Enhance/F9:AO/F10:Filter).",
               ao_init_on ? "ON" : "OFF",
               dbg_mode,
+              P2FilterPresetName(p2_preset),
               survey_on ? "ON" : "OFF");
     }
     return true;

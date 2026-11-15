@@ -57,11 +57,22 @@ struct RouteCD3DStats {
 };
 
 bool ExecuteRouteCAoPass(const RouteCAoRenderRequest& req, RouteCD3DLogFn logger);
+struct RouteCP2FilterRequest {
+    ID3D11DeviceContext* ctx = nullptr;
+    ID3D11RenderTargetView* fallback_rtv = nullptr;
+    int vp_left = 0;
+    int vp_top = 0;
+    int vp_width = 0;
+    int vp_height = 0;
+    int filter_preset = 1;  // 0=OFF, 1=HOB, 2=DRK
+};
+bool ExecuteRouteCP2FilterPass(const RouteCP2FilterRequest& req, RouteCD3DLogFn logger);
 bool ExecuteRouteCToastOverlay(
     ID3D11DeviceContext* ctx,
     ID3D11RenderTargetView* target_rtv,
     bool dll_enhance_on,
     bool ao_on,
+    int filter_preset,
     float fade_alpha,
     RouteCD3DLogFn logger);
 bool VerifyRouteCShadersCompile(RouteCD3DLogFn logger);

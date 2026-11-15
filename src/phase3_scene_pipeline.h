@@ -54,6 +54,12 @@ void SetPhase3RuntimeEnhanceEnabled(bool enabled);
 bool IsPhase3RuntimeEnhanceEnabled();
 bool TogglePhase3RuntimeEnhance();
 
+void SetP2FilterPreset(int preset);
+int GetP2FilterPreset();
+int CycleP2FilterPreset();
+const char* P2FilterPresetName(int preset);
+bool WasP2PostShaderSeenRecently();
+
 using Phase3PassObserverFn = void (*)(
     const char* pass_name,
     bool lighting,

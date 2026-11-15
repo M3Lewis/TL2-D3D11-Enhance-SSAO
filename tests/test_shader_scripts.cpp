@@ -43,6 +43,8 @@ using CreateCameraFn = void*(__fastcall*)(void* sm, const std::string& name);
 using AddViewportFn = void*(__fastcall*)(void* rt, void* cam, int zorder, float left, float top, float width, float height);
 using RenderOneFrameFn = bool(__fastcall*)(void* root);
 using MatCreateFn = void(__fastcall*)(void* mgr, OgreSharedPtrRaw* out_sp, const std::string& name, const std::string& group, bool is_manual, void* loader, const void* create_params);
+using MatGetByNameFn = void(__fastcall*)(void* mgr, OgreSharedPtrRaw* out_sp, const std::string& name, const std::string& group);
+using ResLoadFn = void(__fastcall*)(void* res, bool background);
 using MatGetTechFn = void*(__fastcall*)(void* mat, uint16_t idx);
 using TechGetPassFn = void*(__fastcall*)(void* tech, uint16_t idx);
 using PassSetNameFn = void(__fastcall*)(void* pass, const std::string& name);
@@ -66,6 +68,8 @@ bool ExercisePhase3PassLifecycle(HMODULE ogre, void* root, void* win) {
     AddViewportFn add_vp = nullptr;
     RenderOneFrameFn render_one = nullptr;
     MatCreateFn mat_create = nullptr;
+    MatGetByNameFn mat_get_by_name = nullptr;
+    ResLoadFn res_load = nullptr;
     MatGetTechFn mat_get_tech = nullptr;
     TechGetPassFn tech_get_pass = nullptr;
     PassSetNameFn pass_set_name = nullptr;
@@ -90,6 +94,8 @@ bool ExercisePhase3PassLifecycle(HMODULE ogre, void* root, void* win) {
     ok &= Resolve(ogre, "?addViewport@RenderTarget@Ogre@@UEAAPEAVViewport@2@PEAVCamera@2@HMMMM@Z", add_vp);
     ok &= Resolve(ogre, "?renderOneFrame@Root@Ogre@@QEAA_NXZ", render_one);
     ok &= Resolve(ogre, "?create@ResourceManager@Ogre@@UEAA?AV?$SharedPtr@VResource@Ogre@@@2@AEBV?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@0_NPEAVManualResourceLoader@2@PEBV?$map@V?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@V12@U?$less@V?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@@2@V?$STLAllocator@U?$pair@$$CBV?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@V12@@std@@V?$CategorisedAllocPolicy@$07@Ogre@@@Ogre@@@5@@Z", mat_create);
+    ok &= Resolve(ogre, "?getByName@ResourceManager@Ogre@@UEAA?AV?$SharedPtr@VResource@Ogre@@@2@AEBV?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@0@Z", mat_get_by_name);
+    ok &= Resolve(ogre, "?load@Resource@Ogre@@UEAAX_N@Z", res_load);
     ok &= Resolve(ogre, "?getTechnique@Material@Ogre@@QEAAPEAVTechnique@2@G@Z", mat_get_tech);
     ok &= Resolve(ogre, "?getPass@Technique@Ogre@@QEAAPEAVPass@2@G@Z", tech_get_pass);
     ok &= Resolve(ogre, "?setName@Pass@Ogre@@QEAAXAEBV?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@@Z", pass_set_name);
@@ -153,6 +159,31 @@ bool ExercisePhase3PassLifecycle(HMODULE ogre, void* root, void* win) {
             }
         }
         passes.push_back(pass);
+    }
+
+    // Also verify P2 post-processing materials compile cleanly under D3D11 and exercise
+    // SceneManager::_setPass P2 filter parameter forwarding with zero exceptions.
+    const char* p2_mats[] = {
+        "Ogre/Compositor/BrightPass2",
+        "Ogre/Compositor/BloomBlend2",
+        "TL2/RenderScale/FXAA",
+    };
+    for (const char* p2_mat_name : p2_mats) {
+        OgreSharedPtrRaw sp{};
+        mat_get_by_name(*mat_mgr_ptr, &sp, p2_mat_name, "Shaders");
+        if (!sp.rep) {
+            std::printf("[FAIL] Missing P2 material '%s' in Shaders group\n", p2_mat_name);
+            return false;
+        }
+        res_load(sp.rep, false);
+        void* tech = mat_get_tech(sp.rep, 0);
+        void* pass = tech ? tech_get_pass(tech, 0) : nullptr;
+        if (!pass) {
+            std::printf("[FAIL] Missing Technique/Pass 0 on '%s'\n", p2_mat_name);
+            return false;
+        }
+        passes.push_back(pass);
+        mats.push_back(sp);
     }
 
     // Attach a simple textured triangle facing the camera so D3D11RenderSystem::_render executes

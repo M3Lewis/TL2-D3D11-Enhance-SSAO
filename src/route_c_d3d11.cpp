@@ -459,34 +459,64 @@ constexpr const char kToastShaderSource[] = R"HLSL(
 cbuffer CbToastParams : register(b0) {
     float4 gToastRect;    // x=left, y=top, z=width, w=height
     float4 gToastParams;  // x=dllOn, y=aoOn, z=fadeAlpha, w=scale
+    float4 gToastExtra;   // x=filterMode (0=OFF, 1=HOB, 2=DRK)
 };
 
 struct VS_OUT {
     float4 pos : SV_Position;
 };
 
-uint GetToastChar(int idx, bool dllOn, bool aoOn) {
-    if (idx == 0 || idx == 15) return 91u;  // '['
-    if (idx == 3 || idx == 18) return 93u;  // ']'
-    if (idx == 1 || idx == 16) return 70u;  // 'F'
-    if (idx == 2) return 56u;               // '8'
-    if (idx == 17) return 57u;              // '9'
-    if (idx == 5) return 68u;               // 'D'
-    if (idx == 6 || idx == 7) return 76u;   // 'L'
-    if (idx == 8 || idx == 22) return 58u;  // ':'
-    if (idx == 9 || idx == 21 || idx == 23) return 79u; // 'O'
-    if (idx == 10) return dllOn ? 78u : 70u;            // 'N' : 'F'
-    if (idx == 11) return dllOn ? 32u : 70u;            // ' ' : 'F'
-    if (idx == 20) return 65u;                          // 'A'
-    if (idx == 24) return aoOn ? 78u : 70u;             // 'N' : 'F'
-    if (idx == 25) return aoOn ? 32u : 70u;             // ' ' : 'F'
-    return 32u;                                         // ' '
+uint GetToastChar(int idx, bool dllOn, bool aoOn, int fxMode) {
+    // Format (40 chars): "[F8] DLL:ON    [F9] AO:ON   [F10] FX:HOB"
+    if (idx == 0 || idx == 15 || idx == 28) return 91u;   // '['
+    if (idx == 3 || idx == 18 || idx == 32) return 93u;   // ']'
+    if (idx == 1 || idx == 16 || idx == 29 || idx == 34) return 70u;  // 'F'
+    if (idx == 2) return 56u;                             // '8'
+    if (idx == 17) return 57u;                            // '9'
+    if (idx == 30) return 49u;                            // '1'
+    if (idx == 31) return 48u;                            // '0'
+    if (idx == 5) return 68u;                             // 'D'
+    if (idx == 6 || idx == 7) return 76u;                 // 'L'
+    if (idx == 8 || idx == 22 || idx == 36) return 58u;   // ':'
+    if (idx == 9 || idx == 21 || idx == 23) return 79u;   // 'O'
+    if (idx == 10) return dllOn ? 78u : 70u;              // 'N' : 'F'
+    if (idx == 11) return dllOn ? 32u : 70u;              // ' ' : 'F'
+    if (idx == 20) return 65u;                            // 'A'
+    if (idx == 24) return aoOn ? 78u : 70u;               // 'N' : 'F'
+    if (idx == 25) return aoOn ? 32u : 70u;               // ' ' : 'F'
+    if (idx == 35) return 88u;                            // 'X'
+    if (idx == 37) {
+        if (fxMode == 1) return 72u;                      // 'H'
+        if (fxMode == 2) return 68u;                      // 'D'
+        return 79u;                                       // 'O'
+    }
+    if (idx == 38) {
+        if (fxMode == 1) return 79u;                      // 'O'
+        if (fxMode == 2) return 82u;                      // 'R'
+        return 70u;                                       // 'F'
+    }
+    if (idx == 39) {
+        if (fxMode == 1) return 66u;                      // 'B'
+        if (fxMode == 2) return 75u;                      // 'K'
+        return 70u;                                       // 'F'
+    }
+    return 32u;                                           // ' '
 }
 
 uint GetGlyph5x7Row(uint ch, uint row) {
     if (ch == 91u) { return (row == 0u || row == 6u) ? 14u : 8u; }                         // '['
     if (ch == 93u) { return (row == 0u || row == 6u) ? 14u : 2u; }                         // ']'
     if (ch == 58u) { return (row == 1u || row == 2u || row == 4u || row == 5u) ? 4u : 0u; }// ':'
+    if (ch == 48u) {                                                                       // '0'
+        if (row == 0u || row == 6u) return 14u;
+        if (row == 2u || row == 3u) return 21u;
+        return 17u;
+    }
+    if (ch == 49u) {                                                                       // '1'
+        if (row == 1u) return 12u;
+        if (row == 6u) return 14u;
+        return 4u;
+    }
     if (ch == 70u) { return (row == 0u) ? 31u : ((row == 3u) ? 30u : 16u); }               // 'F'
     if (ch == 56u) { return (row == 0u || row == 3u || row == 6u) ? 14u : 17u; }           // '8'
     if (ch == 57u) {                                                                       // '9'
@@ -511,6 +541,25 @@ uint GetGlyph5x7Row(uint ch, uint row) {
         if (row == 3u) return 31u;
         return 17u;
     }
+    if (ch == 88u) {                                                                       // 'X'
+        if (row == 2u || row == 4u) return 10u;
+        if (row == 3u) return 4u;
+        return 17u;
+    }
+    if (ch == 72u) { return (row == 3u) ? 31u : 17u; }                                     // 'H'
+    if (ch == 66u) { return (row == 0u || row == 3u || row == 6u) ? 30u : 17u; }           // 'B'
+    if (ch == 82u) {                                                                       // 'R'
+        if (row == 0u || row == 3u) return 30u;
+        if (row == 4u) return 20u;
+        if (row == 5u) return 18u;
+        return 17u;
+    }
+    if (ch == 75u) {                                                                       // 'K'
+        if (row == 1u || row == 5u) return 18u;
+        if (row == 2u || row == 4u) return 20u;
+        if (row == 3u) return 24u;
+        return 17u;
+    }
     return 0u;
 }
 
@@ -521,14 +570,15 @@ float4 PS_ToastOverlay(VS_OUT input) : SV_Target0 {
     float scale = max(gToastParams.w, 1.0f);
     float2 textPos = local - float2(12.0f, 8.0f);
     int2 cell = int2(floor(textPos / scale));
+    int fxMode = (int)round(gToastExtra.x);
 
     bool hit = false;
     int charIdx = -1;
     if (cell.y >= 0 && cell.y < 7 && cell.x >= 0) {
         charIdx = cell.x / 6;
         int gx = cell.x - charIdx * 6;
-        if (charIdx >= 0 && charIdx < 26 && gx >= 0 && gx < 5) {
-            uint ch = GetToastChar(charIdx, gToastParams.x > 0.5f, gToastParams.y > 0.5f);
+        if (charIdx >= 0 && charIdx < 40 && gx >= 0 && gx < 5) {
+            uint ch = GetToastChar(charIdx, gToastParams.x > 0.5f, gToastParams.y > 0.5f, fxMode);
             uint bits = GetGlyph5x7Row(ch, (uint)cell.y);
             hit = ((bits >> (4u - (uint)gx)) & 1u) != 0u;
         }
@@ -543,6 +593,14 @@ float4 PS_ToastOverlay(VS_OUT input) : SV_Target0 {
             fg = dllOn ? float3(0.38f, 0.96f, 0.58f) : float3(1.00f, 0.44f, 0.42f);
         } else if (charIdx >= 23 && charIdx <= 25) {
             fg = aoOn ? float3(0.38f, 0.96f, 0.58f) : float3(1.00f, 0.44f, 0.42f);
+        } else if (charIdx >= 37 && charIdx <= 39) {
+            if (fxMode == 1) {
+                fg = float3(1.00f, 0.84f, 0.36f);
+            } else if (fxMode == 2) {
+                fg = float3(0.72f, 0.68f, 1.00f);
+            } else {
+                fg = float3(1.00f, 0.44f, 0.42f);
+            }
         }
         return float4(fg, fade);
     }
@@ -553,11 +611,87 @@ float4 PS_ToastOverlay(VS_OUT input) : SV_Target0 {
 }
 )HLSL";
 
+constexpr const char kP2FilterShaderSource[] = R"HLSL(
+Texture2D<float4> gSceneTex : register(t0);
+
+cbuffer CbP2FilterParams : register(b0) {
+    float4 p2FilterParams;  // x=preset (0=OFF, 1=HOB, 2=DRK), y=enable
+};
+
+struct VS_OUT {
+    float4 pos : SV_Position;
+};
+
+float3 HableFilmicCurve(float3 x) {
+    static const float A = 0.24f;
+    static const float B = 0.34f;
+    static const float C = 0.10f;
+    static const float D = 0.22f;
+    static const float E = 0.018f;
+    static const float F = 0.32f;
+    return ((x * (A * x + C * B) + D * E) / (x * (A * x + B) + D * F)) - (E / F);
+}
+
+float3 ApplyP2HobFilter(float3 rgb, float mode) {
+    if (mode < 0.5f) {
+        return rgb;
+    }
+    float3 c = max(rgb, 0.0f);
+    float3 lin = pow(c, 2.2f);
+    float exposure = (mode < 1.5f) ? 1.45f : 1.15f;
+    float whiteScale = rcp(max(HableFilmicCurve(float3(1.60f, 1.60f, 1.60f)).x, 1e-4f));
+    float3 mapped = saturate(HableFilmicCurve(lin * exposure) * whiteScale);
+    float3 graded = pow(mapped, 1.0f / 2.2f);
+
+    float luma = dot(graded, float3(0.2126f, 0.7152f, 0.0722f));
+    float shadowW = pow(saturate(1.0f - luma * 1.45f), 1.75f);
+    float hiW = smoothstep(0.38f, 0.96f, luma);
+
+    if (mode < 1.5f) {
+        float3 tint = lerp(float3(1.0f, 1.0f, 1.0f), float3(0.90f, 0.98f, 1.12f), shadowW * 0.65f);
+        tint *= lerp(float3(1.0f, 1.0f, 1.0f), float3(1.05f, 1.01f, 0.93f), hiW * 0.55f);
+        graded *= tint;
+
+        float maxC = max(graded.r, max(graded.g, graded.b));
+        float minC = min(graded.r, min(graded.g, graded.b));
+        float sat = maxC - minC;
+        float vib = (1.0f - saturate(sat * 1.35f)) * 0.20f;
+        float gLuma = dot(graded, float3(0.2126f, 0.7152f, 0.0722f));
+        graded = lerp(float3(gLuma, gLuma, gLuma), graded, 1.0f + vib);
+    } else {
+        float3 tint = lerp(float3(1.0f, 1.0f, 1.0f), float3(0.84f, 0.93f, 1.14f), shadowW * 0.75f);
+        tint *= lerp(float3(1.0f, 1.0f, 1.0f), float3(1.07f, 0.98f, 0.87f), hiW * 0.60f);
+        graded *= tint;
+
+        float maxC = max(graded.r, max(graded.g, graded.b));
+        float minC = min(graded.r, min(graded.g, graded.b));
+        float sat = maxC - minC;
+        float vib = (1.0f - saturate(sat * 1.30f)) * 0.14f;
+        float gLuma = dot(graded, float3(0.2126f, 0.7152f, 0.0722f));
+        graded = lerp(float3(gLuma, gLuma, gLuma), graded, 1.0f + vib);
+    }
+    return saturate(graded);
+}
+
+float4 PS_P2FilterFallback(VS_OUT input) : SV_Target0 {
+    int2 px = int2(input.pos.xy);
+    float4 src = gSceneTex.Load(int3(px, 0));
+    float3 outRgb = ApplyP2HobFilter(src.rgb, p2FilterParams.x);
+    return float4(outRgb, 1.0f);
+}
+)HLSL";
+
 struct alignas(16) CbToastParams {
     float rect[4];    // left, top, width, height
     float params[4];  // dllOn, aoOn, fadeAlpha, scale
+    float extra[4];   // filterMode, 0, 0, 0
 };
-static_assert(sizeof(CbToastParams) == 32, "CbToastParams must be 32 bytes");
+static_assert(sizeof(CbToastParams) == 48, "CbToastParams must be 48 bytes");
+
+struct alignas(16) CbP2FilterParams {
+    float params[4];  // preset, enable, 0, 0
+};
+static_assert(sizeof(CbP2FilterParams) == 16, "CbP2FilterParams must be 16 bytes");
 
 struct DepthCopyFormats {
     bool supported = false;
@@ -728,11 +862,19 @@ struct RouteCD3DState {
     ID3D11Buffer* cb_params = nullptr;
     ID3D11Buffer* cb_toast = nullptr;
     ID3D11PixelShader* ps_toast = nullptr;
+    ID3D11Buffer* cb_p2_filter = nullptr;
+    ID3D11PixelShader* ps_p2_filter = nullptr;
     ID3D11BlendState* blend_debug_rgb = nullptr;
     ID3D11BlendState* blend_mul_rgb = nullptr;
     ID3D11BlendState* blend_toast_alpha = nullptr;
     ID3D11DepthStencilState* dss_disabled = nullptr;
     ID3D11RasterizerState* rs_fullscreen = nullptr;
+
+    ID3D11Texture2D* p2_copy_tex = nullptr;
+    ID3D11ShaderResourceView* p2_copy_srv = nullptr;
+    uint32_t p2_copy_w = 0;
+    uint32_t p2_copy_h = 0;
+    DXGI_FORMAT p2_copy_fmt = DXGI_FORMAT_UNKNOWN;
 
     ID3D11Texture2D* depth_copy_tex = nullptr;
     ID3D11ShaderResourceView* depth_copy_srv = nullptr;
@@ -799,6 +941,12 @@ void ReleaseDepthVariantShaders(DepthVariantShaders& s) {
 }
 
 void ReleaseTargets() {
+    SafeRelease(g_st.p2_copy_srv);
+    SafeRelease(g_st.p2_copy_tex);
+    g_st.p2_copy_w = 0;
+    g_st.p2_copy_h = 0;
+    g_st.p2_copy_fmt = DXGI_FORMAT_UNKNOWN;
+
     SafeRelease(g_st.ao_blur_srv);
     SafeRelease(g_st.ao_blur_rtv);
     SafeRelease(g_st.ao_blur_tex);
@@ -836,6 +984,8 @@ void ReleaseAllDeviceObjects() {
     SafeRelease(g_st.blend_debug_rgb);
     SafeRelease(g_st.cb_toast);
     SafeRelease(g_st.ps_toast);
+    SafeRelease(g_st.cb_p2_filter);
+    SafeRelease(g_st.ps_p2_filter);
     SafeRelease(g_st.cb_params);
     ReleaseDepthVariantShaders(g_st.shaders_msaa);
     ReleaseDepthVariantShaders(g_st.shaders_single);
@@ -963,13 +1113,19 @@ bool EnsurePipelineObjects(ID3D11Device* dev, RouteCD3DLogFn logger) {
 
     ID3DBlob* vs_blob = nullptr;
     ID3DBlob* toast_blob = nullptr;
+    ID3DBlob* p2_blob = nullptr;
     bool ok = CompileShaderBlob(compile_fn, "VS_Fullscreen", "vs_4_0", macro_single, &vs_blob, logger) &&
               SUCCEEDED(dev->CreateVertexShader(vs_blob->GetBufferPointer(), vs_blob->GetBufferSize(), nullptr, &g_st.vs_fullscreen)) &&
               CreateDepthVariantShaders(dev, compile_fn, "ps_4_0", macro_single, g_st.shaders_single, logger) &&
               CompileShaderBlobFromSource(
                   compile_fn, kToastShaderSource, sizeof(kToastShaderSource) - 1, "route_c_toast.hlsl",
                   "PS_ToastOverlay", "ps_4_0", macro_single, &toast_blob, logger) &&
-              SUCCEEDED(dev->CreatePixelShader(toast_blob->GetBufferPointer(), toast_blob->GetBufferSize(), nullptr, &g_st.ps_toast));
+              SUCCEEDED(dev->CreatePixelShader(toast_blob->GetBufferPointer(), toast_blob->GetBufferSize(), nullptr, &g_st.ps_toast)) &&
+              CompileShaderBlobFromSource(
+                  compile_fn, kP2FilterShaderSource, sizeof(kP2FilterShaderSource) - 1, "route_b_p2_filter.hlsl",
+                  "PS_P2FilterFallback", "ps_4_0", macro_single, &p2_blob, logger) &&
+              SUCCEEDED(dev->CreatePixelShader(p2_blob->GetBufferPointer(), p2_blob->GetBufferSize(), nullptr, &g_st.ps_p2_filter));
+    SafeRelease(p2_blob);
     SafeRelease(toast_blob);
     SafeRelease(vs_blob);
 
@@ -1014,6 +1170,12 @@ bool EnsurePipelineObjects(ID3D11Device* dev, RouteCD3DLogFn logger) {
     cb_toast_desc.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
     cb_toast_desc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
 
+    D3D11_BUFFER_DESC cb_p2_desc{};
+    cb_p2_desc.ByteWidth = sizeof(CbP2FilterParams);
+    cb_p2_desc.Usage = D3D11_USAGE_DYNAMIC;
+    cb_p2_desc.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
+    cb_p2_desc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+
     D3D11_BLEND_DESC bd_toast{};
     bd_toast.RenderTarget[0].BlendEnable = TRUE;
     bd_toast.RenderTarget[0].SrcBlend = D3D11_BLEND_SRC_ALPHA;
@@ -1039,6 +1201,7 @@ bool EnsurePipelineObjects(ID3D11Device* dev, RouteCD3DLogFn logger) {
 
     ok = SUCCEEDED(dev->CreateBuffer(&cb_desc, nullptr, &g_st.cb_params)) &&
          SUCCEEDED(dev->CreateBuffer(&cb_toast_desc, nullptr, &g_st.cb_toast)) &&
+         SUCCEEDED(dev->CreateBuffer(&cb_p2_desc, nullptr, &g_st.cb_p2_filter)) &&
          SUCCEEDED(dev->CreateBlendState(&bd_dbg, &g_st.blend_debug_rgb)) &&
          SUCCEEDED(dev->CreateBlendState(&bd_mul, &g_st.blend_mul_rgb)) &&
          SUCCEEDED(dev->CreateBlendState(&bd_toast, &g_st.blend_toast_alpha)) &&
@@ -1522,11 +1685,155 @@ bool ExecuteRouteCAoPass(const RouteCAoRenderRequest& req, RouteCD3DLogFn logger
     return true;
 }
 
+bool EnsureP2CopyTarget(ID3D11Device* dev, uint32_t width, uint32_t height, DXGI_FORMAT fmt) {
+    if (g_st.p2_copy_tex && g_st.p2_copy_srv &&
+        g_st.p2_copy_w == width && g_st.p2_copy_h == height && g_st.p2_copy_fmt == fmt) {
+        return true;
+    }
+    SafeRelease(g_st.p2_copy_srv);
+    SafeRelease(g_st.p2_copy_tex);
+    g_st.p2_copy_w = 0;
+    g_st.p2_copy_h = 0;
+    g_st.p2_copy_fmt = DXGI_FORMAT_UNKNOWN;
+
+    D3D11_TEXTURE2D_DESC td{};
+    td.Width = width;
+    td.Height = height;
+    td.MipLevels = 1;
+    td.ArraySize = 1;
+    td.Format = fmt;
+    td.SampleDesc.Count = 1;
+    td.Usage = D3D11_USAGE_DEFAULT;
+    td.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+    if (FAILED(dev->CreateTexture2D(&td, nullptr, &g_st.p2_copy_tex)) || !g_st.p2_copy_tex) {
+        SafeRelease(g_st.p2_copy_tex);
+        return false;
+    }
+    D3D11_SHADER_RESOURCE_VIEW_DESC srvd{};
+    srvd.Format = fmt;
+    srvd.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
+    srvd.Texture2D.MipLevels = 1;
+    if (FAILED(dev->CreateShaderResourceView(g_st.p2_copy_tex, &srvd, &g_st.p2_copy_srv)) || !g_st.p2_copy_srv) {
+        SafeRelease(g_st.p2_copy_srv);
+        SafeRelease(g_st.p2_copy_tex);
+        return false;
+    }
+    g_st.p2_copy_w = width;
+    g_st.p2_copy_h = height;
+    g_st.p2_copy_fmt = fmt;
+    return true;
+}
+
+bool ExecuteRouteCP2FilterPass(const RouteCP2FilterRequest& req, RouteCD3DLogFn logger) {
+    if (!req.ctx || req.filter_preset <= 0 || req.vp_width <= 0 || req.vp_height <= 0) {
+        return false;
+    }
+
+    D3D11StateGuard state_guard(req.ctx);
+    ID3D11RenderTargetView* target_rtv = state_guard.om_rtv0() ? state_guard.om_rtv0() : req.fallback_rtv;
+    if (!target_rtv) {
+        return false;
+    }
+
+    ID3D11Resource* rtv_res = nullptr;
+    target_rtv->GetResource(&rtv_res);
+    ID3D11Texture2D* src_tex = nullptr;
+    if (!rtv_res ||
+        FAILED(rtv_res->QueryInterface(__uuidof(ID3D11Texture2D), reinterpret_cast<void**>(&src_tex))) ||
+        !src_tex) {
+        SafeRelease(src_tex);
+        SafeRelease(rtv_res);
+        return false;
+    }
+    SafeRelease(rtv_res);
+
+    D3D11_TEXTURE2D_DESC rt_desc{};
+    src_tex->GetDesc(&rt_desc);
+    D3D11_RENDER_TARGET_VIEW_DESC rtv_desc{};
+    target_rtv->GetDesc(&rtv_desc);
+    if (rt_desc.Width == 0 || rt_desc.Height == 0 || rtv_desc.Format == DXGI_FORMAT_UNKNOWN) {
+        SafeRelease(src_tex);
+        return false;
+    }
+
+    ID3D11Device* dev = nullptr;
+    req.ctx->GetDevice(&dev);
+    if (!dev) {
+        SafeRelease(src_tex);
+        return false;
+    }
+
+    EnsureLockInit();
+    ::EnterCriticalSection(&g_d3d_lock);
+    struct LockGuard {
+        CRITICAL_SECTION* cs;
+        ID3D11Device* d;
+        ID3D11Texture2D* t;
+        ~LockGuard() {
+            SafeRelease(t);
+            SafeRelease(d);
+            ::LeaveCriticalSection(cs);
+        }
+    } lock_guard{&g_d3d_lock, dev, src_tex};
+
+    if (!EnsurePipelineObjects(dev, logger) ||
+        !g_st.ps_p2_filter ||
+        !g_st.cb_p2_filter ||
+        !EnsureP2CopyTarget(dev, rt_desc.Width, rt_desc.Height, rtv_desc.Format)) {
+        return false;
+    }
+
+    ID3D11ShaderResourceView* null_srv[1] = {nullptr};
+    req.ctx->PSSetShaderResources(0, 1, null_srv);
+    req.ctx->OMSetRenderTargets(0, nullptr, nullptr);
+    if (rt_desc.SampleDesc.Count > 1) {
+        req.ctx->ResolveSubresource(g_st.p2_copy_tex, 0, src_tex, 0, rtv_desc.Format);
+    } else {
+        req.ctx->CopySubresourceRegion(g_st.p2_copy_tex, 0, 0, 0, 0, src_tex, 0, nullptr);
+    }
+
+    D3D11_MAPPED_SUBRESOURCE mapped{};
+    if (FAILED(req.ctx->Map(g_st.cb_p2_filter, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped)) || !mapped.pData) {
+        return false;
+    }
+    auto* cb = static_cast<CbP2FilterParams*>(mapped.pData);
+    cb->params[0] = static_cast<float>(req.filter_preset);
+    cb->params[1] = 1.0f;
+    cb->params[2] = 0.0f;
+    cb->params[3] = 0.0f;
+    req.ctx->Unmap(g_st.cb_p2_filter, 0);
+
+    D3D11_VIEWPORT vp{};
+    vp.TopLeftX = static_cast<float>(req.vp_left);
+    vp.TopLeftY = static_cast<float>(req.vp_top);
+    vp.Width = static_cast<float>(req.vp_width);
+    vp.Height = static_cast<float>(req.vp_height);
+    vp.MinDepth = 0.0f;
+    vp.MaxDepth = 1.0f;
+
+    req.ctx->OMSetRenderTargets(1, &target_rtv, nullptr);
+    req.ctx->OMSetBlendState(g_st.blend_debug_rgb, nullptr, 0xFFFFFFFFU);
+    req.ctx->OMSetDepthStencilState(g_st.dss_disabled, 0);
+    req.ctx->RSSetState(g_st.rs_fullscreen);
+    req.ctx->RSSetViewports(1, &vp);
+    req.ctx->RSSetScissorRects(0, nullptr);
+    req.ctx->IASetInputLayout(nullptr);
+    req.ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    req.ctx->VSSetShader(g_st.vs_fullscreen, nullptr, 0);
+    req.ctx->GSSetShader(nullptr, nullptr, 0);
+    req.ctx->PSSetShader(g_st.ps_p2_filter, nullptr, 0);
+    req.ctx->PSSetConstantBuffers(0, 1, &g_st.cb_p2_filter);
+    req.ctx->PSSetShaderResources(0, 1, &g_st.p2_copy_srv);
+    req.ctx->Draw(3, 0);
+    return true;
+}
+
 bool ExecuteRouteCToastOverlay(
     ID3D11DeviceContext* ctx,
     ID3D11RenderTargetView* target_rtv,
     bool dll_enhance_on,
     bool ao_on,
+    int filter_preset,
     float fade_alpha,
     RouteCD3DLogFn logger) {
     if (!ctx || !target_rtv || fade_alpha <= 0.001f) {
@@ -1572,11 +1879,15 @@ bool ExecuteRouteCToastOverlay(
         return false;
     }
 
-    const float scale = (rt_desc.Height >= 1400U) ? 3.0f : 2.0f;
-    const float box_w = 24.0f + (26.0f * 6.0f - 1.0f) * scale;
+    float scale = (rt_desc.Height >= 1400U) ? 3.0f : 2.0f;
+    if (24.0f + (40.0f * 6.0f - 1.0f) * scale + 16.0f > static_cast<float>(rt_desc.Width) ||
+        16.0f + 7.0f * scale + 16.0f > static_cast<float>(rt_desc.Height)) {
+        scale = 1.0f;
+    }
+    const float box_w = 24.0f + (40.0f * 6.0f - 1.0f) * scale;
     const float box_h = 16.0f + 7.0f * scale;
     const float box_x = std::floor((std::max)(8.0f, (static_cast<float>(rt_desc.Width) - box_w) * 0.5f));
-    const float box_y = (scale >= 3.0f) ? 26.0f : 18.0f;
+    const float box_y = (scale >= 3.0f) ? 26.0f : ((scale >= 2.0f) ? 18.0f : 8.0f);
     if (box_x + box_w > static_cast<float>(rt_desc.Width) || box_y + box_h > static_cast<float>(rt_desc.Height)) {
         return false;
     }
@@ -1594,6 +1905,10 @@ bool ExecuteRouteCToastOverlay(
     cb->params[1] = ao_on ? 1.0f : 0.0f;
     cb->params[2] = fade_alpha;
     cb->params[3] = scale;
+    cb->extra[0] = static_cast<float>(filter_preset);
+    cb->extra[1] = 0.0f;
+    cb->extra[2] = 0.0f;
+    cb->extra[3] = 0.0f;
     ctx->Unmap(g_st.cb_toast, 0);
 
     D3D11StateGuard state_guard(ctx);
@@ -1663,7 +1978,13 @@ bool VerifyRouteCShadersCompile(RouteCD3DLogFn logger) {
         compile_fn, kToastShaderSource, sizeof(kToastShaderSource) - 1, "route_c_toast.hlsl",
         "PS_ToastOverlay", "ps_4_0", macro_single, &toast_blob, logger);
     SafeRelease(toast_blob);
-    return toast_ok;
+
+    ID3DBlob* p2_blob = nullptr;
+    const bool p2_ok = CompileShaderBlobFromSource(
+        compile_fn, kP2FilterShaderSource, sizeof(kP2FilterShaderSource) - 1, "route_b_p2_filter.hlsl",
+        "PS_P2FilterFallback", "ps_4_0", macro_single, &p2_blob, logger);
+    SafeRelease(p2_blob);
+    return toast_ok && p2_ok;
 }
 
 void ShutdownRouteCD3D11Resources() {

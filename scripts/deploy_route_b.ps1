@@ -16,7 +16,9 @@ $VanillaBackups = @(
     "RenderScale.material",
     "shaders.program",
     "hlsl4\skinning.hlsl",
-    "hlsl4\Fxaa_ps.hlsl"
+    "hlsl4\Fxaa_ps.hlsl",
+    "hlsl4\BrightBloom2_ps20.hlsl",
+    "hlsl4\Bloom2_ps20.hlsl"
 )
 New-Item -ItemType Directory -Path (Join-Path $VanDir "hlsl4") -Force | Out-Null
 foreach ($rel in $VanillaBackups) {
@@ -50,8 +52,10 @@ $DeployList = @(
     @{ Src = "hlsl4\SkinnedDiff_ps.hlsl"; Dst = "hlsl4\SkinnedDiff_ps.hlsl" },
     @{ Src = "hlsl4\LightPass_ps.hlsl";   Dst = "hlsl4\LightPass_ps.hlsl" },
     @{ Src = "hlsl4\RimLit_ps.hlsl";      Dst = "hlsl4\RimLit_ps.hlsl" },
-    @{ Src = "hlsl4\skinning.hlsl";       Dst = "hlsl4\skinning.hlsl" },
-    @{ Src = "hlsl4\Fxaa_ps.hlsl";        Dst = "hlsl4\Fxaa_ps.hlsl" }
+    @{ Src = "hlsl4\skinning.hlsl";        Dst = "hlsl4\skinning.hlsl" },
+    @{ Src = "hlsl4\Fxaa_ps.hlsl";         Dst = "hlsl4\Fxaa_ps.hlsl" },
+    @{ Src = "hlsl4\BrightBloom2_ps20.hlsl"; Dst = "hlsl4\BrightBloom2_ps20.hlsl" },
+    @{ Src = "hlsl4\Bloom2_ps20.hlsl";     Dst = "hlsl4\Bloom2_ps20.hlsl" }
 )
 
 New-Item -ItemType Directory -Path (Join-Path $ProgDir "hlsl4") -Force | Out-Null

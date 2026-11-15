@@ -451,7 +451,7 @@ bool PerformInstall(const fs::path& game_dir, Logger& log) {
 
     log.Append(L"");
     log.Append(L"=== 安装完成！===");
-    log.Append(L"游戏内热键：F8 开关画质增强 | F9 开关 SSAO 环境光遮蔽（左上角带 2 秒提示）。");
+    log.Append(L"游戏内热键：F8 开关画质增强 | F9 开关 SSAO | F10 切换 Hob 滤镜 (HOB/DRK/OFF，顶部带 2 秒提示)。");
     return true;
 }
 
@@ -683,7 +683,7 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
 
             HWND sub = ::CreateWindowW(
                 L"STATIC",
-                L"包含: Plugin_TL2_DX11_Enhance_SSAO.dll + 14 个 HLSL/Material 着色器 | 热键: F8 增强开关, F9 SSAO 开关",
+                L"包含: Plugin_TL2_DX11_Enhance_SSAO.dll + 16 个 HLSL/Material 着色器 | 热键: F8 增强, F9 SSAO, F10 滤镜",
                 WS_CHILD | WS_VISIBLE, 20, 44, 620, 20, hwnd, nullptr, nullptr, nullptr);
             ApplyFontRecursive(sub, g_ui.ui_font);
 
@@ -757,7 +757,7 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
                 const bool ok = PerformInstall(dir, g_gui_log);
                 ::MessageBoxW(
                     hwnd,
-                    ok ? L"安装成功！\n已自动备份原版配置与着色器。\n\n游戏内按 F8 可开关画质增强，按 F9 可开关 SSAO。"
+                    ok ? L"安装成功！\n已自动备份原版配置与着色器。\n\n游戏内按 F8 开关画质增强，F9 开关 SSAO，F10 切换 Hob 电影滤镜 (HOB/DRK/OFF)。"
                        : L"安装未完成，请查看日志窗口中的错误信息。",
                     L"火炬之光 2 D3D11 画质增强安装器",
                     ok ? (MB_OK | MB_ICONINFORMATION) : (MB_OK | MB_ICONERROR));

@@ -245,6 +245,7 @@ std::atomic<uint64_t> g_vs_texcoord_injections{0};
 std::atomic<uint64_t> g_vs_missing_vcol_fixes{0};
 std::atomic<uint64_t> g_ff_explicit_syncs{0};
 std::atomic<bool> g_hooked{false};
+std::atomic<bool> g_runtime_enhance_enabled{true};
 std::atomic<Phase3PassObserverFn> g_pass_observer{nullptr};
 
 enum class SkipReason : uint8_t {
@@ -1149,6 +1150,9 @@ const void* __fastcall HookSceneManagerSetPass(
         const bool has_fp = g_api.pass_has_fp ? g_api.pass_has_fp(used_pass) : false;
         observer(pass_name, lit, dw, trans, ar, has_vp, has_fp);
     }
+    if (!g_runtime_enhance_enabled.load(std::memory_order_relaxed)) {
+        return used_pass;
+    }
     if (arch == PassArchetype::None) {
         return used_pass;
     }
@@ -1310,6 +1314,7 @@ bool InstallPhase3ScenePipeline(void* d3d11_base, void* ogre_main_base, Phase3Lo
     g_toggles.skinned_diff = !EnvFlagIsOne("TL2_P3_DISABLE_SKIN");
     g_toggles.light_pass = !EnvFlagIsOne("TL2_P3_DISABLE_LIGHT");
     g_toggles.rim_lit = !EnvFlagIsOne("TL2_P3_DISABLE_RIM");
+    g_runtime_enhance_enabled.store(!EnvFlagIsOne("TL2_B_DISABLE_ENHANCE"), std::memory_order_relaxed);
 
     auto* ogre_mod = static_cast<HMODULE>(ogre_main_base);
     if (!ResolveAllOgreExports(ogre_mod)) {
@@ -1496,6 +1501,21 @@ void LogPhase3PassDiagnostics(Phase3LogFn logger) {
         }
     }
     ::ReleaseSRWLockShared(&g_diag_lock);
+}
+
+void SetPhase3RuntimeEnhanceEnabled(bool enabled) {
+    g_runtime_enhance_enabled.store(enabled, std::memory_order_relaxed);
+}
+
+bool IsPhase3RuntimeEnhanceEnabled() {
+    return g_runtime_enhance_enabled.load(std::memory_order_relaxed);
+}
+
+bool TogglePhase3RuntimeEnhance() {
+    bool expected = g_runtime_enhance_enabled.load(std::memory_order_relaxed);
+    while (!g_runtime_enhance_enabled.compare_exchange_weak(expected, !expected, std::memory_order_relaxed)) {
+    }
+    return !expected;
 }
 
 void SetPhase3PassObserver(Phase3PassObserverFn observer) {

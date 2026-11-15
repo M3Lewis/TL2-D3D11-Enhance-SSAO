@@ -1,10 +1,14 @@
 #include "route_c_ao.h"
 #include "route_c_d3d11.h"
+#include "phase3_scene_pipeline.h"
 
 #define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
 #include <windows.h>
 #include <d3d11.h>
 #include <dxgi.h>
+
+#pragma comment(lib, "user32.lib")
 
 #include <algorithm>
 #include <atomic>
@@ -159,6 +163,7 @@ FireQueueFn g_orig_queue_ended = nullptr;
 
 std::atomic<bool> g_hooked{false};
 std::atomic<bool> g_c0_survey_active{false};
+std::atomic<bool> g_ao_runtime_enabled{true};
 std::atomic<int> g_ao_debug_mode{0};  // Phase C2 default: DebugMode=0 (Live AO Composite)
 std::atomic<uint64_t> g_render_scene_calls{0};
 std::atomic<uint64_t> g_world_candidates{0};
@@ -675,14 +680,56 @@ bool IsMainWorldRenderTargetName(const std::string& rt_name) {
     return true;
 }
 
+bool IsGameProcessForeground() {
+    const HWND fg = ::GetForegroundWindow();
+    if (!fg) {
+        return false;
+    }
+    DWORD fg_pid = 0;
+    ::GetWindowThreadProcessId(fg, &fg_pid);
+    return fg_pid == ::GetCurrentProcessId();
+}
+
+void PollRuntimeToggleHotkeys() {
+    static bool prev_f8 = false;
+    static bool prev_f9 = false;
+    if (!IsGameProcessForeground()) {
+        prev_f8 = false;
+        prev_f9 = false;
+        return;
+    }
+
+    const bool down_f8 = (::GetAsyncKeyState(VK_F8) & 0x8000) != 0;
+    if (down_f8 && !prev_f8) {
+        const bool now_on = TogglePhase3RuntimeEnhance();
+        if (g_log) {
+            g_log("[RouteB][Hotkey] F8 -> DLL Phase3 scene enhance: %s", now_on ? "ON" : "OFF");
+        }
+    }
+    prev_f8 = down_f8;
+
+    const bool down_f9 = (::GetAsyncKeyState(VK_F9) & 0x8000) != 0;
+    if (down_f9 && !prev_f9) {
+        const bool now_on = ToggleRouteCAoRuntimeEnabled();
+        if (g_log) {
+            g_log("[RouteC][Hotkey] F9 -> Screen-space AO: %s", now_on ? "ON" : "OFF");
+        }
+    }
+    prev_f9 = down_f9;
+}
+
 void __fastcall HookRenderScene(void* sm, void* cam, void* vp, uint8_t show_overlays) {
     g_render_scene_calls.fetch_add(1, std::memory_order_relaxed);
     if (!g_orig_render_scene) {
         return;
     }
+    if (g_scene_depth == 0) {
+        PollRuntimeToggleHotkeys();
+    }
 
     const bool survey_on = g_c0_survey_active.load(std::memory_order_relaxed);
-    const int dbg_mode = g_ao_debug_mode.load(std::memory_order_relaxed);
+    const bool ao_on = g_ao_runtime_enabled.load(std::memory_order_relaxed);
+    const int dbg_mode = ao_on ? g_ao_debug_mode.load(std::memory_order_relaxed) : -1;
     if ((!survey_on && dbg_mode < 0) || g_scene_depth >= kMaxSceneStack || !sm || !vp) {
         g_orig_render_scene(sm, cam, vp, show_overlays);
         return;
@@ -914,9 +961,9 @@ bool InstallRouteCAoPipeline(void* ogre_main_base, RouteCLogFn logger) {
     if (g_hooked.load(std::memory_order_relaxed)) {
         return true;
     }
-    if (EnvFlagIsOne("TL2_C_DISABLE_AO")) {
+    if (EnvFlagIsOne("TL2_C_NO_HOOKS")) {
         if (g_log) {
-            g_log("[RouteC] Disabled via TL2_C_DISABLE_AO=1.");
+            g_log("[RouteC] Hooks disabled via TL2_C_NO_HOOKS=1.");
         }
         return false;
     }
@@ -991,13 +1038,16 @@ bool InstallRouteCAoPipeline(void* ogre_main_base, RouteCLogFn logger) {
     g_orig_queue_ended = reinterpret_cast<FireQueueFn>(orig_qe);
 
     const bool survey_on = EnvFlagIsOne("TL2_C_C0_SURVEY");
+    const bool ao_init_on = !EnvFlagIsOne("TL2_C_DISABLE_AO");
     const int dbg_mode = ResolveAoDebugMode(0);  // C2 default: DebugMode=0 (Live AO)
     g_c0_survey_active.store(survey_on, std::memory_order_relaxed);
+    g_ao_runtime_enabled.store(ao_init_on, std::memory_order_relaxed);
     g_ao_debug_mode.store(dbg_mode, std::memory_order_relaxed);
     g_hooked.store(true, std::memory_order_relaxed);
 
     if (g_log) {
-        g_log("[RouteC][C2] Hooks installed (debugMode=%d, c0_survey=%s, injectQueue=86).",
+        g_log("[RouteC][C2] Hooks installed (ao=%s, debugMode=%d, c0_survey=%s, injectQueue=86, hotkeys=F8:Enhance/F9:AO).",
+              ao_init_on ? "ON" : "OFF",
               dbg_mode,
               survey_on ? "ON" : "OFF");
     }
@@ -1020,6 +1070,21 @@ void RemoveRouteCAoPipeline() {
 
 bool VerifyRouteCShaders() {
     return VerifyRouteCShadersCompile(g_log);
+}
+
+void SetRouteCAoRuntimeEnabled(bool enabled) {
+    g_ao_runtime_enabled.store(enabled, std::memory_order_relaxed);
+}
+
+bool IsRouteCAoRuntimeEnabled() {
+    return g_ao_runtime_enabled.load(std::memory_order_relaxed);
+}
+
+bool ToggleRouteCAoRuntimeEnabled() {
+    bool expected = g_ao_runtime_enabled.load(std::memory_order_relaxed);
+    while (!g_ao_runtime_enabled.compare_exchange_weak(expected, !expected, std::memory_order_relaxed)) {
+    }
+    return !expected;
 }
 
 RouteCStats GetRouteCAoStats() {

@@ -50,6 +50,10 @@ void RemovePhase3ScenePipeline();
 Phase3Stats GetPhase3Stats();
 void LogPhase3PassDiagnostics(Phase3LogFn logger);
 
+void SetPhase3RuntimeEnhanceEnabled(bool enabled);
+bool IsPhase3RuntimeEnhanceEnabled();
+bool TogglePhase3RuntimeEnhance();
+
 using Phase3PassObserverFn = void (*)(
     const char* pass_name,
     bool lighting,

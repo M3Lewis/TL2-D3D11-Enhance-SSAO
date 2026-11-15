@@ -23,6 +23,10 @@ bool VerifyRouteCShaders();
 RouteCStats GetRouteCAoStats();
 void LogRouteCSurveySummary(RouteCLogFn logger);
 
+void SetRouteCAoRuntimeEnabled(bool enabled);
+bool IsRouteCAoRuntimeEnabled();
+bool ToggleRouteCAoRuntimeEnabled();
+
 void OnRouteCScenePassObserved(
     const char* pass_name,
     bool lighting,

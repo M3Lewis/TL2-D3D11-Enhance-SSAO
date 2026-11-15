@@ -33,7 +33,7 @@ static const float  kCasMaxSharpness = 0.18;
 static const float  kShoulderThreshold = 0.92;
 static const float  kShoulderHeadroom = 0.08;
 #ifndef PREVIEW_FXAA
-float4 p2FilterParams;  // x=preset (0=OFF, 1=HOB, 2=DRK), y=applyTonemap (1 when Bloom OFF)
+float4 p2FilterParams;  // x=preset (0=OFF, 1=HOB, 2=DRK), y=applyTonemap (1 when Bloom OFF), z=vignetteEnable
 #endif
 
 float4 sceneSample(float2 uv)
@@ -133,6 +133,12 @@ float3 ApplyP2HobFilter(float3 rgb, float mode)
     }
     return saturate(graded);
 }
+float ComputeP2OpticalVignette(float2 uv)
+{
+    float2 d = (uv - 0.5) * float2(1.0, 0.90);
+    float r2 = dot(d, d);
+    return 1.0 - 0.16 * smoothstep(0.14, 0.50, r2);
+}
 #endif
 
 float4 postprocess_impl(float2 uv)
@@ -176,6 +182,10 @@ float4 postprocess_impl(float2 uv)
     float3 resolvedRgb = (p2FilterParams.x > 0.5 && p2FilterParams.y > 0.5)
         ? ApplyP2HobFilter(casRgb, p2FilterParams.x)
         : ApplySoftHighlightShoulder(casRgb);
+    if (p2FilterParams.z > 0.5)
+    {
+        resolvedRgb *= ComputeP2OpticalVignette(uv);
+    }
     return float4(resolvedRgb, centre.a);
 #endif
 }

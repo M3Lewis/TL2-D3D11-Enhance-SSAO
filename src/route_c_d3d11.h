@@ -17,7 +17,7 @@ struct alignas(16) CbAoParams {
     int32_t vp_clamp[4];     // (minX, minY, maxX, maxY)
     float ao_params[4];      // (radiusWorld, biasCos, strength, minAoFloor)
     float blur_and_mode[4];  // (invVpW, invVpH, depthEdgeScale, debugMode)
-    float sscs_params[4];    // (sscsEnabled, sscsStrength, tintStrength, unused)
+    float sscs_params[4];    // (sscsEnabled, sscsStrength, tintStrength, aerialMode: 0=off, 1=Hob/neutral, 2=DarkFilm)
 };
 static_assert(sizeof(CbAoParams) == 112, "CbAoParams must match 7 float4 HLSL registers");
 
@@ -36,6 +36,8 @@ struct RouteCAoRenderRequest {
     bool ao_enabled = true;
     bool sscs_enabled = true;
     bool capture_particle_depth = false;
+    bool aerial_enabled = false;
+    int filter_preset = 1;  // 0=OFF, 1=HOB, 2=DRK
 };
 
 struct RouteCD3DStats {
@@ -69,6 +71,7 @@ struct RouteCP2FilterRequest {
     int vp_width = 0;
     int vp_height = 0;
     int filter_preset = 1;  // 0=OFF, 1=HOB, 2=DRK
+    bool vignette_enabled = false;
 };
 bool ExecuteRouteCP2FilterPass(const RouteCP2FilterRequest& req, RouteCD3DLogFn logger);
 struct RouteCPanelOverlayRequest {

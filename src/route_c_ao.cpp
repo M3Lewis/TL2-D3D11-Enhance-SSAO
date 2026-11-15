@@ -177,6 +177,7 @@ std::atomic<bool> g_c0_survey_active{false};
 std::atomic<bool> g_ao_runtime_enabled{true};
 std::atomic<bool> g_sscs_runtime_enabled{true};
 std::atomic<bool> g_p1_soft_particles_enabled{true};
+std::atomic<bool> g_p2_aerial_vignette_enabled{true};
 std::atomic<bool> g_world_depth_ready_for_particles{false};
 std::atomic<uint64_t> g_toast_expire_tick_ms{0};
 std::atomic<int> g_ao_debug_mode{0};  // Phase C2 default: DebugMode=0 (Live AO Composite)
@@ -636,7 +637,8 @@ void TryDispatchAoForFrame(ActiveSceneFrame& frame, const char* trigger_src, uin
     const bool ao_on = g_ao_runtime_enabled.load(std::memory_order_relaxed);
     const int dbg_mode = ao_on ? g_ao_debug_mode.load(std::memory_order_relaxed) : -1;
     const bool sp_on = g_p1_soft_particles_enabled.load(std::memory_order_relaxed);
-    if (dbg_mode < 0 && !sp_on) {
+    const bool aerial_on = g_p2_aerial_vignette_enabled.load(std::memory_order_relaxed);
+    if (dbg_mode < 0 && !sp_on && !aerial_on) {
         return;
     }
     frame.ao_injected = true;
@@ -664,6 +666,8 @@ void TryDispatchAoForFrame(ActiveSceneFrame& frame, const char* trigger_src, uin
     req.ao_enabled = (dbg_mode >= 0);
     req.sscs_enabled = IsRouteCSscsRuntimeEnabled();
     req.capture_particle_depth = sp_on;
+    req.aerial_enabled = (dbg_mode <= 0) && aerial_on;
+    req.filter_preset = GetP2FilterPreset();
     const bool ok = ExecuteRouteCAoPass(req, g_log);
     frame.particle_depth_ready = ok && sp_on;
     g_world_depth_ready_for_particles.store(frame.particle_depth_ready, std::memory_order_release);
@@ -707,7 +711,8 @@ void TryDispatchP2FilterFallbackForFrame(ActiveSceneFrame& frame, uint8_t qid) {
         return;
     }
     const int preset = GetP2FilterPreset();
-    if (preset <= 0) {
+    const bool vig_on = g_p2_aerial_vignette_enabled.load(std::memory_order_relaxed);
+    if (preset <= 0 && !vig_on) {
         return;
     }
     frame.filter_injected = true;
@@ -728,6 +733,7 @@ void TryDispatchP2FilterFallbackForFrame(ActiveSceneFrame& frame, uint8_t qid) {
     req.vp_width = frame.vp_w;
     req.vp_height = frame.vp_h;
     req.filter_preset = preset;
+    req.vignette_enabled = vig_on;
     const bool ok = ExecuteRouteCP2FilterPass(req, g_log);
 
     static std::atomic<bool> s_logged_fb{false};
@@ -1252,6 +1258,7 @@ bool InstallRouteCAoPipeline(void* ogre_main_base, RouteCLogFn logger) {
     g_ao_runtime_enabled.store(ao_init_on, std::memory_order_relaxed);
     g_sscs_runtime_enabled.store(!EnvFlagIsZero("TL2_P0_SSCS"), std::memory_order_relaxed);
     g_p1_soft_particles_enabled.store(!EnvFlagIsZero("TL2_P1_SOFT_PARTICLES"), std::memory_order_relaxed);
+    g_p2_aerial_vignette_enabled.store(!EnvFlagIsZero("TL2_P2_AERIAL_VIGNETTE"), std::memory_order_relaxed);
     g_world_depth_ready_for_particles.store(false, std::memory_order_relaxed);
     g_ao_debug_mode.store(dbg_mode, std::memory_order_relaxed);
     g_hooked.store(true, std::memory_order_relaxed);
@@ -1260,10 +1267,11 @@ bool InstallRouteCAoPipeline(void* ogre_main_base, RouteCLogFn logger) {
 
     if (g_log) {
         const int p2_preset = GetP2FilterPreset();
-        g_log("[RouteC][C2] Hooks installed (ao=%s, sscs=%s, p1SoftPart=%s, debugMode=%d, p2Filter=%s, f11=%s, p0rim=%s, c0_survey=%s, injectQueue=86, hotkey=F8:ConfigPanel).",
+        g_log("[RouteC][C2] Hooks installed (ao=%s, sscs=%s, p1SoftPart=%s, p2Atmos=%s, debugMode=%d, p2Filter=%s, f11=%s, p0rim=%s, c0_survey=%s, injectQueue=86, hotkey=F8:ConfigPanel).",
               IsRouteCAoRuntimeEnabled() ? "ON" : "OFF",
               IsRouteCSscsRuntimeEnabled() ? "ON" : "OFF",
               IsP1SoftParticlesEnabled() ? "ON" : "OFF",
+              IsP2AerialVignetteEnabled() ? "ON" : "OFF",
               dbg_mode,
               P2FilterPresetName(p2_preset),
               IsF11VisualEnhanceEnabled() ? "ON" : "OFF",
@@ -1335,6 +1343,21 @@ bool IsP1SoftParticlesEnabled() {
 bool ToggleP1SoftParticlesEnabled() {
     bool expected = g_p1_soft_particles_enabled.load(std::memory_order_relaxed);
     while (!g_p1_soft_particles_enabled.compare_exchange_weak(expected, !expected, std::memory_order_relaxed)) {
+    }
+    return !expected;
+}
+
+void SetP2AerialVignetteEnabled(bool enabled) {
+    g_p2_aerial_vignette_enabled.store(enabled, std::memory_order_relaxed);
+}
+
+bool IsP2AerialVignetteEnabled() {
+    return g_p2_aerial_vignette_enabled.load(std::memory_order_relaxed);
+}
+
+bool ToggleP2AerialVignetteEnabled() {
+    bool expected = g_p2_aerial_vignette_enabled.load(std::memory_order_relaxed);
+    while (!g_p2_aerial_vignette_enabled.compare_exchange_weak(expected, !expected, std::memory_order_relaxed)) {
     }
     return !expected;
 }

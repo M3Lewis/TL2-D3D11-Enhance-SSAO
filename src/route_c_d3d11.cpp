@@ -528,6 +528,24 @@ float4 PS_AoComposite(VsOut input) : SV_Target0
 
     return float4(ao, ao, ao, 1.0f);
 }
+
+float4 PS_AerialPerspective(VsOut input) : SV_Target0
+{
+    int2 pix = clamp(int2(input.pos.xy), gVpClamp.xy, gVpClamp.zw);
+    float rawC = LoadRawDepth(pix);
+    if (rawC >= 0.99998f || gSscsParams.w < 0.5f)
+    {
+        return float4(0.0f, 0.0f, 0.0f, 0.0f);
+    }
+
+    float dC = max(RawToLinearDist(rawC), 1e-3f);
+    float t = saturate((dC - 24.0f) * (1.0f / 30.0f));
+    float smoothT = t * t * (3.0f - 2.0f * t);
+    bool isDark = (gSscsParams.w > 1.5f);
+    float3 hazeRgb = isDark ? float3(0.055f, 0.085f, 0.135f) : float3(0.115f, 0.170f, 0.255f);
+    float hazeA = smoothT * (isDark ? 0.25f : 0.21f);
+    return float4(hazeRgb, hazeA);
+}
 )HLSL";
 
 constexpr const char kToastShaderSource[] = R"HLSL(
@@ -701,7 +719,8 @@ constexpr const char kP2FilterShaderSource[] = R"HLSL(
 Texture2D<float4> gSceneTex : register(t0);
 
 cbuffer CbP2FilterParams : register(b0) {
-    float4 p2FilterParams;  // x=preset (0=OFF, 1=HOB, 2=DRK), y=enable
+    float4 p2FilterParams;  // x=preset (0=OFF, 1=HOB, 2=DRK), y=enable, z=vignetteEnable
+    float4 p2VpRect;        // x=vpLeft, y=vpTop, z=vpWidth, w=vpHeight
 };
 
 struct VS_OUT {
@@ -759,10 +778,20 @@ float3 ApplyP2HobFilter(float3 rgb, float mode) {
     return saturate(graded);
 }
 
+float ComputeP2OpticalVignette(float2 uv) {
+    float2 d = (uv - 0.5f) * float2(1.0f, 0.90f);
+    float r2 = dot(d, d);
+    return 1.0f - 0.16f * smoothstep(0.14f, 0.50f, r2);
+}
+
 float4 PS_P2FilterFallback(VS_OUT input) : SV_Target0 {
     int2 px = int2(input.pos.xy);
     float4 src = gSceneTex.Load(int3(px, 0));
     float3 outRgb = ApplyP2HobFilter(src.rgb, p2FilterParams.x);
+    if (p2FilterParams.z > 0.5f) {
+        float2 uv = saturate((input.pos.xy - p2VpRect.xy) / max(p2VpRect.zw, 1.0f));
+        outRgb *= ComputeP2OpticalVignette(uv);
+    }
     return float4(outRgb, 1.0f);
 }
 )HLSL";
@@ -860,9 +889,10 @@ struct alignas(16) CbToastParams {
 static_assert(sizeof(CbToastParams) == 48, "CbToastParams must be 48 bytes");
 
 struct alignas(16) CbP2FilterParams {
-    float params[4];  // preset, enable, 0, 0
+    float params[4];   // preset, enable, vignetteEnable, 0
+    float vp_rect[4];  // vpLeft, vpTop, vpWidth, vpHeight
 };
-static_assert(sizeof(CbP2FilterParams) == 16, "CbP2FilterParams must be 16 bytes");
+static_assert(sizeof(CbP2FilterParams) == 32, "CbP2FilterParams must be 32 bytes");
 
 struct ParticleParamsTexData {
     float soft_params[4];   // mode (0=off, 1=alpha, 2=rgb), invSoftRange, proj22, proj23
@@ -1021,6 +1051,7 @@ struct DepthVariantShaders {
     ID3D11PixelShader* ps_blur_h = nullptr;
     ID3D11PixelShader* ps_blur_v = nullptr;
     ID3D11PixelShader* ps_composite = nullptr;
+    ID3D11PixelShader* ps_aerial = nullptr;
 };
 
 struct BenchSlot {
@@ -1133,6 +1164,7 @@ double g_sum_comp_ms = 0.0;
 double g_sum_total_ms = 0.0;
 
 void ReleaseDepthVariantShaders(DepthVariantShaders& s) {
+    SafeRelease(s.ps_aerial);
     SafeRelease(s.ps_composite);
     SafeRelease(s.ps_blur_v);
     SafeRelease(s.ps_blur_h);
@@ -1292,7 +1324,8 @@ bool CreateDepthVariantShaders(
         CompileAndCreatePixelShader(dev, compile_fn, "PS_AoRaw", ps_profile, defines, &out.ps_ao_raw, logger) &&
         CompileAndCreatePixelShader(dev, compile_fn, "PS_BlurH", ps_profile, defines, &out.ps_blur_h, logger) &&
         CompileAndCreatePixelShader(dev, compile_fn, "PS_BlurV", ps_profile, defines, &out.ps_blur_v, logger) &&
-        CompileAndCreatePixelShader(dev, compile_fn, "PS_AoComposite", ps_profile, defines, &out.ps_composite, logger);
+        CompileAndCreatePixelShader(dev, compile_fn, "PS_AoComposite", ps_profile, defines, &out.ps_composite, logger) &&
+        CompileAndCreatePixelShader(dev, compile_fn, "PS_AerialPerspective", ps_profile, defines, &out.ps_aerial, logger);
     if (!ok) {
         ReleaseDepthVariantShaders(out);
     }
@@ -1310,6 +1343,7 @@ bool EnsurePipelineObjects(ID3D11Device* dev, RouteCD3DLogFn logger) {
         return false;
     }
     if (g_st.vs_fullscreen && g_st.shaders_single.ps_ao_raw && g_st.shaders_single.ps_composite &&
+        g_st.shaders_single.ps_aerial &&
         g_st.ps_toast && g_st.cb_toast && g_st.blend_toast_alpha &&
         g_st.ps_panel && g_st.ps_cursor && g_st.cb_panel && g_st.samp_linear &&
         g_st.cb_params && g_st.blend_debug_rgb && g_st.blend_mul_rgb &&
@@ -1758,7 +1792,7 @@ void RecordTimestamp(ID3D11DeviceContext* ctx, BenchSlot* slot, size_t idx) {
 
 bool ExecuteRouteCAoPass(const RouteCAoRenderRequest& req, RouteCD3DLogFn logger) {
     if (!req.ctx || !req.proj_4x4 || req.vp_width <= 0 || req.vp_height <= 0 ||
-        (!req.ao_enabled && !req.capture_particle_depth)) {
+        (!req.ao_enabled && !req.capture_particle_depth && !req.aerial_enabled)) {
         return false;
     }
 
@@ -1905,7 +1939,7 @@ bool ExecuteRouteCAoPass(const RouteCAoRenderRequest& req, RouteCD3DLogFn logger
     cb.sscs_params[0] = req.sscs_enabled ? 1.0f : 0.0f;
     cb.sscs_params[1] = 1.15f;  // crisp full-res contact shadow strength
     cb.sscs_params[2] = 0.90f;  // Hob cool-tinted AO balance
-    cb.sscs_params[3] = 0.0f;
+    cb.sscs_params[3] = req.aerial_enabled ? ((req.filter_preset == 2) ? 2.0f : 1.0f) : 0.0f;
     std::memcpy(mapped.pData, &cb, sizeof(cb));
     req.ctx->Unmap(g_st.cb_params, 0);
 
@@ -1960,10 +1994,6 @@ bool ExecuteRouteCAoPass(const RouteCAoRenderRequest& req, RouteCD3DLogFn logger
     g_last_dsv_tex_fmt.store(static_cast<uint32_t>(depth_desc.Format), std::memory_order_relaxed);
     g_last_sample_count.store(depth_desc.SampleDesc.Count, std::memory_order_relaxed);
 
-    if (!req.ao_enabled) {
-        return g_st.particle_depth_valid;
-    }
-
     D3D11_VIEWPORT ao_vp{};
     ao_vp.TopLeftX = static_cast<float>(req.vp_left);
     ao_vp.TopLeftY = static_cast<float>(req.vp_top);
@@ -1972,79 +2002,95 @@ bool ExecuteRouteCAoPass(const RouteCAoRenderRequest& req, RouteCD3DLogFn logger
     ao_vp.MinDepth = 0.0f;
     ao_vp.MaxDepth = 1.0f;
 
-    const int half_w = (std::max)(1, ((req.vp_left + req.vp_width - 1) >> 1) - (req.vp_left >> 1) + 1);
-    const int half_h = (std::max)(1, ((req.vp_top + req.vp_height - 1) >> 1) - (req.vp_top >> 1) + 1);
-    D3D11_VIEWPORT ao_vp_half{};
-    ao_vp_half.TopLeftX = static_cast<float>(req.vp_left >> 1);
-    ao_vp_half.TopLeftY = static_cast<float>(req.vp_top >> 1);
-    ao_vp_half.Width = static_cast<float>(half_w);
-    ao_vp_half.Height = static_cast<float>(half_h);
-    ao_vp_half.MinDepth = 0.0f;
-    ao_vp_half.MaxDepth = 1.0f;
+    if (req.ao_enabled) {
+        const int half_w = (std::max)(1, ((req.vp_left + req.vp_width - 1) >> 1) - (req.vp_left >> 1) + 1);
+        const int half_h = (std::max)(1, ((req.vp_top + req.vp_height - 1) >> 1) - (req.vp_top >> 1) + 1);
+        D3D11_VIEWPORT ao_vp_half{};
+        ao_vp_half.TopLeftX = static_cast<float>(req.vp_left >> 1);
+        ao_vp_half.TopLeftY = static_cast<float>(req.vp_top >> 1);
+        ao_vp_half.Width = static_cast<float>(half_w);
+        ao_vp_half.Height = static_cast<float>(half_h);
+        ao_vp_half.MinDepth = 0.0f;
+        ao_vp_half.MaxDepth = 1.0f;
 
-    if (req.debug_mode == 3) {
-        req.ctx->RSSetViewports(1, &ao_vp);
-        req.ctx->OMSetRenderTargets(1, &target_rtv, nullptr);
-        req.ctx->OMSetBlendState(g_st.blend_debug_rgb, nullptr, 0xFFFFFFFFU);
-        req.ctx->PSSetShader(ds.ps_c1_debug, nullptr, 0);
-        ID3D11ShaderResourceView* srvs_c1[2] = {g_st.depth_copy_srv, nullptr};
-        req.ctx->PSSetShaderResources(0, 2, srvs_c1);
-        req.ctx->Draw(3, 0);
-        RecordTimestamp(req.ctx, bench_slot, 2);
-        RecordTimestamp(req.ctx, bench_slot, 3);
-        RecordTimestamp(req.ctx, bench_slot, 4);
-        RecordTimestamp(req.ctx, bench_slot, 5);
-    } else {
-        // Pass 1 (Half-Res): HBAO/GTAO-Lite Raw -> ao_rt_rtv
-        req.ctx->RSSetViewports(1, &ao_vp_half);
-        req.ctx->OMSetBlendState(nullptr, nullptr, 0xFFFFFFFFU);
-        req.ctx->OMSetRenderTargets(1, &g_st.ao_rt_rtv, nullptr);
-        req.ctx->PSSetShader(ds.ps_ao_raw, nullptr, 0);
-        ID3D11ShaderResourceView* srvs_p1[2] = {g_st.depth_copy_srv, nullptr};
-        req.ctx->PSSetShaderResources(0, 2, srvs_p1);
-        req.ctx->Draw(3, 0);
-        RecordTimestamp(req.ctx, bench_slot, 2);
-
-        if (req.debug_mode != 1) {
-            // Pass 2 (Half-Res): Bilateral Blur Horizontal -> ao_blur_rtv
-            req.ctx->OMSetRenderTargets(1, &g_st.ao_blur_rtv, nullptr);
-            req.ctx->PSSetShader(ds.ps_blur_h, nullptr, 0);
-            ID3D11ShaderResourceView* srvs_p2[2] = {g_st.depth_copy_srv, g_st.ao_rt_srv};
-            req.ctx->PSSetShaderResources(0, 2, srvs_p2);
+        if (req.debug_mode == 3) {
+            req.ctx->RSSetViewports(1, &ao_vp);
+            req.ctx->OMSetRenderTargets(1, &target_rtv, nullptr);
+            req.ctx->OMSetBlendState(g_st.blend_debug_rgb, nullptr, 0xFFFFFFFFU);
+            req.ctx->PSSetShader(ds.ps_c1_debug, nullptr, 0);
+            ID3D11ShaderResourceView* srvs_c1[2] = {g_st.depth_copy_srv, nullptr};
+            req.ctx->PSSetShaderResources(0, 2, srvs_c1);
             req.ctx->Draw(3, 0);
+            RecordTimestamp(req.ctx, bench_slot, 2);
             RecordTimestamp(req.ctx, bench_slot, 3);
-
-            // Pass 3 (Half-Res): Bilateral Blur Vertical -> ao_rt_rtv
-            ID3D11ShaderResourceView* unbind_t1[2] = {g_st.depth_copy_srv, nullptr};
-            req.ctx->PSSetShaderResources(0, 2, unbind_t1);
-            req.ctx->OMSetRenderTargets(1, &g_st.ao_rt_rtv, nullptr);
-            req.ctx->PSSetShader(ds.ps_blur_v, nullptr, 0);
-            ID3D11ShaderResourceView* srvs_p3[2] = {g_st.depth_copy_srv, g_st.ao_blur_srv};
-            req.ctx->PSSetShaderResources(0, 2, srvs_p3);
-            req.ctx->Draw(3, 0);
             RecordTimestamp(req.ctx, bench_slot, 4);
+            RecordTimestamp(req.ctx, bench_slot, 5);
         } else {
-            RecordTimestamp(req.ctx, bench_slot, 3);
-            RecordTimestamp(req.ctx, bench_slot, 4);
+            // Pass 1 (Half-Res): HBAO/GTAO-Lite Raw -> ao_rt_rtv
+            req.ctx->RSSetViewports(1, &ao_vp_half);
+            req.ctx->OMSetBlendState(nullptr, nullptr, 0xFFFFFFFFU);
+            req.ctx->OMSetRenderTargets(1, &g_st.ao_rt_rtv, nullptr);
+            req.ctx->PSSetShader(ds.ps_ao_raw, nullptr, 0);
+            ID3D11ShaderResourceView* srvs_p1[2] = {g_st.depth_copy_srv, nullptr};
+            req.ctx->PSSetShaderResources(0, 2, srvs_p1);
+            req.ctx->Draw(3, 0);
+            RecordTimestamp(req.ctx, bench_slot, 2);
+
+            if (req.debug_mode != 1) {
+                // Pass 2 (Half-Res): Bilateral Blur Horizontal -> ao_blur_rtv
+                req.ctx->OMSetRenderTargets(1, &g_st.ao_blur_rtv, nullptr);
+                req.ctx->PSSetShader(ds.ps_blur_h, nullptr, 0);
+                ID3D11ShaderResourceView* srvs_p2[2] = {g_st.depth_copy_srv, g_st.ao_rt_srv};
+                req.ctx->PSSetShaderResources(0, 2, srvs_p2);
+                req.ctx->Draw(3, 0);
+                RecordTimestamp(req.ctx, bench_slot, 3);
+
+                // Pass 3 (Half-Res): Bilateral Blur Vertical -> ao_rt_rtv
+                ID3D11ShaderResourceView* unbind_t1[2] = {g_st.depth_copy_srv, nullptr};
+                req.ctx->PSSetShaderResources(0, 2, unbind_t1);
+                req.ctx->OMSetRenderTargets(1, &g_st.ao_rt_rtv, nullptr);
+                req.ctx->PSSetShader(ds.ps_blur_v, nullptr, 0);
+                ID3D11ShaderResourceView* srvs_p3[2] = {g_st.depth_copy_srv, g_st.ao_blur_srv};
+                req.ctx->PSSetShaderResources(0, 2, srvs_p3);
+                req.ctx->Draw(3, 0);
+                RecordTimestamp(req.ctx, bench_slot, 4);
+            } else {
+                RecordTimestamp(req.ctx, bench_slot, 3);
+                RecordTimestamp(req.ctx, bench_slot, 4);
+            }
+
+            // Pass 4 (Full-Res Joint-Bilateral Upsample): RGB-only Multiplicative Composite or Grayscale Debug -> target_rtv
+            req.ctx->PSSetShaderResources(0, 2, null_srvs);
+            req.ctx->RSSetViewports(1, &ao_vp);
+            req.ctx->OMSetRenderTargets(1, &target_rtv, nullptr);
+            req.ctx->OMSetBlendState(
+                (req.debug_mode == 0) ? g_st.blend_mul_rgb : g_st.blend_debug_rgb,
+                nullptr,
+                0xFFFFFFFFU);
+            req.ctx->PSSetShader(ds.ps_composite, nullptr, 0);
+            ID3D11ShaderResourceView* srvs_p4[2] = {g_st.depth_copy_srv, g_st.ao_rt_srv};
+            req.ctx->PSSetShaderResources(0, 2, srvs_p4);
+            req.ctx->Draw(3, 0);
+            RecordTimestamp(req.ctx, bench_slot, 5);
         }
 
-        // Pass 4 (Full-Res Joint-Bilateral Upsample): RGB-only Multiplicative Composite or Grayscale Debug -> target_rtv
-        req.ctx->PSSetShaderResources(0, 2, null_srvs);
-        req.ctx->RSSetViewports(1, &ao_vp);
-        req.ctx->OMSetRenderTargets(1, &target_rtv, nullptr);
-        req.ctx->OMSetBlendState(
-            (req.debug_mode == 0) ? g_st.blend_mul_rgb : g_st.blend_debug_rgb,
-            nullptr,
-            0xFFFFFFFFU);
-        req.ctx->PSSetShader(ds.ps_composite, nullptr, 0);
-        ID3D11ShaderResourceView* srvs_p4[2] = {g_st.depth_copy_srv, g_st.ao_rt_srv};
-        req.ctx->PSSetShaderResources(0, 2, srvs_p4);
-        req.ctx->Draw(3, 0);
-        RecordTimestamp(req.ctx, bench_slot, 5);
+        if (bench_slot) {
+            req.ctx->End(bench_slot->disjoint);
+        }
     }
 
-    if (bench_slot) {
-        req.ctx->End(bench_slot->disjoint);
+    if (req.aerial_enabled && req.debug_mode == 0 && ds.ps_aerial && g_st.blend_toast_alpha) {
+        req.ctx->RSSetViewports(1, &ao_vp);
+        req.ctx->OMSetRenderTargets(1, &target_rtv, nullptr);
+        req.ctx->OMSetBlendState(g_st.blend_toast_alpha, nullptr, 0xFFFFFFFFU);
+        req.ctx->PSSetShader(ds.ps_aerial, nullptr, 0);
+        ID3D11ShaderResourceView* srvs_aerial[2] = {g_st.depth_copy_srv, nullptr};
+        req.ctx->PSSetShaderResources(0, 2, srvs_aerial);
+        req.ctx->Draw(3, 0);
+    }
+
+    if (!req.ao_enabled) {
+        return g_st.particle_depth_valid || req.aerial_enabled;
     }
 
     g_last_tex_w.store(depth_desc.Width, std::memory_order_relaxed);
@@ -2096,7 +2142,8 @@ bool EnsureP2CopyTarget(ID3D11Device* dev, uint32_t width, uint32_t height, DXGI
 }
 
 bool ExecuteRouteCP2FilterPass(const RouteCP2FilterRequest& req, RouteCD3DLogFn logger) {
-    if (!req.ctx || req.filter_preset <= 0 || req.vp_width <= 0 || req.vp_height <= 0) {
+    if (!req.ctx || (req.filter_preset <= 0 && !req.vignette_enabled) ||
+        req.vp_width <= 0 || req.vp_height <= 0) {
         return false;
     }
 
@@ -2170,8 +2217,12 @@ bool ExecuteRouteCP2FilterPass(const RouteCP2FilterRequest& req, RouteCD3DLogFn 
     auto* cb = static_cast<CbP2FilterParams*>(mapped.pData);
     cb->params[0] = static_cast<float>(req.filter_preset);
     cb->params[1] = 1.0f;
-    cb->params[2] = 0.0f;
+    cb->params[2] = req.vignette_enabled ? 1.0f : 0.0f;
     cb->params[3] = 0.0f;
+    cb->vp_rect[0] = static_cast<float>(req.vp_left);
+    cb->vp_rect[1] = static_cast<float>(req.vp_top);
+    cb->vp_rect[2] = static_cast<float>(req.vp_width);
+    cb->vp_rect[3] = static_cast<float>(req.vp_height);
     req.ctx->Unmap(g_st.cb_p2_filter, 0);
 
     D3D11_VIEWPORT vp{};
@@ -2487,6 +2538,8 @@ bool VerifyRouteCShadersCompile(RouteCD3DLogFn logger) {
         {"VS_Fullscreen", "vs_4_0", macro_single},
         {"PS_AoComposite", "ps_4_0", macro_single},
         {"PS_AoComposite", "ps_4_1", macro_msaa},
+        {"PS_AerialPerspective", "ps_4_0", macro_single},
+        {"PS_AerialPerspective", "ps_4_1", macro_msaa},
         {"PS_C1DepthNormalDebug", "ps_4_0", macro_single},
         {"PS_C1DepthNormalDebug", "ps_4_1", macro_msaa},
         {"PS_AoRaw", "ps_4_0", macro_single},

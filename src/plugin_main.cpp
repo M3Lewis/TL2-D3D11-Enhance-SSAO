@@ -567,6 +567,7 @@ extern "C" __declspec(dllexport) int RouteB_RunConfigPanelSelfTest() {
     routeb::SetRouteCAoRuntimeEnabled(false);
     routeb::SetRouteCSscsRuntimeEnabled(false);
     routeb::SetP1SoftParticlesEnabled(true);
+    routeb::SetP2AerialVignetteEnabled(false);
     routeb::SetP2FilterPreset(2);
     if (!routeb::SaveCustomPreset(0)) {
         return 2;
@@ -579,7 +580,7 @@ extern "C" __declspec(dllexport) int RouteB_RunConfigPanelSelfTest() {
     const routeb::VisualConfig vanilla = routeb::CaptureVisualConfigFromEngine();
     if (vanilla.phase3_enhance || vanilla.af_point_enhance || vanilla.p0_rimlit_enhance ||
         vanilla.ao_enabled || vanilla.p0_sscs_enabled || vanilla.p1_soft_particles ||
-        vanilla.p2_filter_preset != 0) {
+        vanilla.p2_aerial_vignette || vanilla.p2_filter_preset != 0) {
         return 4;
     }
 
@@ -590,7 +591,7 @@ extern "C" __declspec(dllexport) int RouteB_RunConfigPanelSelfTest() {
     const routeb::VisualConfig applied = routeb::CaptureVisualConfigFromEngine();
     if (!applied.phase3_enhance || applied.af_point_enhance || !applied.p0_rimlit_enhance ||
         applied.ao_enabled || applied.p0_sscs_enabled || !applied.p1_soft_particles ||
-        applied.p2_filter_preset != 2) {
+        applied.p2_aerial_vignette || applied.p2_filter_preset != 2) {
         return 6;
     }
 

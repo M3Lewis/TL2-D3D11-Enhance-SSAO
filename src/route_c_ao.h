@@ -32,6 +32,9 @@ bool ToggleRouteCSscsRuntimeEnabled();
 void SetP1SoftParticlesEnabled(bool enabled);
 bool IsP1SoftParticlesEnabled();
 bool ToggleP1SoftParticlesEnabled();
+void SetP2AerialVignetteEnabled(bool enabled);
+bool IsP2AerialVignetteEnabled();
+bool ToggleP2AerialVignetteEnabled();
 bool IsRouteCWorldDepthReadyForParticles();
 void TriggerRouteCToastForTest();
 

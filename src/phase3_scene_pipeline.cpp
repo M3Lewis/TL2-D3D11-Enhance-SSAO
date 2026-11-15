@@ -606,10 +606,11 @@ void MaybeApplyP2FilterUniformsToPass(const void* pass) {
     const uint64_t bloom_ms = g_p2_bloom_last_tick_ms.load(std::memory_order_relaxed);
     const bool bloom_recent = (bloom_ms != 0 && (now_ms - bloom_ms) < 250ULL);
     const float apply_tonemap = (is_bright_bloom || is_bloom_blend || !bloom_recent) ? 1.0f : 0.0f;
+    const float apply_vignette = (is_fxaa && IsP2AerialVignetteEnabled()) ? 1.0f : 0.0f;
     const float params[4] = {
         static_cast<float>(g_p2_filter_preset.load(std::memory_order_relaxed)),
         apply_tonemap,
-        0.0f,
+        apply_vignette,
         0.0f,
     };
 

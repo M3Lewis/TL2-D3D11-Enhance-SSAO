@@ -22,6 +22,7 @@ struct VisualConfig {
     bool ao_enabled = true;
     bool p0_sscs_enabled = true;
     bool p1_soft_particles = true;
+    bool p2_aerial_vignette = true;
     int p2_filter_preset = 1;  // 0=Off, 1=Hob, 2=Dark Film
 
     bool operator==(const VisualConfig& other) const = default;

@@ -503,14 +503,34 @@ float3 ComputeAoCompositeRgb(int2 pix, float rawC)
                     float cosN = hPlane * invDist;
                     float dz = dC - (-S.z);
                     float rangeW = saturate(1.0f - distSq * 2.4f);
-                    float thickW = smoothstep(0.050f, 0.12f, hPlane) *
+                    float thickW = smoothstep(0.055f, 0.13f, hPlane) *
                                    (1.0f - smoothstep(0.28f, 0.55f, hPlane)) *
-                                   smoothstep(0.030f, 0.075f, dz) *
+                                   smoothstep(0.035f, 0.080f, dz) *
                                    (1.0f - smoothstep(0.32f, 0.60f, dz));
                     float angW = saturate((cosN - 0.30f) * 2.5f);
                     float sampleOcc = angW * rangeW * thickW * (1.10f - 0.14f * float(s));
+                    if (sampleOcc > 0.01f)
+                    {
+                        float3 nS = ReconstructNormalVS(spix, S);
+                        // Parallel flat ground planes (terrain chunk steps) are not upright occluders.
+                        sampleOcc *= (1.0f - smoothstep(0.76f, 0.92f, dot(n, nS)));
+                    }
                     contactMax = max(contactMax, sampleOcc);
                     contactSum += sampleOcc;
+                }
+            }
+
+            if (contactMax > 0.01f)
+            {
+                int2 bpix = pix - int2(round(keyDir * 3.0f));
+                float bRaw = 1.0f;
+                float3 B = ReconstructPosVS(bpix, bRaw);
+                if (bRaw < 0.99998f && abs(B.z - P.z) < 0.08f)
+                {
+                    float3 nB = ReconstructNormalVS(bpix, B);
+                    float normStable = smoothstep(0.76f, 0.92f, dot(n, nB));
+                    contactMax *= normStable;
+                    contactSum *= normStable;
                 }
             }
 

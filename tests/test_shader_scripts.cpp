@@ -136,6 +136,7 @@ bool ExercisePhase3PassLifecycle(HMODULE ogre, void* root, void* win) {
         {"Verify/SkinnedAlpha", "DIFFPASS", true, true, 1},
         {"Verify/LightPass", "LIGHTPASS", false, false, 1},
         {"Verify/RimLit2D", "RIMLIT", false, false, 2},
+        {"Verify/RimLit3Cube", "RIMLIT", false, true, 3},
     };
 
     std::vector<void*> passes;
@@ -156,6 +157,13 @@ bool ExercisePhase3PassLifecycle(HMODULE ogre, void* root, void* win) {
             void* tus = pass_create_tus(pass);
             if (tus && t == 0 && std::string(spec.mat_name) == "Verify/DiffOpaque") {
                 tus_set_tex_name(tus, "FLOOR_01.dds", 2 /*TEX_TYPE_2D*/);
+            }
+            if (tus && std::string(spec.mat_name) == "Verify/RimLit3Cube") {
+                if (t < 2) {
+                    tus_set_tex_name(tus, "FLOOR_01.dds", 2 /*TEX_TYPE_2D*/);
+                } else if (t == 2) {
+                    tus_set_tex_name(tus, "RimCube.dds", 4 /*TEX_TYPE_CUBE_MAP*/);
+                }
             }
         }
         passes.push_back(pass);
@@ -355,7 +363,12 @@ int main(int argc, char** argv) {
             std::printf("[FAIL] d3d11 companion normal/spec SRV binding did not activate in TL2_RouteB_D3D11.log\n");
             return 7;
         }
-        std::printf("[PASS] d3d11 toast overlay + companion _tl2n/_tl2s D3D11 draw binding verified cleanly!\n");
+        if (route_log.find("rim3Cube=0") != std::string::npos ||
+            route_log.find("rim3Cube=") == std::string::npos) {
+            std::printf("[FAIL] d3d11 RimLit3CubePS 3-stage bind did not activate in TL2_RouteB_D3D11.log\n");
+            return 8;
+        }
+        std::printf("[PASS] d3d11 toast overlay + companion _tl2n/_tl2s + RimLit3CubePS D3D11 draw binding verified cleanly!\n");
     }
     return exit_code;
 }

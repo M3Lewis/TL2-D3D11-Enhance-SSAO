@@ -53,3 +53,11 @@ fragment_program TL2/Phase3/RimLitCubePS hlsl
     target ps_4_0
     column_major_matrices false
 }
+
+fragment_program TL2/Phase3/RimLit3CubePS hlsl
+{
+    source hlsl4/RimLit_ps.hlsl
+    entry_point main_cube3
+    target ps_4_0
+    column_major_matrices false
+}

@@ -1,6 +1,7 @@
 #include "route_c_ao.h"
 #include "route_c_d3d11.h"
 #include "phase3_scene_pipeline.h"
+#include "config_panel.h"
 
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
@@ -173,6 +174,7 @@ std::atomic<bool> g_swap_hooked{false};
 std::atomic<bool> g_hooked{false};
 std::atomic<bool> g_c0_survey_active{false};
 std::atomic<bool> g_ao_runtime_enabled{true};
+std::atomic<bool> g_sscs_runtime_enabled{true};
 std::atomic<uint64_t> g_toast_expire_tick_ms{0};
 std::atomic<int> g_ao_debug_mode{0};  // Phase C2 default: DebugMode=0 (Live AO Composite)
 std::atomic<uint64_t> g_render_scene_calls{0};
@@ -654,6 +656,7 @@ void TryDispatchAoForFrame(ActiveSceneFrame& frame, const char* trigger_src, uin
     req.vp_width = frame.vp_w;
     req.vp_height = frame.vp_h;
     req.debug_mode = dbg_mode;
+    req.sscs_enabled = IsRouteCSscsRuntimeEnabled();
     const bool ok = ExecuteRouteCAoPass(req, g_log);
 
     static std::atomic<uint32_t> s_dispatch_logs{0};
@@ -737,61 +740,19 @@ bool IsGameProcessForeground() {
 }
 
 void PollRuntimeToggleHotkeys() {
-    static bool prev_f8 = false;
-    static bool prev_f9 = false;
-    static bool prev_f10 = false;
-    static bool prev_f11 = false;
     if (!IsGameProcessForeground()) {
-        prev_f8 = false;
-        prev_f9 = false;
-        prev_f10 = false;
-        prev_f11 = false;
         return;
     }
-
-    const bool down_f8 = (::GetAsyncKeyState(VK_F8) & 0x8000) != 0;
-    if (down_f8 && !prev_f8) {
-        const bool now_on = TogglePhase3RuntimeEnhance();
-        g_toast_expire_tick_ms.store(::GetTickCount64() + 2000ULL, std::memory_order_relaxed);
-        if (g_log) {
-            g_log("[RouteB][Hotkey] F8 -> DLL Phase3 scene enhance: %s", now_on ? "ON" : "OFF");
-        }
+    if (PollFallbackConfigPanelHotkey() && g_log) {
+        g_log("[RouteB][Hotkey] F8 fallback -> Config panel: %s",
+              IsConfigPanelOpen() ? "OPEN" : "CLOSED");
     }
-    prev_f8 = down_f8;
-
-    const bool down_f9 = (::GetAsyncKeyState(VK_F9) & 0x8000) != 0;
-    if (down_f9 && !prev_f9) {
-        const bool now_on = ToggleRouteCAoRuntimeEnabled();
-        g_toast_expire_tick_ms.store(::GetTickCount64() + 2000ULL, std::memory_order_relaxed);
-        if (g_log) {
-            g_log("[RouteC][Hotkey] F9 -> Screen-space AO: %s", now_on ? "ON" : "OFF");
-        }
-    }
-    prev_f9 = down_f9;
-
-    const bool down_f10 = (::GetAsyncKeyState(VK_F10) & 0x8000) != 0;
-    if (down_f10 && !prev_f10) {
-        const int next_preset = CycleP2FilterPreset();
-        g_toast_expire_tick_ms.store(::GetTickCount64() + 2000ULL, std::memory_order_relaxed);
-        if (g_log) {
-            g_log("[RouteB][Hotkey] F10 -> Scene filter preset: %s (%d)",
-                  P2FilterPresetName(next_preset), next_preset);
-        }
-    }
-    prev_f10 = down_f10;
-
-    const bool down_f11 = (::GetAsyncKeyState(VK_F11) & 0x8000) != 0;
-    if (down_f11 && !prev_f11) {
-        const bool now_on = ToggleF11VisualEnhance();
-        g_toast_expire_tick_ms.store(::GetTickCount64() + 2000ULL, std::memory_order_relaxed);
-        if (g_log) {
-            g_log("[RouteB][Hotkey] F11 -> 16x AF + PointLight relief: %s", now_on ? "ON" : "OFF");
-        }
-    }
-    prev_f11 = down_f11;
 }
 
 void DrawToastOverlayForRenderTarget(void* rw) {
+    if (IsConfigPanelOpen()) {
+        return;
+    }
     const uint64_t expire_ms = g_toast_expire_tick_ms.load(std::memory_order_relaxed);
     if (expire_ms == 0 || !rw) {
         return;
@@ -829,10 +790,33 @@ void DrawToastOverlayForRenderTarget(void* rw) {
     SafeRelease(ctx);
 }
 
+void DrawPanelOverlayForRenderTarget(void* rw) {
+    if (!rw || !IsConfigPanelOpen()) {
+        return;
+    }
+    ID3D11DeviceContext* ctx = nullptr;
+    ID3D11RenderTargetView* rtv = nullptr;
+    ID3D11DepthStencilView* dsv = nullptr;
+    if (TryGetContextFromRenderTarget(rw, &ctx, &rtv, &dsv) && ctx && rtv) {
+        RenderConfigPanelOverlay(rw, ctx, rtv, g_log);
+    }
+    SafeRelease(ctx);
+}
+
 void __fastcall HookRenderWindowSwapBuffers(void* rw, uint8_t wait_for_vsync) {
     if (g_swap_hooked.load(std::memory_order_acquire)) {
+        if (rw && !IsPanelWindowAttached()) {
+            HWND rw_hwnd = nullptr;
+            if (TryGetBorrowedRtView(rw, "WINDOW", reinterpret_cast<void**>(&rw_hwnd)) && rw_hwnd) {
+                if (AttachPanelWindow(rw_hwnd) && g_log) {
+                    g_log("[RouteB][Panel] Subclassed RenderWindow HWND=%p (F8 opens config panel).",
+                          rw_hwnd);
+                }
+            }
+        }
         PollRuntimeToggleHotkeys();
         DrawToastOverlayForRenderTarget(rw);
+        DrawPanelOverlayForRenderTarget(rw);
     }
     if (g_orig_swap_buffers) {
         g_orig_swap_buffers(rw, wait_for_vsync);
@@ -856,6 +840,9 @@ void InstallRenderWindowSwapBuffersHook(void* rw, const std::string& rt_name) {
                 *slot = reinterpret_cast<void*>(&HookRenderWindowSwapBuffers);
                 ::VirtualProtect(slot, sizeof(void*), old_prot, &old_prot);
                 g_swap_hooked.store(true, std::memory_order_release);
+                if (g_toast_expire_tick_ms.load(std::memory_order_relaxed) == 0) {
+                    g_toast_expire_tick_ms.store(::GetTickCount64() + 2600ULL, std::memory_order_relaxed);
+                }
                 if (g_log) {
                     g_log("[RouteC][Toast] Hooked RenderWindow::swapBuffers vtbl=%p orig=%p rt=\"%s\"",
                           vtable, reinterpret_cast<void*>(g_orig_swap_buffers), rt_name.c_str());
@@ -1234,16 +1221,21 @@ bool InstallRouteCAoPipeline(void* ogre_main_base, RouteCLogFn logger) {
     const int dbg_mode = ResolveAoDebugMode(0);  // C2 default: DebugMode=0 (Live AO)
     g_c0_survey_active.store(survey_on, std::memory_order_relaxed);
     g_ao_runtime_enabled.store(ao_init_on, std::memory_order_relaxed);
+    g_sscs_runtime_enabled.store(!EnvFlagIsZero("TL2_P0_SSCS"), std::memory_order_relaxed);
     g_ao_debug_mode.store(dbg_mode, std::memory_order_relaxed);
     g_hooked.store(true, std::memory_order_relaxed);
 
+    LoadVisualConfigAndPresets();
+
     if (g_log) {
         const int p2_preset = GetP2FilterPreset();
-        g_log("[RouteC][C2] Hooks installed (ao=%s, debugMode=%d, p2Filter=%s, f11=%s, c0_survey=%s, injectQueue=86, hotkeys=F8:Enhance/F9:AO/F10:Filter/F11:AF+Point).",
-              ao_init_on ? "ON" : "OFF",
+        g_log("[RouteC][C2] Hooks installed (ao=%s, sscs=%s, debugMode=%d, p2Filter=%s, f11=%s, p0rim=%s, c0_survey=%s, injectQueue=86, hotkey=F8:ConfigPanel).",
+              IsRouteCAoRuntimeEnabled() ? "ON" : "OFF",
+              IsRouteCSscsRuntimeEnabled() ? "ON" : "OFF",
               dbg_mode,
               P2FilterPresetName(p2_preset),
               IsF11VisualEnhanceEnabled() ? "ON" : "OFF",
+              IsP0RimLitEnhanceEnabled() ? "ON" : "OFF",
               survey_on ? "ON" : "OFF");
     }
     return true;
@@ -1254,6 +1246,7 @@ void RemoveRouteCAoPipeline() {
     g_c0_survey_active.store(false, std::memory_order_relaxed);
 
     g_toast_expire_tick_ms.store(0, std::memory_order_relaxed);
+    ShutdownConfigPanel();
     RemoveRenderWindowSwapBuffersHook();
     g_detour_queue_ended.Remove();
     g_detour_queue_started.Remove();
@@ -1280,6 +1273,21 @@ bool IsRouteCAoRuntimeEnabled() {
 bool ToggleRouteCAoRuntimeEnabled() {
     bool expected = g_ao_runtime_enabled.load(std::memory_order_relaxed);
     while (!g_ao_runtime_enabled.compare_exchange_weak(expected, !expected, std::memory_order_relaxed)) {
+    }
+    return !expected;
+}
+
+void SetRouteCSscsRuntimeEnabled(bool enabled) {
+    g_sscs_runtime_enabled.store(enabled, std::memory_order_relaxed);
+}
+
+bool IsRouteCSscsRuntimeEnabled() {
+    return g_sscs_runtime_enabled.load(std::memory_order_relaxed);
+}
+
+bool ToggleRouteCSscsRuntimeEnabled() {
+    bool expected = g_sscs_runtime_enabled.load(std::memory_order_relaxed);
+    while (!g_sscs_runtime_enabled.compare_exchange_weak(expected, !expected, std::memory_order_relaxed)) {
     }
     return !expected;
 }

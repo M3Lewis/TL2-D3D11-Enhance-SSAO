@@ -17,8 +17,9 @@ struct alignas(16) CbAoParams {
     int32_t vp_clamp[4];     // (minX, minY, maxX, maxY)
     float ao_params[4];      // (radiusWorld, biasCos, strength, minAoFloor)
     float blur_and_mode[4];  // (invVpW, invVpH, depthEdgeScale, debugMode)
+    float sscs_params[4];    // (sscsEnabled, sscsStrength, tintStrength, unused)
 };
-static_assert(sizeof(CbAoParams) == 96, "CbAoParams must match 6 float4 HLSL registers");
+static_assert(sizeof(CbAoParams) == 112, "CbAoParams must match 7 float4 HLSL registers");
 
 struct RouteCAoRenderRequest {
     ID3D11DeviceContext* ctx = nullptr;
@@ -32,6 +33,7 @@ struct RouteCAoRenderRequest {
     int vp_width = 0;
     int vp_height = 0;
     int debug_mode = 0;
+    bool sscs_enabled = true;
 };
 
 struct RouteCD3DStats {
@@ -67,6 +69,24 @@ struct RouteCP2FilterRequest {
     int filter_preset = 1;  // 0=OFF, 1=HOB, 2=DRK
 };
 bool ExecuteRouteCP2FilterPass(const RouteCP2FilterRequest& req, RouteCD3DLogFn logger);
+struct RouteCPanelOverlayRequest {
+    ID3D11DeviceContext* ctx = nullptr;
+    ID3D11RenderTargetView* target_rtv = nullptr;
+    const void* bgra_pixels = nullptr;
+    uint32_t tex_w = 0;
+    uint32_t tex_h = 0;
+    bool upload_dirty = false;
+    float box_x = 0.0f;
+    float box_y = 0.0f;
+    float box_w = 0.0f;
+    float box_h = 0.0f;
+    float cursor_x = 0.0f;
+    float cursor_y = 0.0f;
+    bool draw_cursor = false;
+    float panel_alpha = 1.0f;
+};
+
+bool ExecuteRouteCPanelOverlay(const RouteCPanelOverlayRequest& req, RouteCD3DLogFn logger);
 bool ExecuteRouteCToastOverlay(
     ID3D11DeviceContext* ctx,
     ID3D11RenderTargetView* target_rtv,

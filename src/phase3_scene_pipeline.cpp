@@ -116,6 +116,7 @@ enum class PassArchetype {
     LightPass,
     RimLit2D,
     RimLitCube,
+    RimLit3Cube,
 };
 
 struct ExplicitProgramSlot {
@@ -284,7 +285,7 @@ OgreSharedPtr g_shared_per_frame_sp{};
 bool g_shared_params_init_done = false;
 bool g_shared_params_ready = false;
 
-ExplicitProgramSlot g_slots[8] = {
+ExplicitProgramSlot g_slots[9] = {
     {},
     {"TL2/Phase3/DiffPassOpaquePS"},
     {"TL2/Phase3/DiffPassAlphaPS"},
@@ -293,6 +294,7 @@ ExplicitProgramSlot g_slots[8] = {
     {"TL2/Phase3/LightPassPS"},
     {"TL2/Phase3/RimLit2DPS"},
     {"TL2/Phase3/RimLitCubePS"},
+    {"TL2/Phase3/RimLit3CubePS"},
 };
 
 ActiveExplicitBinding g_active_binding{};
@@ -304,6 +306,7 @@ std::atomic<uint64_t> g_skinned_diff_binds{0};
 std::atomic<uint64_t> g_lightpass_binds{0};
 std::atomic<uint64_t> g_rimlit_2d_binds{0};
 std::atomic<uint64_t> g_rimlit_cube_binds{0};
+std::atomic<uint64_t> g_rimlit_3cube_binds{0};
 std::atomic<uint64_t> g_vs_texcoord_injections{0};
 std::atomic<uint64_t> g_vs_missing_vcol_fixes{0};
 std::atomic<uint64_t> g_ff_explicit_syncs{0};
@@ -313,6 +316,7 @@ std::atomic<bool> g_hooked{false};
 std::atomic<bool> g_sampler_hooked{false};
 std::atomic<bool> g_runtime_enhance_enabled{true};
 std::atomic<bool> g_f11_enhance_enabled{true};
+std::atomic<bool> g_p0_rimlit_enhance_enabled{true};
 std::atomic<int> g_p2_filter_preset{1};
 std::atomic<uint64_t> g_p2_bloom_last_tick_ms{0};
 std::atomic<uint64_t> g_p2_fxaa_last_tick_ms{0};
@@ -350,6 +354,7 @@ const char* ArchName(PassArchetype arch) {
         case PassArchetype::LightPass: return "LightPass";
         case PassArchetype::RimLit2D: return "Rim2D";
         case PassArchetype::RimLitCube: return "RimCube";
+        case PassArchetype::RimLit3Cube: return "Rim3Cube";
         default: return "None";
     }
 }
@@ -975,8 +980,11 @@ PassArchetype ClassifyPass(
     }
 
     const uint16_t num_tus = g_api.pass_get_num_tus(pass);
-    const void* tus1 = (num_tus >= 2) ? g_api.pass_get_tus(pass, 1) : nullptr;
+    const void* tus0 = (num_tus >= 1 && g_api.pass_get_tus) ? g_api.pass_get_tus(pass, 0) : nullptr;
+    const void* tus1 = (num_tus >= 2 && g_api.pass_get_tus) ? g_api.pass_get_tus(pass, 1) : nullptr;
+    const void* tus2 = (num_tus >= 3 && g_api.pass_get_tus) ? g_api.pass_get_tus(pass, 2) : nullptr;
     const int tex1_type = (tus1 && g_api.tus_get_tex_type) ? g_api.tus_get_tex_type(tus1) : kTexType2D;
+    const int tex2_type = (tus2 && g_api.tus_get_tex_type) ? g_api.tus_get_tex_type(tus2) : kTexType2D;
 
     const int reject_func = g_api.pass_get_alpha_reject_func(pass);
     const bool has_alpha_reject = (reject_func != kCmpAlwaysPass);
@@ -989,6 +997,45 @@ PassArchetype ClassifyPass(
         out_flags[3] = static_cast<float>((coord_set >= 2) ? 2 : coord_set);
     }
 
+    auto classify_rimlit3_cube = [&](bool enviro_swap) -> PassArchetype {
+        if (!g_toggles.rim_lit) {
+            *out_reason = SkipReason::DisabledToggle;
+            return PassArchetype::None;
+        }
+        if (!tus0 || !tus1 || !tus2 ||
+            (g_api.tus_is_blank && (g_api.tus_is_blank(tus0) || g_api.tus_is_blank(tus1) || g_api.tus_is_blank(tus2))) ||
+            (g_api.tus_get_tex_type && g_api.tus_get_tex_type(tus0) != kTexType2D) ||
+            tex1_type != kTexType2D ||
+            tex2_type != kTexTypeCubeMap) {
+            *out_reason = SkipReason::StageNot2DOrBlank;
+            return PassArchetype::None;
+        }
+        if (g_api.tus_get_num_frames && g_api.tus_get_num_frames(tus1) > 1) {
+            *out_reason = SkipReason::StageAnimated;
+            return PassArchetype::None;
+        }
+        int stage1_op = 1;
+        int rim_op = 2;
+        if (g_api.tus_get_colour_blend) {
+            const auto& b1 = g_api.tus_get_colour_blend(tus1);
+            const auto& b2 = g_api.tus_get_colour_blend(tus2);
+            if (UsesManualBlend(b1) || UsesManualBlend(b2)) {
+                *out_reason = SkipReason::StageManualBlend;
+                return PassArchetype::None;
+            }
+            stage1_op = MapOgreBlendOpToShader(static_cast<int>(b1.operation));
+            rim_op = MapOgreBlendOpToShader(static_cast<int>(b2.operation));
+            if (stage1_op <= 0 || rim_op <= 0) {
+                *out_reason = SkipReason::Stage1OpMismatch;
+                return PassArchetype::None;
+            }
+        }
+        out_flags[0] = static_cast<float>(rim_op);
+        out_flags2[0] = static_cast<float>(stage1_op);
+        out_flags2[1] = enviro_swap ? 1.0f : 0.0f;
+        return PassArchetype::RimLit3Cube;
+    };
+
     if (g_api.pass_has_vp(pass)) {
         const std::string& vp_name = g_api.pass_get_vp_name(pass);
         if (ContainsAsciiInsensitive(vp_name, "Behind") ||
@@ -998,12 +1045,12 @@ PassArchetype ClassifyPass(
             return PassArchetype::None;
         }
         if (vp_name.find("HardwareSkinning") != std::string::npos) {
-            if (tex1_type == kTexTypeCubeMap) {
+            if (num_tus == 2 && tex1_type == kTexTypeCubeMap) {
                 if (!g_toggles.rim_lit) {
                     *out_reason = SkipReason::DisabledToggle;
                     return PassArchetype::None;
                 }
-                if (num_tus != 2 || !tus1 || (g_api.tus_is_blank && g_api.tus_is_blank(tus1))) {
+                if (!tus1 || (g_api.tus_is_blank && g_api.tus_is_blank(tus1))) {
                     *out_reason = SkipReason::ZeroOrMultiTus;
                     return PassArchetype::None;
                 }
@@ -1024,6 +1071,10 @@ PassArchetype ClassifyPass(
                 }
                 return PassArchetype::RimLitCube;
             }
+            if (num_tus == 3 && tex2_type == kTexTypeCubeMap) {
+                const bool is_enviro = (vp_name.find("Enviro") != std::string::npos);
+                return classify_rimlit3_cube(is_enviro);
+            }
             if (!g_toggles.skinned_diff) {
                 *out_reason = SkipReason::DisabledToggle;
                 return PassArchetype::None;
@@ -1032,7 +1083,6 @@ PassArchetype ClassifyPass(
                 *out_reason = SkipReason::ZeroOrMultiTus;
                 return PassArchetype::None;
             }
-            const void* tus0 = g_api.pass_get_tus ? g_api.pass_get_tus(pass, 0) : nullptr;
             if (!tus0 ||
                 (g_api.tus_get_tex_type && g_api.tus_get_tex_type(tus0) != kTexType2D) ||
                 (g_api.tus_is_blank && g_api.tus_is_blank(tus0))) {
@@ -1109,6 +1159,9 @@ PassArchetype ClassifyPass(
     }
 
     if (pass_name == "RIMLIT" || has_rimlit_tus) {
+        if (num_tus == 3 && tex2_type == kTexTypeCubeMap) {
+            return classify_rimlit3_cube(false);
+        }
         if (!g_toggles.rim_lit || !tus1) {
             *out_reason = SkipReason::DisabledToggle;
             return PassArchetype::None;
@@ -1151,6 +1204,7 @@ void ApplyPassFogAndAlphaToExplicitPs(
     uintptr_t scene_mgr,
     const void* pass,
     PassArchetype arch,
+    bool is_ff_vs,
     uintptr_t ps_params,
     float flags[4],
     const float flags2[4]) {
@@ -1179,11 +1233,22 @@ void ApplyPassFogAndAlphaToExplicitPs(
     if (arch == PassArchetype::DiffPassOpaque ||
         arch == PassArchetype::DiffPassAlpha ||
         arch == PassArchetype::SkinnedDiffOpaque ||
-        arch == PassArchetype::SkinnedDiffAlpha) {
-        WriteExplicitPsNamedFloat4(ps_params, "p3Flags2", flags2);
+        arch == PassArchetype::SkinnedDiffAlpha ||
+        arch == PassArchetype::RimLit2D ||
+        arch == PassArchetype::RimLitCube ||
+        arch == PassArchetype::RimLit3Cube) {
+        const bool is_rim =
+            (arch == PassArchetype::RimLit2D || arch == PassArchetype::RimLitCube || arch == PassArchetype::RimLit3Cube);
+        const float synced_flags2[4] = {
+            flags2[0],
+            flags2[1],
+            flags2[2],
+            is_rim ? (is_ff_vs ? 0.0f : 1.0f) : flags2[3],
+        };
+        WriteExplicitPsNamedFloat4(ps_params, "p3Flags2", synced_flags2);
         const float enhance_flags[4] = {
             g_f11_enhance_enabled.load(std::memory_order_relaxed) ? 1.0f : 0.0f,
-            0.0f,
+            g_p0_rimlit_enhance_enabled.load(std::memory_order_relaxed) ? 1.0f : 0.0f,
             0.0f,
             0.0f,
         };
@@ -1246,6 +1311,9 @@ void RecordBindStat(PassArchetype arch) {
             break;
         case PassArchetype::RimLitCube:
             g_rimlit_cube_binds.fetch_add(1, std::memory_order_relaxed);
+            break;
+        case PassArchetype::RimLit3Cube:
+            g_rimlit_3cube_binds.fetch_add(1, std::memory_order_relaxed);
             break;
         default:
             break;
@@ -1560,7 +1628,7 @@ const void* __fastcall HookSceneManagerSetPass(
     const ExplicitProgramSlot& slot = g_slots[static_cast<size_t>(arch)];
     const uintptr_t ps_params_raw = reinterpret_cast<uintptr_t>(slot.params_sp.rep);
     ResolveCompanionMapsForPass(rs, used_pass, arch, flags2, &g_active_companion);
-    ApplyPassFogAndAlphaToExplicitPs(scene_mgr, used_pass, arch, ps_params_raw, flags, flags2);
+    ApplyPassFogAndAlphaToExplicitPs(scene_mgr, used_pass, arch, is_ff_vs, ps_params_raw, flags, flags2);
     BindExplicitPsToRenderSystem(rs, slot.delegate, &slot.params_sp);
     RecordBindStat(arch);
 
@@ -1890,6 +1958,7 @@ Phase3Stats GetPhase3Stats() {
     s.lightpass_binds = g_lightpass_binds.load(std::memory_order_relaxed);
     s.rimlit_2d_binds = g_rimlit_2d_binds.load(std::memory_order_relaxed);
     s.rimlit_cube_binds = g_rimlit_cube_binds.load(std::memory_order_relaxed);
+    s.rimlit_3cube_binds = g_rimlit_3cube_binds.load(std::memory_order_relaxed);
     s.vs_texcoord_injections = g_vs_texcoord_injections.load(std::memory_order_relaxed);
     s.vs_missing_vcol_fixes = g_vs_missing_vcol_fixes.load(std::memory_order_relaxed);
     s.ff_explicit_syncs = g_ff_explicit_syncs.load(std::memory_order_relaxed);
@@ -2008,6 +2077,21 @@ bool IsF11VisualEnhanceEnabled() {
 bool ToggleF11VisualEnhance() {
     bool expected = g_f11_enhance_enabled.load(std::memory_order_relaxed);
     while (!g_f11_enhance_enabled.compare_exchange_weak(expected, !expected, std::memory_order_relaxed)) {
+    }
+    return !expected;
+}
+
+void SetP0RimLitEnhanceEnabled(bool enabled) {
+    g_p0_rimlit_enhance_enabled.store(enabled, std::memory_order_relaxed);
+}
+
+bool IsP0RimLitEnhanceEnabled() {
+    return g_p0_rimlit_enhance_enabled.load(std::memory_order_relaxed);
+}
+
+bool ToggleP0RimLitEnhance() {
+    bool expected = g_p0_rimlit_enhance_enabled.load(std::memory_order_relaxed);
+    while (!g_p0_rimlit_enhance_enabled.compare_exchange_weak(expected, !expected, std::memory_order_relaxed)) {
     }
     return !expected;
 }

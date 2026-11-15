@@ -163,6 +163,7 @@ cbuffer CbAoParams : register(b0)
     int4   gVpClamp;     // x=minX, y=minY, z=maxX, w=maxY
     float4 gAoParams;    // x=radiusWorld, y=biasCos, z=strength, w=minAoFloor
     float4 gBlurAndMode; // x=invVpW, y=invVpH, z=depthEdgeScale, w=debugMode
+    float4 gSscsParams;  // x=sscsEnabled, y=sscsStrength, z=tintStrength, w=0
 };
 
 #if MSAA_DEPTH
@@ -451,6 +452,75 @@ float4 PS_AoComposite(VsOut input) : SV_Target0
     }
 
     float ao = (sumW > 1e-5f) ? (sumAo / sumW) : 1.0f;
+
+    if (gSscsParams.x > 0.5f && gBlurAndMode.w < 0.5f)
+    {
+        float fade = saturate((gProjZAndFade.z - dC) * gProjZAndFade.w);
+        if (fade > 0.02f && dC < 38.0f)
+        {
+            float3 P = ReconstructPosVS(pix, rawC);
+            float3 n = ReconstructNormalVS(pix, P);
+            float ign = frac(52.9829189f * frac(dot(float2(pix), float2(0.06711056f, 0.00583715f))));
+
+            // P0-2A: Full-res directional micro contact shadows (key light from upper-right)
+            float2 keyDir = float2(0.42f, -0.907f);
+            float contactOcc = 0.0f;
+            [unroll]
+            for (int s = 1; s <= 5; ++s)
+            {
+                float stepPx = (float(s) - 0.35f + 0.50f * ign) * 1.95f;
+                int2 spix = pix + int2(round(keyDir * stepPx));
+                float sRaw = 1.0f;
+                float3 S = ReconstructPosVS(spix, sRaw);
+                if (sRaw < 0.99998f)
+                {
+                    float3 V = S - P;
+                    float distSq = dot(V, V);
+                    float invDist = rsqrt(max(distSq, 1e-8f));
+                    float cosN = dot(n, V) * invDist;
+                    float dz = dC - (-S.z);
+                    float rangeW = saturate(1.0f - distSq * 3.2f);
+                    float thickW = smoothstep(0.012f, 0.045f, dz) * (1.0f - smoothstep(0.22f, 0.45f, dz));
+                    float angW = saturate((cosN - 0.12f) * 2.2f);
+                    contactOcc = max(contactOcc, angW * rangeW * thickW * (1.10f - 0.14f * float(s)));
+                }
+            }
+
+            // P0-2B: 2-pixel full-res micro-crevice detail sharpening for stone cracks & reliefs
+            float microOcc = 0.0f;
+            int2 microOffsets[4] = {
+                int2(2, 0),
+                int2(-2, 0),
+                int2(0, 2),
+                int2(0, -2)
+            };
+            [unroll]
+            for (int m = 0; m < 4; ++m)
+            {
+                float mRaw = 1.0f;
+                float3 M = ReconstructPosVS(pix + microOffsets[m], mRaw);
+                if (mRaw < 0.99998f)
+                {
+                    float3 Vm = M - P;
+                    float distSq = dot(Vm, Vm);
+                    float invDist = rsqrt(max(distSq, 1e-8f));
+                    float cosM = dot(n, Vm) * invDist;
+                    float rangeM = saturate(1.0f - distSq * 22.0f);
+                    microOcc += saturate((cosM - 0.18f) * 2.6f) * rangeM * 0.25f;
+                }
+            }
+
+            float microAtten = 1.0f - saturate(contactOcc * gSscsParams.y + microOcc * (gSscsParams.y * 0.65f)) * 0.40f * fade;
+            float floorMin = max(gAoParams.w * 0.78f, 0.36f);
+            ao = max(min(ao, ao * microAtten), floorMin);
+        }
+
+        // P0-2C: Hob-style cool-tinted crevice AO curve (avoid neutral muddy gray)
+        float3 coolAo = pow(max(ao, 1e-4f), float3(1.18f, 1.04f, 0.85f));
+        float3 tinted = lerp(float3(ao, ao, ao), coolAo, saturate(gSscsParams.z));
+        return float4(tinted, 1.0f);
+    }
+
     return float4(ao, ao, ao, 1.0f);
 }
 )HLSL";
@@ -692,6 +762,91 @@ float4 PS_P2FilterFallback(VS_OUT input) : SV_Target0 {
 }
 )HLSL";
 
+constexpr const char kPanelShaderSource[] = R"HLSL(
+Texture2D<float4> gPanelTex : register(t0);
+SamplerState gPanelSamp : register(s0);
+
+cbuffer CbPanelParams : register(b0) {
+    float4 gPanelRect;    // x=boxX, y=boxY, z=boxW, w=boxH
+    float4 gPanelExtra;   // x=cursorLocalX, y=cursorLocalY, z=panelAlpha, w=0
+};
+
+struct VS_OUT {
+    float4 pos : SV_Position;
+};
+
+float SdRoundedBox(float2 p, float2 halfSize, float radius) {
+    float2 q = abs(p) - halfSize + radius;
+    return min(max(q.x, q.y), 0.0f) + length(max(q, 0.0f)) - radius;
+}
+
+float4 PS_PanelOverlay(VS_OUT input) : SV_Target0 {
+    float2 local = input.pos.xy - gPanelRect.xy;
+    float2 size = max(gPanelRect.zw, 1.0f);
+    float2 halfSize = size * 0.5f;
+    float sd = SdRoundedBox(local - halfSize, halfSize - 1.0f, 10.0f);
+    if (sd > 1.2f) {
+        discard;
+    }
+
+    float2 uv = saturate(local / size);
+    float3 texRgb = gPanelTex.SampleLevel(gPanelSamp, uv, 0.0f).rgb;
+    float edgeMask = 1.0f - smoothstep(-0.6f, 0.9f, sd);
+    float rimGlow = saturate(1.0f - abs(sd + 0.5f) * 1.1f);
+    float3 col = lerp(texRgb, float3(0.42f, 0.58f, 0.78f), rimGlow * 0.65f);
+    float alpha = saturate(gPanelExtra.z) * 0.95f * edgeMask;
+    return float4(col, alpha);
+}
+
+float DistPointToSegment(float2 p, float2 a, float2 b) {
+    float2 pa = p - a;
+    float2 ba = b - a;
+    float h = saturate(dot(pa, ba) / max(dot(ba, ba), 1e-5f));
+    return length(pa - ba * h);
+}
+
+float Sign2D(float2 p1, float2 p2, float2 p3) {
+    return (p1.x - p3.x) * (p2.y - p3.y) - (p2.x - p3.x) * (p1.y - p3.y);
+}
+
+float SdTriangle(float2 p, float2 a, float2 b, float2 c) {
+    float2 e0 = b - a, e1 = c - b, e2 = a - c;
+    float2 v0 = p - a, v1 = p - b, v2 = p - c;
+    float2 pq0 = v0 - e0 * saturate(dot(v0, e0) / max(dot(e0, e0), 1e-5f));
+    float2 pq1 = v1 - e1 * saturate(dot(v1, e1) / max(dot(e1, e1), 1e-5f));
+    float2 pq2 = v2 - e2 * saturate(dot(v2, e2) / max(dot(e2, e2), 1e-5f));
+    float s = sign(e0.x * e2.y - e0.y * e2.x);
+    float2 d = min(min(
+        float2(dot(pq0, pq0), s * (v0.x * e0.y - v0.y * e0.x)),
+        float2(dot(pq1, pq1), s * (v1.x * e1.y - v1.y * e1.x))),
+        float2(dot(pq2, pq2), s * (v2.x * e2.y - v2.y * e2.x)));
+    return -sqrt(d.x) * sign(d.y);
+}
+
+float4 PS_CursorOverlay(VS_OUT input) : SV_Target0 {
+    float2 p = input.pos.xy - gPanelExtra.xy;
+    // Crisp arrow pointer centered with hot-spot at (0,0)
+    float dTri = min(
+        SdTriangle(p, float2(0.0f, 0.0f), float2(0.0f, 19.0f), float2(6.0f, 14.0f)),
+        SdTriangle(p, float2(0.0f, 0.0f), float2(6.0f, 14.0f), float2(14.0f, 13.0f)));
+    float dTail = DistPointToSegment(p, float2(5.5f, 12.5f), float2(9.5f, 21.5f)) - 1.3f;
+    float sd = min(dTri, dTail);
+    if (sd > 1.8f) {
+        discard;
+    }
+    float outlineMask = 1.0f - smoothstep(0.9f, 1.8f, sd);
+    float fillMask = 1.0f - smoothstep(-0.4f, 0.5f, sd);
+    float3 col = lerp(float3(0.05f, 0.07f, 0.10f), float3(1.00f, 0.94f, 0.72f), fillMask);
+    return float4(col, outlineMask);
+}
+)HLSL";
+
+struct alignas(16) CbPanelParams {
+    float rect[4];   // box_x, box_y, box_w, box_h
+    float extra[4];  // cursor_x, cursor_y, panel_alpha, 0
+};
+static_assert(sizeof(CbPanelParams) == 32, "CbPanelParams must be 32 bytes");
+
 struct alignas(16) CbToastParams {
     float rect[4];    // left, top, width, height
     float params[4];  // dllOn, aoOn, fadeAlpha, scale
@@ -875,6 +1030,14 @@ struct RouteCD3DState {
     ID3D11PixelShader* ps_toast = nullptr;
     ID3D11Buffer* cb_p2_filter = nullptr;
     ID3D11PixelShader* ps_p2_filter = nullptr;
+    ID3D11Buffer* cb_panel = nullptr;
+    ID3D11PixelShader* ps_panel = nullptr;
+    ID3D11PixelShader* ps_cursor = nullptr;
+    ID3D11SamplerState* samp_linear = nullptr;
+    ID3D11Texture2D* panel_tex = nullptr;
+    ID3D11ShaderResourceView* panel_srv = nullptr;
+    uint32_t panel_tex_w = 0;
+    uint32_t panel_tex_h = 0;
     ID3D11BlendState* blend_debug_rgb = nullptr;
     ID3D11BlendState* blend_mul_rgb = nullptr;
     ID3D11BlendState* blend_toast_alpha = nullptr;
@@ -952,6 +1115,11 @@ void ReleaseDepthVariantShaders(DepthVariantShaders& s) {
 }
 
 void ReleaseTargets() {
+    SafeRelease(g_st.panel_srv);
+    SafeRelease(g_st.panel_tex);
+    g_st.panel_tex_w = 0;
+    g_st.panel_tex_h = 0;
+
     SafeRelease(g_st.p2_copy_srv);
     SafeRelease(g_st.p2_copy_tex);
     g_st.p2_copy_w = 0;
@@ -993,6 +1161,10 @@ void ReleaseAllDeviceObjects() {
     SafeRelease(g_st.blend_toast_alpha);
     SafeRelease(g_st.blend_mul_rgb);
     SafeRelease(g_st.blend_debug_rgb);
+    SafeRelease(g_st.samp_linear);
+    SafeRelease(g_st.ps_cursor);
+    SafeRelease(g_st.ps_panel);
+    SafeRelease(g_st.cb_panel);
     SafeRelease(g_st.cb_toast);
     SafeRelease(g_st.ps_toast);
     SafeRelease(g_st.cb_p2_filter);
@@ -1103,6 +1275,7 @@ bool EnsurePipelineObjects(ID3D11Device* dev, RouteCD3DLogFn logger) {
     }
     if (g_st.vs_fullscreen && g_st.shaders_single.ps_ao_raw && g_st.shaders_single.ps_composite &&
         g_st.ps_toast && g_st.cb_toast && g_st.blend_toast_alpha &&
+        g_st.ps_panel && g_st.ps_cursor && g_st.cb_panel && g_st.samp_linear &&
         g_st.cb_params && g_st.blend_debug_rgb && g_st.blend_mul_rgb &&
         g_st.dss_disabled && g_st.rs_fullscreen) {
         return true;
@@ -1125,6 +1298,8 @@ bool EnsurePipelineObjects(ID3D11Device* dev, RouteCD3DLogFn logger) {
     ID3DBlob* vs_blob = nullptr;
     ID3DBlob* toast_blob = nullptr;
     ID3DBlob* p2_blob = nullptr;
+    ID3DBlob* panel_blob = nullptr;
+    ID3DBlob* cursor_blob = nullptr;
     bool ok = CompileShaderBlob(compile_fn, "VS_Fullscreen", "vs_4_0", macro_single, &vs_blob, logger) &&
               SUCCEEDED(dev->CreateVertexShader(vs_blob->GetBufferPointer(), vs_blob->GetBufferSize(), nullptr, &g_st.vs_fullscreen)) &&
               CreateDepthVariantShaders(dev, compile_fn, "ps_4_0", macro_single, g_st.shaders_single, logger) &&
@@ -1135,7 +1310,17 @@ bool EnsurePipelineObjects(ID3D11Device* dev, RouteCD3DLogFn logger) {
               CompileShaderBlobFromSource(
                   compile_fn, kP2FilterShaderSource, sizeof(kP2FilterShaderSource) - 1, "route_b_p2_filter.hlsl",
                   "PS_P2FilterFallback", "ps_4_0", macro_single, &p2_blob, logger) &&
-              SUCCEEDED(dev->CreatePixelShader(p2_blob->GetBufferPointer(), p2_blob->GetBufferSize(), nullptr, &g_st.ps_p2_filter));
+              SUCCEEDED(dev->CreatePixelShader(p2_blob->GetBufferPointer(), p2_blob->GetBufferSize(), nullptr, &g_st.ps_p2_filter)) &&
+              CompileShaderBlobFromSource(
+                  compile_fn, kPanelShaderSource, sizeof(kPanelShaderSource) - 1, "route_c_panel.hlsl",
+                  "PS_PanelOverlay", "ps_4_0", macro_single, &panel_blob, logger) &&
+              SUCCEEDED(dev->CreatePixelShader(panel_blob->GetBufferPointer(), panel_blob->GetBufferSize(), nullptr, &g_st.ps_panel)) &&
+              CompileShaderBlobFromSource(
+                  compile_fn, kPanelShaderSource, sizeof(kPanelShaderSource) - 1, "route_c_panel.hlsl",
+                  "PS_CursorOverlay", "ps_4_0", macro_single, &cursor_blob, logger) &&
+              SUCCEEDED(dev->CreatePixelShader(cursor_blob->GetBufferPointer(), cursor_blob->GetBufferSize(), nullptr, &g_st.ps_cursor));
+    SafeRelease(cursor_blob);
+    SafeRelease(panel_blob);
     SafeRelease(p2_blob);
     SafeRelease(toast_blob);
     SafeRelease(vs_blob);
@@ -1210,9 +1395,24 @@ bool EnsurePipelineObjects(ID3D11Device* dev, RouteCD3DLogFn logger) {
     rs_desc.ScissorEnable = FALSE;
     rs_desc.MultisampleEnable = FALSE;
 
+    D3D11_BUFFER_DESC cb_panel_desc{};
+    cb_panel_desc.ByteWidth = sizeof(CbPanelParams);
+    cb_panel_desc.Usage = D3D11_USAGE_DYNAMIC;
+    cb_panel_desc.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
+    cb_panel_desc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+
+    D3D11_SAMPLER_DESC samp_desc{};
+    samp_desc.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
+    samp_desc.AddressU = D3D11_TEXTURE_ADDRESS_CLAMP;
+    samp_desc.AddressV = D3D11_TEXTURE_ADDRESS_CLAMP;
+    samp_desc.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
+    samp_desc.MaxLOD = D3D11_FLOAT32_MAX;
+
     ok = SUCCEEDED(dev->CreateBuffer(&cb_desc, nullptr, &g_st.cb_params)) &&
          SUCCEEDED(dev->CreateBuffer(&cb_toast_desc, nullptr, &g_st.cb_toast)) &&
          SUCCEEDED(dev->CreateBuffer(&cb_p2_desc, nullptr, &g_st.cb_p2_filter)) &&
+         SUCCEEDED(dev->CreateBuffer(&cb_panel_desc, nullptr, &g_st.cb_panel)) &&
+         SUCCEEDED(dev->CreateSamplerState(&samp_desc, &g_st.samp_linear)) &&
          SUCCEEDED(dev->CreateBlendState(&bd_dbg, &g_st.blend_debug_rgb)) &&
          SUCCEEDED(dev->CreateBlendState(&bd_mul, &g_st.blend_mul_rgb)) &&
          SUCCEEDED(dev->CreateBlendState(&bd_toast, &g_st.blend_toast_alpha)) &&
@@ -1592,6 +1792,10 @@ bool ExecuteRouteCAoPass(const RouteCAoRenderRequest& req, RouteCD3DLogFn logger
     cb.blur_and_mode[1] = 1.0f / static_cast<float>(req.vp_height);
     cb.blur_and_mode[2] = cfg.depth_edge_scale;
     cb.blur_and_mode[3] = static_cast<float>(req.debug_mode);
+    cb.sscs_params[0] = req.sscs_enabled ? 1.0f : 0.0f;
+    cb.sscs_params[1] = 1.15f;  // crisp full-res contact shadow strength
+    cb.sscs_params[2] = 0.90f;  // Hob cool-tinted AO balance
+    cb.sscs_params[3] = 0.0f;
     std::memcpy(mapped.pData, &cb, sizeof(cb));
     req.ctx->Unmap(g_st.cb_params, 0);
 
@@ -1951,6 +2155,165 @@ bool ExecuteRouteCToastOverlay(
     return true;
 }
 
+bool EnsurePanelTexture(ID3D11Device* dev, uint32_t width, uint32_t height) {
+    if (g_st.panel_tex && g_st.panel_srv && g_st.panel_tex_w == width && g_st.panel_tex_h == height) {
+        return true;
+    }
+    SafeRelease(g_st.panel_srv);
+    SafeRelease(g_st.panel_tex);
+    g_st.panel_tex_w = 0;
+    g_st.panel_tex_h = 0;
+
+    D3D11_TEXTURE2D_DESC td{};
+    td.Width = width;
+    td.Height = height;
+    td.MipLevels = 1;
+    td.ArraySize = 1;
+    td.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+    td.SampleDesc.Count = 1;
+    td.Usage = D3D11_USAGE_DYNAMIC;
+    td.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+    td.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+    if (FAILED(dev->CreateTexture2D(&td, nullptr, &g_st.panel_tex)) || !g_st.panel_tex) {
+        SafeRelease(g_st.panel_tex);
+        return false;
+    }
+    D3D11_SHADER_RESOURCE_VIEW_DESC srvd{};
+    srvd.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+    srvd.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
+    srvd.Texture2D.MipLevels = 1;
+    if (FAILED(dev->CreateShaderResourceView(g_st.panel_tex, &srvd, &g_st.panel_srv)) || !g_st.panel_srv) {
+        SafeRelease(g_st.panel_srv);
+        SafeRelease(g_st.panel_tex);
+        return false;
+    }
+    g_st.panel_tex_w = width;
+    g_st.panel_tex_h = height;
+    return true;
+}
+
+bool ExecuteRouteCPanelOverlay(const RouteCPanelOverlayRequest& req, RouteCD3DLogFn logger) {
+    if (!req.ctx || !req.target_rtv || req.tex_w == 0 || req.tex_h == 0 ||
+        req.box_w <= 1.0f || req.box_h <= 1.0f || !req.bgra_pixels) {
+        return false;
+    }
+
+    ID3D11Resource* rtv_res = nullptr;
+    req.target_rtv->GetResource(&rtv_res);
+    ID3D11Texture2D* rt_tex = nullptr;
+    D3D11_TEXTURE2D_DESC rt_desc{};
+    const bool got_rt =
+        rtv_res &&
+        SUCCEEDED(rtv_res->QueryInterface(__uuidof(ID3D11Texture2D), reinterpret_cast<void**>(&rt_tex))) &&
+        rt_tex;
+    if (got_rt) {
+        rt_tex->GetDesc(&rt_desc);
+    }
+    SafeRelease(rt_tex);
+    SafeRelease(rtv_res);
+    if (!got_rt || rt_desc.Width < 128U || rt_desc.Height < 128U) {
+        return false;
+    }
+
+    ID3D11Device* dev = nullptr;
+    req.ctx->GetDevice(&dev);
+    if (!dev) {
+        return false;
+    }
+
+    EnsureLockInit();
+    ::EnterCriticalSection(&g_d3d_lock);
+    struct LockGuard {
+        CRITICAL_SECTION* cs;
+        ID3D11Device* d;
+        ~LockGuard() {
+            SafeRelease(d);
+            ::LeaveCriticalSection(cs);
+        }
+    } lock_guard{&g_d3d_lock, dev};
+
+    if (!EnsurePipelineObjects(dev, logger) || !g_st.ps_panel || !g_st.ps_cursor ||
+        !g_st.cb_panel || !g_st.samp_linear || !g_st.blend_toast_alpha) {
+        return false;
+    }
+    const bool tex_recreated = (!g_st.panel_tex || g_st.panel_tex_w != req.tex_w || g_st.panel_tex_h != req.tex_h);
+    if (!EnsurePanelTexture(dev, req.tex_w, req.tex_h)) {
+        return false;
+    }
+
+    if (req.upload_dirty || tex_recreated) {
+        D3D11_MAPPED_SUBRESOURCE tex_map{};
+        if (SUCCEEDED(req.ctx->Map(g_st.panel_tex, 0, D3D11_MAP_WRITE_DISCARD, 0, &tex_map)) && tex_map.pData) {
+            const auto* src_bytes = static_cast<const uint8_t*>(req.bgra_pixels);
+            auto* dst_bytes = static_cast<uint8_t*>(tex_map.pData);
+            const size_t row_bytes = static_cast<size_t>(req.tex_w) * 4U;
+            for (uint32_t y = 0; y < req.tex_h; ++y) {
+                std::memcpy(dst_bytes + y * tex_map.RowPitch, src_bytes + y * row_bytes, row_bytes);
+            }
+            req.ctx->Unmap(g_st.panel_tex, 0);
+        }
+    }
+
+    D3D11_MAPPED_SUBRESOURCE cb_map{};
+    if (FAILED(req.ctx->Map(g_st.cb_panel, 0, D3D11_MAP_WRITE_DISCARD, 0, &cb_map)) || !cb_map.pData) {
+        return false;
+    }
+    auto* cb = static_cast<CbPanelParams*>(cb_map.pData);
+    cb->rect[0] = req.box_x;
+    cb->rect[1] = req.box_y;
+    cb->rect[2] = req.box_w;
+    cb->rect[3] = req.box_h;
+    cb->extra[0] = req.cursor_x;
+    cb->extra[1] = req.cursor_y;
+    cb->extra[2] = req.panel_alpha;
+    cb->extra[3] = 0.0f;
+    req.ctx->Unmap(g_st.cb_panel, 0);
+
+    D3D11StateGuard state_guard(req.ctx);
+
+    D3D11_VIEWPORT vp{};
+    vp.TopLeftX = req.box_x;
+    vp.TopLeftY = req.box_y;
+    vp.Width = req.box_w;
+    vp.Height = req.box_h;
+    vp.MinDepth = 0.0f;
+    vp.MaxDepth = 1.0f;
+
+    req.ctx->OMSetRenderTargets(1, &req.target_rtv, nullptr);
+    req.ctx->OMSetBlendState(g_st.blend_toast_alpha, nullptr, 0xFFFFFFFFU);
+    req.ctx->OMSetDepthStencilState(g_st.dss_disabled, 0);
+    req.ctx->RSSetState(g_st.rs_fullscreen);
+    req.ctx->RSSetViewports(1, &vp);
+    req.ctx->RSSetScissorRects(0, nullptr);
+    req.ctx->IASetInputLayout(nullptr);
+    req.ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    req.ctx->VSSetShader(g_st.vs_fullscreen, nullptr, 0);
+    req.ctx->GSSetShader(nullptr, nullptr, 0);
+    req.ctx->PSSetShader(g_st.ps_panel, nullptr, 0);
+    req.ctx->PSSetConstantBuffers(0, 1, &g_st.cb_panel);
+    req.ctx->PSSetShaderResources(0, 1, &g_st.panel_srv);
+    req.ctx->PSSetSamplers(0, 1, &g_st.samp_linear);
+    req.ctx->Draw(3, 0);
+
+    if (req.draw_cursor) {
+        const float cx = std::floor(req.cursor_x) - 3.0f;
+        const float cy = std::floor(req.cursor_y) - 3.0f;
+        const float max_x = static_cast<float>(rt_desc.Width);
+        const float max_y = static_cast<float>(rt_desc.Height);
+        const float vx0 = (std::max)(0.0f, cx);
+        const float vy0 = (std::max)(0.0f, cy);
+        const float vx1 = (std::min)(max_x, cx + 28.0f);
+        const float vy1 = (std::min)(max_y, cy + 28.0f);
+        if (vx1 > vx0 + 1.0f && vy1 > vy0 + 1.0f) {
+            D3D11_VIEWPORT cvp{vx0, vy0, vx1 - vx0, vy1 - vy0, 0.0f, 1.0f};
+            req.ctx->RSSetViewports(1, &cvp);
+            req.ctx->PSSetShader(g_st.ps_cursor, nullptr, 0);
+            req.ctx->Draw(3, 0);
+        }
+    }
+    return true;
+}
+
 bool VerifyRouteCShadersCompile(RouteCD3DLogFn logger) {
     D3DCompileFn compile_fn = ResolveD3DCompile(logger);
     if (!compile_fn) {
@@ -1996,7 +2359,20 @@ bool VerifyRouteCShadersCompile(RouteCD3DLogFn logger) {
         compile_fn, kP2FilterShaderSource, sizeof(kP2FilterShaderSource) - 1, "route_b_p2_filter.hlsl",
         "PS_P2FilterFallback", "ps_4_0", macro_single, &p2_blob, logger);
     SafeRelease(p2_blob);
-    return toast_ok && p2_ok;
+
+    ID3DBlob* panel_blob = nullptr;
+    const bool panel_ok = CompileShaderBlobFromSource(
+        compile_fn, kPanelShaderSource, sizeof(kPanelShaderSource) - 1, "route_c_panel.hlsl",
+        "PS_PanelOverlay", "ps_4_0", macro_single, &panel_blob, logger);
+    SafeRelease(panel_blob);
+
+    ID3DBlob* cursor_blob = nullptr;
+    const bool cursor_ok = CompileShaderBlobFromSource(
+        compile_fn, kPanelShaderSource, sizeof(kPanelShaderSource) - 1, "route_c_panel.hlsl",
+        "PS_CursorOverlay", "ps_4_0", macro_single, &cursor_blob, logger);
+    SafeRelease(cursor_blob);
+
+    return toast_ok && p2_ok && panel_ok && cursor_ok;
 }
 
 void ShutdownRouteCD3D11Resources() {

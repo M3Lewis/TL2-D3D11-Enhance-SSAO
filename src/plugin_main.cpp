@@ -8,6 +8,7 @@
 #include <cstring>
 
 #include "cegui_explicit_shader.h"
+#include "config_panel.h"
 #include "dxbc_cache.h"
 #include "fixed_func_manual_uniforms.h"
 #include "hlsl_cbuffer_fastpath.h"
@@ -193,7 +194,7 @@ void LogAllStats() {
         static_cast<unsigned long long>(cegui.fallback_skips));
     const auto p3 = routeb::GetPhase3Stats();
     LogLine(
-        "[RouteB][Phase3][Stats] Scene hooked=%d samplerHook=%d samplerCalls=%llu samplerAF=%llu shared=%d setPass=%llu diffOpaque=%llu diffAlpha=%llu skinned=%llu light=%llu rim2D=%llu rimCube=%llu vsInject=%llu vsVColFix=%llu ffSync=%llu",
+        "[RouteB][Phase3][Stats] Scene hooked=%d samplerHook=%d samplerCalls=%llu samplerAF=%llu shared=%d setPass=%llu diffOpaque=%llu diffAlpha=%llu skinned=%llu light=%llu rim2D=%llu rimCube=%llu rim3Cube=%llu vsInject=%llu vsVColFix=%llu ffSync=%llu",
         p3.hooked ? 1 : 0,
         p3.sampler_hooked ? 1 : 0,
         static_cast<unsigned long long>(p3.sampler_hook_calls),
@@ -206,6 +207,7 @@ void LogAllStats() {
         static_cast<unsigned long long>(p3.lightpass_binds),
         static_cast<unsigned long long>(p3.rimlit_2d_binds),
         static_cast<unsigned long long>(p3.rimlit_cube_binds),
+        static_cast<unsigned long long>(p3.rimlit_3cube_binds),
         static_cast<unsigned long long>(p3.vs_texcoord_injections),
         static_cast<unsigned long long>(p3.vs_missing_vcol_fixes),
         static_cast<unsigned long long>(p3.ff_explicit_syncs));
@@ -539,6 +541,77 @@ extern "C" __declspec(dllexport) bool RouteB_VerifyRouteCShaders() {
 
 extern "C" __declspec(dllexport) void RouteB_TriggerToastForTest() {
     routeb::TriggerRouteCToastForTest();
+}
+
+extern "C" __declspec(dllexport) int RouteB_RunConfigPanelSelfTest() {
+    wchar_t temp_dir[MAX_PATH] = {};
+    const DWORD n = ::GetTempPathW(MAX_PATH, temp_dir);
+    if (n == 0 || n >= MAX_PATH) {
+        return -1;
+    }
+    wchar_t ini_path[MAX_PATH] = {};
+    swprintf_s(ini_path, L"%ls\\tl2_routeb_panel_selftest_%lu.ini", temp_dir, ::GetCurrentProcessId());
+    ::DeleteFileW(ini_path);
+
+    routeb::ResetConfigPanelStateForTest();
+    if (!routeb::LoadVisualConfigAndPresets(ini_path)) {
+        return 1;
+    }
+
+    // Mutate all toggles + filter, save into custom preset 1 (index 0).
+    routeb::SetPhase3RuntimeEnhanceEnabled(true);
+    routeb::SetF11VisualEnhanceEnabled(false);
+    routeb::SetP0RimLitEnhanceEnabled(true);
+    routeb::SetRouteCAoRuntimeEnabled(false);
+    routeb::SetRouteCSscsRuntimeEnabled(false);
+    routeb::SetP2FilterPreset(2);
+    if (!routeb::SaveCustomPreset(0)) {
+        return 2;
+    }
+
+    // Switch to built-in "纯原版" (index 2).
+    if (!routeb::ApplyBuiltinPreset(2)) {
+        return 3;
+    }
+    const routeb::VisualConfig vanilla = routeb::CaptureVisualConfigFromEngine();
+    if (vanilla.phase3_enhance || vanilla.af_point_enhance || vanilla.p0_rimlit_enhance ||
+        vanilla.ao_enabled || vanilla.p0_sscs_enabled || vanilla.p2_filter_preset != 0) {
+        return 4;
+    }
+
+    // Apply saved preset 1 and verify exact state restored.
+    if (!routeb::ApplyCustomPreset(0)) {
+        return 5;
+    }
+    const routeb::VisualConfig applied = routeb::CaptureVisualConfigFromEngine();
+    if (!applied.phase3_enhance || applied.af_point_enhance || !applied.p0_rimlit_enhance ||
+        applied.ao_enabled || applied.p0_sscs_enabled || applied.p2_filter_preset != 2) {
+        return 6;
+    }
+
+    // Re-load from disk into a reset state and verify persistence.
+    routeb::ResetConfigPanelStateForTest();
+    if (!routeb::LoadVisualConfigAndPresets(ini_path)) {
+        return 7;
+    }
+    const routeb::VisualConfig reloaded = routeb::CaptureVisualConfigFromEngine();
+    const routeb::PresetSlot slot0 = routeb::GetCustomPresetSlot(0);
+    if (!(reloaded == applied) || !slot0.used || !(slot0.cfg == applied)) {
+        return 8;
+    }
+
+    routeb::ToggleConfigPanelOpen();
+    if (!routeb::IsConfigPanelOpen()) {
+        return 9;
+    }
+    routeb::SetConfigPanelOpen(false);
+    if (routeb::IsConfigPanelOpen()) {
+        return 10;
+    }
+
+    routeb::ResetConfigPanelStateForTest();
+    ::DeleteFileW(ini_path);
+    return 0;
 }
 
 BOOL APIENTRY DllMain(HMODULE, DWORD reason, LPVOID) {

@@ -15,6 +15,7 @@ struct Phase3Stats {
     uint64_t lightpass_binds = 0;
     uint64_t rimlit_2d_binds = 0;
     uint64_t rimlit_cube_binds = 0;
+    uint64_t rimlit_3cube_binds = 0;
     uint64_t vs_texcoord_injections = 0;
     uint64_t vs_missing_vcol_fixes = 0;
     uint64_t ff_explicit_syncs = 0;
@@ -60,6 +61,10 @@ bool TogglePhase3RuntimeEnhance();
 void SetF11VisualEnhanceEnabled(bool enabled);
 bool IsF11VisualEnhanceEnabled();
 bool ToggleF11VisualEnhance();
+
+void SetP0RimLitEnhanceEnabled(bool enabled);
+bool IsP0RimLitEnhanceEnabled();
+bool ToggleP0RimLitEnhance();
 
 void SetP2FilterPreset(int preset);
 int GetP2FilterPreset();

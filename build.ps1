@@ -10,6 +10,7 @@ $SrcFiles = @(
     (Join-Path $RootDir "src\phase3_scene_pipeline.cpp"),
     (Join-Path $RootDir "src\route_c_d3d11.cpp"),
     (Join-Path $RootDir "src\route_c_ao.cpp"),
+    (Join-Path $RootDir "src\config_panel.cpp"),
     (Join-Path $RootDir "src\plugin_main.cpp")
 )
 $OutDir = Join-Path $RootDir "bin"

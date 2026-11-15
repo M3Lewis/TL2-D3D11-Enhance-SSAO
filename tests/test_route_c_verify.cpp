@@ -17,13 +17,14 @@ namespace {
 
 using PluginFn = void (*)();
 using VerifyRouteCShadersFn = bool (*)();
+using ConfigPanelSelfTestFn = int (*)();
 
 constexpr uint8_t kExpectedRenderScene[15] = {
     0x48, 0x89, 0x5C, 0x24, 0x08, 0x48, 0x89, 0x6C, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24, 0x18};
 constexpr uint8_t kExpectedFireQueue[15] = {
     0x48, 0x89, 0x5C, 0x24, 0x10, 0x48, 0x89, 0x6C, 0x24, 0x18, 0x48, 0x89, 0x74, 0x24, 0x20};
 
-static_assert(sizeof(routeb::CbAoParams) == 96, "CbAoParams must be 96 bytes");
+static_assert(sizeof(routeb::CbAoParams) == 112, "CbAoParams must be 112 bytes");
 static_assert(alignof(routeb::CbAoParams) == 16, "CbAoParams must be 16-byte aligned");
 static_assert(offsetof(routeb::CbAoParams, proj_xy) == 0, "b0[0] mismatch");
 static_assert(offsetof(routeb::CbAoParams, proj_z_fade) == 16, "b0[1] mismatch");
@@ -31,6 +32,7 @@ static_assert(offsetof(routeb::CbAoParams, vp_rect) == 32, "b0[2] mismatch");
 static_assert(offsetof(routeb::CbAoParams, vp_clamp) == 48, "b0[3] mismatch");
 static_assert(offsetof(routeb::CbAoParams, ao_params) == 64, "b0[4] mismatch");
 static_assert(offsetof(routeb::CbAoParams, blur_and_mode) == 80, "b0[5] mismatch");
+static_assert(offsetof(routeb::CbAoParams, sscs_params) == 96, "b0[6] mismatch");
 
 float RawToLinearDistCpu(float z_ndc, float p22, float p23) {
     const float denom = (std::min)(z_ndc + p22, -1e-6f);
@@ -145,7 +147,8 @@ int main() {
     auto start_fn = reinterpret_cast<PluginFn>(::GetProcAddress(plugin, "dllStartPlugin"));
     auto stop_fn = reinterpret_cast<PluginFn>(::GetProcAddress(plugin, "dllStopPlugin"));
     auto verify_shaders_fn = reinterpret_cast<VerifyRouteCShadersFn>(::GetProcAddress(plugin, "RouteB_VerifyRouteCShaders"));
-    if (!start_fn || !stop_fn || !verify_shaders_fn) {
+    auto panel_test_fn = reinterpret_cast<ConfigPanelSelfTestFn>(::GetProcAddress(plugin, "RouteB_RunConfigPanelSelfTest"));
+    if (!start_fn || !stop_fn || !verify_shaders_fn || !panel_test_fn) {
         std::printf("FAILED resolving Route C plugin exports\n");
         return 5;
     }
@@ -164,6 +167,13 @@ int main() {
         std::printf("FAILED Route C HLSL shader verification\n");
         stop_fn();
         return 7;
+    }
+
+    const int panel_rc = panel_test_fn();
+    if (panel_rc != 0) {
+        std::printf("FAILED ConfigPanel preset/INI self-test (rc=%d)\n", panel_rc);
+        stop_fn();
+        return 10;
     }
 
     stop_fn();
@@ -187,6 +197,6 @@ int main() {
     ::FreeLibrary(gui);
     ::FreeLibrary(ogre);
 
-    std::printf("[PASS] Route C verification succeeded (CbAoParams=96B, projection roundtrip/clamp, 3 OgreMain detours & clean restore, all HLSL shaders compiled)!\n");
+    std::printf("[PASS] Route C verification succeeded (CbAoParams=112B, projection roundtrip/clamp, 3 OgreMain detours & clean restore, all HLSL shaders compiled, config panel INI/presets OK)!\n");
     return 0;
 }

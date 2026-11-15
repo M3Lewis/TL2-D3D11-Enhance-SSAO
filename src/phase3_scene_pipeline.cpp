@@ -1721,7 +1721,7 @@ const void* __fastcall HookSceneManagerSetPass(
             if (soft_mode > 0) {
                 g_active_soft_particle.rs = rs;
                 g_active_soft_particle.soft_mode = soft_mode;
-                g_active_soft_particle.inv_soft_range = (soft_mode == 1) ? (1.0f / 0.65f) : (1.0f / 0.75f);
+                g_active_soft_particle.inv_soft_range = (soft_mode == 1) ? (1.0f / 0.65f) : (1.0f / 0.24f);
                 g_active_soft_particle.valid = true;
             }
         }

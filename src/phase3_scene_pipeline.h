@@ -116,7 +116,7 @@ inline bool PatchFixedFuncSoftParticles(std::string& hlsl_src) {
         "      if (!p1ParallelFloor) {\n"
         "        float p1T = saturate(p1Diff * p1SoftParams.y);\n"
         "        float p1Soft = p1T * p1T * (3.0f - 2.0f * p1T);\n"
-        "        if (p1SoftParams.x < 1.5f) { result.a *= p1Soft; } else { result.rgb *= p1Soft; }\n"
+        "        if (p1SoftParams.x < 1.5f) { result.a *= p1Soft; } else { result.rgb *= lerp(0.22f, 1.0f, p1Soft); }\n"
         "      }\n"
         "    }\n"
         "  }\n"

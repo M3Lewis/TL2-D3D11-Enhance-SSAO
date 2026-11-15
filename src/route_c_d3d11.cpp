@@ -157,13 +157,15 @@ D3DCompileFn ResolveD3DCompile(RouteCD3DLogFn logger) {
 constexpr const char kAoShaderSource[] = R"HLSL(
 cbuffer CbAoParams : register(b0)
 {
-    float4 gProjXY;      // x=p00, y=p11, z=p02, w=p12
-    float4 gProjZAndFade;// x=p22, y=p23, z=fadeEnd, w=invFadeRange
-    float4 gVpRect;      // x=vpOriginX, y=vpOriginY, z=vpWidth, w=vpHeight
-    int4   gVpClamp;     // x=minX, y=minY, z=maxX, w=maxY
-    float4 gAoParams;    // x=radiusWorld, y=biasCos, z=strength, w=minAoFloor
-    float4 gBlurAndMode; // x=invVpW, y=invVpH, z=depthEdgeScale, w=debugMode
-    float4 gSscsParams;  // x=sscsEnabled, y=sscsStrength, z=tintStrength, w=0
+    float4 gProjXY;          // x=p00, y=p11, z=p02, w=p12
+    float4 gProjZAndFade;    // x=p22, y=p23, z=fadeEnd, w=invFadeRange
+    float4 gVpRect;          // x=vpOriginX, y=vpOriginY, z=vpWidth, w=vpHeight
+    int4   gVpClamp;         // x=minX, y=minY, z=maxX, w=maxY
+    float4 gAoParams;        // x=radiusWorld, y=biasCos, z=strength, w=minAoFloor
+    float4 gBlurAndMode;     // x=invVpW, y=invVpH, z=depthEdgeScale, w=debugMode
+    float4 gSscsParams;      // x=sscsEnabled, y=sscsStrength, z=tintStrength, w=aerialMode
+    float4 gSscsKeyAndRange; // x=keyDirX, y=keyDirY, z=aerialStart, w=invAerialSpan
+    float4 gAerialFogParams; // rgb=hazeRgb, a=maxAerialAlpha
 };
 
 #if MSAA_DEPTH
@@ -411,13 +413,11 @@ float4 PS_ResolveDepthMsaa(VsOut input) : SV_Target0
     return float4(LoadRawDepth(int2(input.pos.xy)), 0.0f, 0.0f, 1.0f);
 }
 
-float4 PS_AoComposite(VsOut input) : SV_Target0
+float3 ComputeAoCompositeRgb(int2 pix, float rawC)
 {
-    int2 pix = clamp(int2(input.pos.xy), gVpClamp.xy, gVpClamp.zw);
-    float rawC = LoadRawDepth(pix);
     if (rawC >= 0.99998f)
     {
-        return float4(1.0f, 1.0f, 1.0f, 1.0f);
+        return float3(1.0f, 1.0f, 1.0f);
     }
 
     float dC = max(RawToLinearDist(rawC), 1e-3f);
@@ -467,8 +467,8 @@ float4 PS_AoComposite(VsOut input) : SV_Target0
             float3 n = ReconstructNormalVS(pix, P);
             float ign = frac(52.9829189f * frac(dot(float2(pix), float2(0.06711056f, 0.00583715f))));
 
-            // P0-2A: Full-res directional micro contact shadows (key light from upper-right)
-            float2 keyDir = float2(0.42f, -0.907f);
+            // P0-2A: Full-res directional micro contact shadows (synced with DirectionalLight0)
+            float2 keyDir = gSscsKeyAndRange.xy;
             float contactOcc = 0.0f;
             [unroll]
             for (int s = 1; s <= 5; ++s)
@@ -522,28 +522,62 @@ float4 PS_AoComposite(VsOut input) : SV_Target0
 
         // P0-2C: Hob-style cool-tinted crevice AO curve (avoid neutral muddy gray)
         float3 coolAo = pow(max(ao, 1e-4f), float3(1.18f, 1.04f, 0.85f));
-        float3 tinted = lerp(float3(ao, ao, ao), coolAo, saturate(gSscsParams.z));
-        return float4(tinted, 1.0f);
+        return lerp(float3(ao, ao, ao), coolAo, saturate(gSscsParams.z));
     }
 
-    return float4(ao, ao, ao, 1.0f);
+    return float3(ao, ao, ao);
+}
+
+void ComputeAerialPerspective(float rawC, out float3 hazeRgb, out float hazeA)
+{
+    hazeRgb = float3(0.0f, 0.0f, 0.0f);
+    hazeA = 0.0f;
+    if (rawC >= 0.99998f || gSscsParams.w < 0.5f || gAerialFogParams.a <= 1e-4f)
+    {
+        return;
+    }
+
+    float dC = max(RawToLinearDist(rawC), 1e-3f);
+    float t = saturate((dC - gSscsKeyAndRange.z) * gSscsKeyAndRange.w);
+    float smoothT = t * t * (3.0f - 2.0f * t);
+    hazeRgb = gAerialFogParams.rgb;
+    hazeA = smoothT * gAerialFogParams.a;
+}
+
+float4 PS_AoComposite(VsOut input) : SV_Target0
+{
+    int2 pix = clamp(int2(input.pos.xy), gVpClamp.xy, gVpClamp.zw);
+    float rawC = LoadRawDepth(pix);
+    return float4(ComputeAoCompositeRgb(pix, rawC), 1.0f);
+}
+
+struct AoDualOut
+{
+    float4 hazePremul : SV_Target0;
+    float4 destFactor : SV_Target1;
+};
+
+AoDualOut PS_AoCompositeDual(VsOut input)
+{
+    int2 pix = clamp(int2(input.pos.xy), gVpClamp.xy, gVpClamp.zw);
+    float rawC = LoadRawDepth(pix);
+    float3 aoRgb = ComputeAoCompositeRgb(pix, rawC);
+    float3 hazeRgb;
+    float hazeA;
+    ComputeAerialPerspective(rawC, hazeRgb, hazeA);
+    AoDualOut o;
+    o.hazePremul = float4(hazeRgb * hazeA, 0.0f);
+    o.destFactor = float4(aoRgb * (1.0f - hazeA), 1.0f);
+    return o;
 }
 
 float4 PS_AerialPerspective(VsOut input) : SV_Target0
 {
     int2 pix = clamp(int2(input.pos.xy), gVpClamp.xy, gVpClamp.zw);
     float rawC = LoadRawDepth(pix);
-    if (rawC >= 0.99998f || gSscsParams.w < 0.5f)
-    {
-        return float4(0.0f, 0.0f, 0.0f, 0.0f);
-    }
-
-    float dC = max(RawToLinearDist(rawC), 1e-3f);
-    float t = saturate((dC - 24.0f) * (1.0f / 30.0f));
-    float smoothT = t * t * (3.0f - 2.0f * t);
-    bool isDark = (gSscsParams.w > 1.5f);
-    float3 hazeRgb = isDark ? float3(0.055f, 0.085f, 0.135f) : float3(0.115f, 0.170f, 0.255f);
-    float hazeA = smoothT * (isDark ? 0.25f : 0.21f);
+    float3 hazeRgb;
+    float hazeA;
+    ComputeAerialPerspective(rawC, hazeRgb, hazeA);
     return float4(hazeRgb, hazeA);
 }
 )HLSL";
@@ -1051,6 +1085,7 @@ struct DepthVariantShaders {
     ID3D11PixelShader* ps_blur_h = nullptr;
     ID3D11PixelShader* ps_blur_v = nullptr;
     ID3D11PixelShader* ps_composite = nullptr;
+    ID3D11PixelShader* ps_comp_dual = nullptr;
     ID3D11PixelShader* ps_aerial = nullptr;
 };
 
@@ -1082,6 +1117,7 @@ struct RouteCD3DState {
     uint32_t panel_tex_h = 0;
     ID3D11BlendState* blend_debug_rgb = nullptr;
     ID3D11BlendState* blend_mul_rgb = nullptr;
+    ID3D11BlendState* blend_dual_ao = nullptr;
     ID3D11BlendState* blend_toast_alpha = nullptr;
     ID3D11DepthStencilState* dss_disabled = nullptr;
     ID3D11RasterizerState* rs_fullscreen = nullptr;
@@ -1165,6 +1201,7 @@ double g_sum_total_ms = 0.0;
 
 void ReleaseDepthVariantShaders(DepthVariantShaders& s) {
     SafeRelease(s.ps_aerial);
+    SafeRelease(s.ps_comp_dual);
     SafeRelease(s.ps_composite);
     SafeRelease(s.ps_blur_v);
     SafeRelease(s.ps_blur_h);
@@ -1223,6 +1260,7 @@ void ReleaseAllDeviceObjects() {
     SafeRelease(g_st.rs_fullscreen);
     SafeRelease(g_st.dss_disabled);
     SafeRelease(g_st.blend_toast_alpha);
+    SafeRelease(g_st.blend_dual_ao);
     SafeRelease(g_st.blend_mul_rgb);
     SafeRelease(g_st.blend_debug_rgb);
     SafeRelease(g_st.samp_linear);
@@ -1325,6 +1363,7 @@ bool CreateDepthVariantShaders(
         CompileAndCreatePixelShader(dev, compile_fn, "PS_BlurH", ps_profile, defines, &out.ps_blur_h, logger) &&
         CompileAndCreatePixelShader(dev, compile_fn, "PS_BlurV", ps_profile, defines, &out.ps_blur_v, logger) &&
         CompileAndCreatePixelShader(dev, compile_fn, "PS_AoComposite", ps_profile, defines, &out.ps_composite, logger) &&
+        CompileAndCreatePixelShader(dev, compile_fn, "PS_AoCompositeDual", ps_profile, defines, &out.ps_comp_dual, logger) &&
         CompileAndCreatePixelShader(dev, compile_fn, "PS_AerialPerspective", ps_profile, defines, &out.ps_aerial, logger);
     if (!ok) {
         ReleaseDepthVariantShaders(out);
@@ -1343,10 +1382,10 @@ bool EnsurePipelineObjects(ID3D11Device* dev, RouteCD3DLogFn logger) {
         return false;
     }
     if (g_st.vs_fullscreen && g_st.shaders_single.ps_ao_raw && g_st.shaders_single.ps_composite &&
-        g_st.shaders_single.ps_aerial &&
+        g_st.shaders_single.ps_comp_dual && g_st.shaders_single.ps_aerial &&
         g_st.ps_toast && g_st.cb_toast && g_st.blend_toast_alpha &&
         g_st.ps_panel && g_st.ps_cursor && g_st.cb_panel && g_st.samp_linear &&
-        g_st.cb_params && g_st.blend_debug_rgb && g_st.blend_mul_rgb &&
+        g_st.cb_params && g_st.blend_debug_rgb && g_st.blend_mul_rgb && g_st.blend_dual_ao &&
         g_st.dss_disabled && g_st.rs_fullscreen) {
         return true;
     }
@@ -1437,6 +1476,17 @@ bool EnsurePipelineObjects(ID3D11Device* dev, RouteCD3DLogFn logger) {
     bd_mul.RenderTarget[0].RenderTargetWriteMask =
         D3D11_COLOR_WRITE_ENABLE_RED | D3D11_COLOR_WRITE_ENABLE_GREEN | D3D11_COLOR_WRITE_ENABLE_BLUE;
 
+    D3D11_BLEND_DESC bd_dual{};
+    bd_dual.RenderTarget[0].BlendEnable = TRUE;
+    bd_dual.RenderTarget[0].SrcBlend = D3D11_BLEND_ONE;
+    bd_dual.RenderTarget[0].DestBlend = D3D11_BLEND_SRC1_COLOR;
+    bd_dual.RenderTarget[0].BlendOp = D3D11_BLEND_OP_ADD;
+    bd_dual.RenderTarget[0].SrcBlendAlpha = D3D11_BLEND_ZERO;
+    bd_dual.RenderTarget[0].DestBlendAlpha = D3D11_BLEND_ONE;
+    bd_dual.RenderTarget[0].BlendOpAlpha = D3D11_BLEND_OP_ADD;
+    bd_dual.RenderTarget[0].RenderTargetWriteMask =
+        D3D11_COLOR_WRITE_ENABLE_RED | D3D11_COLOR_WRITE_ENABLE_GREEN | D3D11_COLOR_WRITE_ENABLE_BLUE;
+
     D3D11_BUFFER_DESC cb_toast_desc{};
     cb_toast_desc.ByteWidth = sizeof(CbToastParams);
     cb_toast_desc.Usage = D3D11_USAGE_DYNAMIC;
@@ -1510,6 +1560,7 @@ bool EnsurePipelineObjects(ID3D11Device* dev, RouteCD3DLogFn logger) {
          SUCCEEDED(dev->CreateSamplerState(&samp_desc, &g_st.samp_linear)) &&
          SUCCEEDED(dev->CreateBlendState(&bd_dbg, &g_st.blend_debug_rgb)) &&
          SUCCEEDED(dev->CreateBlendState(&bd_mul, &g_st.blend_mul_rgb)) &&
+         SUCCEEDED(dev->CreateBlendState(&bd_dual, &g_st.blend_dual_ao)) &&
          SUCCEEDED(dev->CreateBlendState(&bd_toast, &g_st.blend_toast_alpha)) &&
          SUCCEEDED(dev->CreateDepthStencilState(&dss_desc, &g_st.dss_disabled)) &&
          SUCCEEDED(dev->CreateRasterizerState(&rs_desc, &g_st.rs_fullscreen));
@@ -1788,6 +1839,69 @@ void RecordTimestamp(ID3D11DeviceContext* ctx, BenchSlot* slot, size_t idx) {
     }
 }
 
+void PopulateDynamicAoAerialParams(const RouteCAoRenderRequest& req, CbAoParams& cb) {
+    float kx = req.sscs_key_dir[0];
+    float ky = req.sscs_key_dir[1];
+    const float klen = std::sqrt(kx * kx + ky * ky);
+    if (std::isfinite(klen) && klen > 1e-4f) {
+        kx /= klen;
+        ky /= klen;
+    } else {
+        kx = 0.42f;
+        ky = -0.907f;
+    }
+
+    const bool is_dark = (req.filter_preset == 2);
+    const float base_rgb[3] = {
+        is_dark ? 0.055f : 0.115f,
+        is_dark ? 0.085f : 0.170f,
+        is_dark ? 0.135f : 0.255f};
+    const float max_alpha = is_dark ? 0.25f : 0.21f;
+
+    float haze_rgb[3] = {base_rgb[0], base_rgb[1], base_rgb[2]};
+    if (req.map_fog_mode != 0 &&
+        std::isfinite(req.map_fog_rgb[0]) &&
+        std::isfinite(req.map_fog_rgb[1]) &&
+        std::isfinite(req.map_fog_rgb[2])) {
+        const float fr = (std::max)(0.0f, (std::min)(1.0f, req.map_fog_rgb[0]));
+        const float fg = (std::max)(0.0f, (std::min)(1.0f, req.map_fog_rgb[1]));
+        const float fb = (std::max)(0.0f, (std::min)(1.0f, req.map_fog_rgb[2]));
+        const float fog_lum = 0.299f * fr + 0.587f * fg + 0.114f * fb;
+        if (fog_lum > 0.015f) {
+            const float target_lum = is_dark
+                ? (std::max)(0.07f, (std::min)(0.16f, fog_lum * 0.45f))
+                : (std::max)(0.14f, (std::min)(0.28f, fog_lum * 0.65f));
+            const float scale = target_lum / fog_lum;
+            const float mr = (std::min)(0.45f, fr * scale);
+            const float mg = (std::min)(0.45f, fg * scale);
+            const float mb = (std::min)(0.45f, fb * scale);
+            constexpr float kMapTintWeight = 0.72f;
+            haze_rgb[0] = base_rgb[0] * (1.0f - kMapTintWeight) + mr * kMapTintWeight;
+            haze_rgb[1] = base_rgb[1] * (1.0f - kMapTintWeight) + mg * kMapTintWeight;
+            haze_rgb[2] = base_rgb[2] * (1.0f - kMapTintWeight) + mb * kMapTintWeight;
+        }
+    }
+
+    float aerial_start = 24.0f;
+    float aerial_end = 54.0f;
+    if (req.map_fog_mode == 3 &&
+        std::isfinite(req.map_fog_start) &&
+        std::isfinite(req.map_fog_end) &&
+        req.map_fog_end > req.map_fog_start + 5.0f) {
+        aerial_start = (std::max)(14.0f, (std::min)(36.0f, 24.0f * 0.45f + req.map_fog_start * 0.55f));
+        aerial_end = (std::max)(aerial_start + 18.0f, (std::min)(75.0f, 54.0f * 0.55f + req.map_fog_end * 0.45f));
+    }
+
+    cb.sscs_key_and_range[0] = kx;
+    cb.sscs_key_and_range[1] = ky;
+    cb.sscs_key_and_range[2] = aerial_start;
+    cb.sscs_key_and_range[3] = 1.0f / (std::max)(aerial_end - aerial_start, 1e-3f);
+    cb.aerial_fog_params[0] = haze_rgb[0];
+    cb.aerial_fog_params[1] = haze_rgb[1];
+    cb.aerial_fog_params[2] = haze_rgb[2];
+    cb.aerial_fog_params[3] = req.aerial_enabled ? max_alpha : 0.0f;
+}
+
 }  // namespace
 
 bool ExecuteRouteCAoPass(const RouteCAoRenderRequest& req, RouteCD3DLogFn logger) {
@@ -1887,7 +2001,7 @@ bool ExecuteRouteCAoPass(const RouteCAoRenderRequest& req, RouteCD3DLogFn logger
     }
 
     const AoTuneConfig& cfg = GetAoTuneConfig(logger);
-    BenchSlot* bench_slot = req.ao_enabled ? BeginBenchSlot(dev, req.ctx, cfg) : nullptr;
+    BenchSlot* bench_slot = (req.ao_enabled || req.aerial_enabled) ? BeginBenchSlot(dev, req.ctx, cfg) : nullptr;
 
     // Pass 0: Unbind DSV/SRVs and copy depth cleanly.
     ID3D11ShaderResourceView* null_srvs[2] = {nullptr, nullptr};
@@ -1940,6 +2054,7 @@ bool ExecuteRouteCAoPass(const RouteCAoRenderRequest& req, RouteCD3DLogFn logger
     cb.sscs_params[1] = 1.15f;  // crisp full-res contact shadow strength
     cb.sscs_params[2] = 0.90f;  // Hob cool-tinted AO balance
     cb.sscs_params[3] = req.aerial_enabled ? ((req.filter_preset == 2) ? 2.0f : 1.0f) : 0.0f;
+    PopulateDynamicAoAerialParams(req, cb);
     std::memcpy(mapped.pData, &cb, sizeof(cb));
     req.ctx->Unmap(g_st.cb_params, 0);
 
@@ -2024,7 +2139,6 @@ bool ExecuteRouteCAoPass(const RouteCAoRenderRequest& req, RouteCD3DLogFn logger
             RecordTimestamp(req.ctx, bench_slot, 2);
             RecordTimestamp(req.ctx, bench_slot, 3);
             RecordTimestamp(req.ctx, bench_slot, 4);
-            RecordTimestamp(req.ctx, bench_slot, 5);
         } else {
             // Pass 1 (Half-Res): HBAO/GTAO-Lite Raw -> ao_rt_rtv
             req.ctx->RSSetViewports(1, &ao_vp_half);
@@ -2059,27 +2173,30 @@ bool ExecuteRouteCAoPass(const RouteCAoRenderRequest& req, RouteCD3DLogFn logger
                 RecordTimestamp(req.ctx, bench_slot, 4);
             }
 
-            // Pass 4 (Full-Res Joint-Bilateral Upsample): RGB-only Multiplicative Composite or Grayscale Debug -> target_rtv
+            // Pass 4 (Full-Res Joint-Bilateral Upsample): single-pass Dual-Source AO+Aerial or RGB-only AO Composite
+            const bool use_dual_composite =
+                (req.debug_mode == 0) && req.aerial_enabled && ds.ps_comp_dual && g_st.blend_dual_ao;
             req.ctx->PSSetShaderResources(0, 2, null_srvs);
             req.ctx->RSSetViewports(1, &ao_vp);
             req.ctx->OMSetRenderTargets(1, &target_rtv, nullptr);
             req.ctx->OMSetBlendState(
-                (req.debug_mode == 0) ? g_st.blend_mul_rgb : g_st.blend_debug_rgb,
+                use_dual_composite ? g_st.blend_dual_ao : ((req.debug_mode == 0) ? g_st.blend_mul_rgb : g_st.blend_debug_rgb),
                 nullptr,
                 0xFFFFFFFFU);
-            req.ctx->PSSetShader(ds.ps_composite, nullptr, 0);
+            req.ctx->PSSetShader(use_dual_composite ? ds.ps_comp_dual : ds.ps_composite, nullptr, 0);
             ID3D11ShaderResourceView* srvs_p4[2] = {g_st.depth_copy_srv, g_st.ao_rt_srv};
             req.ctx->PSSetShaderResources(0, 2, srvs_p4);
             req.ctx->Draw(3, 0);
-            RecordTimestamp(req.ctx, bench_slot, 5);
         }
-
-        if (bench_slot) {
-            req.ctx->End(bench_slot->disjoint);
-        }
+    } else if (req.aerial_enabled && bench_slot) {
+        RecordTimestamp(req.ctx, bench_slot, 2);
+        RecordTimestamp(req.ctx, bench_slot, 3);
+        RecordTimestamp(req.ctx, bench_slot, 4);
     }
 
-    if (req.aerial_enabled && req.debug_mode == 0 && ds.ps_aerial && g_st.blend_toast_alpha) {
+    const bool ran_dual_composite =
+        req.ao_enabled && (req.debug_mode == 0) && req.aerial_enabled && ds.ps_comp_dual && g_st.blend_dual_ao;
+    if (req.aerial_enabled && req.debug_mode == 0 && !ran_dual_composite && ds.ps_aerial && g_st.blend_toast_alpha) {
         req.ctx->RSSetViewports(1, &ao_vp);
         req.ctx->OMSetRenderTargets(1, &target_rtv, nullptr);
         req.ctx->OMSetBlendState(g_st.blend_toast_alpha, nullptr, 0xFFFFFFFFU);
@@ -2087,6 +2204,11 @@ bool ExecuteRouteCAoPass(const RouteCAoRenderRequest& req, RouteCD3DLogFn logger
         ID3D11ShaderResourceView* srvs_aerial[2] = {g_st.depth_copy_srv, nullptr};
         req.ctx->PSSetShaderResources(0, 2, srvs_aerial);
         req.ctx->Draw(3, 0);
+    }
+
+    if (bench_slot) {
+        RecordTimestamp(req.ctx, bench_slot, 5);
+        req.ctx->End(bench_slot->disjoint);
     }
 
     if (!req.ao_enabled) {
@@ -2538,6 +2660,8 @@ bool VerifyRouteCShadersCompile(RouteCD3DLogFn logger) {
         {"VS_Fullscreen", "vs_4_0", macro_single},
         {"PS_AoComposite", "ps_4_0", macro_single},
         {"PS_AoComposite", "ps_4_1", macro_msaa},
+        {"PS_AoCompositeDual", "ps_4_0", macro_single},
+        {"PS_AoCompositeDual", "ps_4_1", macro_msaa},
         {"PS_AerialPerspective", "ps_4_0", macro_single},
         {"PS_AerialPerspective", "ps_4_1", macro_msaa},
         {"PS_C1DepthNormalDebug", "ps_4_0", macro_single},

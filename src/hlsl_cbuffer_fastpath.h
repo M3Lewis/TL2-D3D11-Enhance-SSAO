@@ -29,5 +29,7 @@ bool WriteExplicitPsNamedFloat4(uintptr_t params, const char* name, const float 
 bool WriteExplicitPsNamedFloat(uintptr_t params, const char* name, float v);
 bool WriteCachedFloatParamByMsvcStr(uintptr_t params, const void* msvc_str, const float* src, size_t size);
 void ResetExplicitPsLightingScratch(uintptr_t params);
+void ResetCapturedDirectionalLight();
+bool GetCapturedDirectionalLight(float out_dir[3], float* out_lum);
 
 }  // namespace routeb

@@ -135,6 +135,12 @@ std::atomic<uint64_t> g_ff_param_skipped_missing{0};
 std::atomic<uint64_t> g_p3_param_forwards{0};
 std::atomic<uintptr_t> g_forward_ps_params{0};
 
+SRWLOCK g_dir_light_lock = SRWLOCK_INIT;
+bool g_cap_has_dir_light = false;
+bool g_cap_has_dir_diffuse = false;
+float g_cap_dir_light[3] = {0.0f, 0.0f, 0.0f};
+float g_cap_dir_lum = 0.0f;
+
 constexpr size_t kL1CacheSlots = 2048;
 constexpr size_t kL1MaxNameLen = 46;
 
@@ -326,6 +332,31 @@ void WriteCachedParam(uintptr_t params, const CachedParamDef& def, const void* s
     }
 }
 
+void MaybeCaptureDirectionalLight(const void* msvc_str, const void* src, size_t size) {
+    if (!msvc_str || !src || size < sizeof(float) * 3) {
+        return;
+    }
+    const auto* raw_str = reinterpret_cast<const MsvcStringRaw*>(msvc_str);
+    if (raw_str->size != 27 && raw_str->size != 25) {
+        return;
+    }
+    const std::string_view name = raw_str->View();
+    const auto* f = static_cast<const float*>(src);
+    if (name == "DirectionalLight0_Direction") {
+        ::AcquireSRWLockExclusive(&g_dir_light_lock);
+        g_cap_dir_light[0] = f[0];
+        g_cap_dir_light[1] = f[1];
+        g_cap_dir_light[2] = f[2];
+        g_cap_has_dir_light = true;
+        ::ReleaseSRWLockExclusive(&g_dir_light_lock);
+    } else if (name == "DirectionalLight0_Diffuse") {
+        ::AcquireSRWLockExclusive(&g_dir_light_lock);
+        g_cap_dir_lum = 0.299f * f[0] + 0.587f * f[1] + 0.114f * f[2];
+        g_cap_has_dir_diffuse = true;
+        ::ReleaseSRWLockExclusive(&g_dir_light_lock);
+    }
+}
+
 void ForwardToActiveExplicitPs(uintptr_t ff_target_params, const void* msvc_str, const void* src, size_t size) {
     const uintptr_t extra_ps = g_forward_ps_params.load(std::memory_order_relaxed);
     if (!extra_ps || extra_ps == ff_target_params) {
@@ -340,6 +371,7 @@ void ForwardToActiveExplicitPs(uintptr_t ff_target_params, const void* msvc_str,
 
 void __fastcall HookSetParamHelper(uintptr_t ff_progs, int prog_type, void* msvc_str, const void* src, size_t size) {
     if ((prog_type == 0 || prog_type == 1) && g_find_named_def) {
+        MaybeCaptureDirectionalLight(msvc_str, src, size);
         const uintptr_t usage = ff_progs + (prog_type == 0 ? 16 : 56);
         const uintptr_t params = *reinterpret_cast<const uintptr_t*>(usage + 8);
         if (params) {
@@ -355,10 +387,11 @@ void __fastcall HookSetParamHelper(uintptr_t ff_progs, int prog_type, void* msvc
 
 void __fastcall HookSetVec3Helper(uintptr_t ff_progs, int prog_type, void* msvc_str, const float* vec3) {
     if ((prog_type == 0 || prog_type == 1) && vec3 && g_find_named_def) {
+        const float copy[3] = {vec3[0], vec3[1], vec3[2]};
+        MaybeCaptureDirectionalLight(msvc_str, copy, sizeof(copy));
         const uintptr_t usage = ff_progs + (prog_type == 0 ? 16 : 56);
         const uintptr_t params = *reinterpret_cast<const uintptr_t*>(usage + 8);
         if (params) {
-            float copy[3] = {vec3[0], vec3[1], vec3[2]};
             const CachedParamDef def = ResolveParamCached(params, msvc_str);
             WriteCachedParam(params, def, copy, sizeof(copy));
             ForwardToActiveExplicitPs(params, msvc_str, copy, sizeof(copy));
@@ -592,6 +625,31 @@ bool WriteExplicitPsNamedFloat4(uintptr_t params, const char* name, const float 
     static_assert(sizeof(std::string) == sizeof(MsvcStringRaw), "std::string ABI mismatch");
     const std::string key(name);
     return WriteCachedFloatParamByMsvcStr(params, &key, v, sizeof(float) * 4);
+}
+
+void ResetCapturedDirectionalLight() {
+    ::AcquireSRWLockExclusive(&g_dir_light_lock);
+    g_cap_has_dir_light = false;
+    g_cap_has_dir_diffuse = false;
+    g_cap_dir_light[0] = 0.0f;
+    g_cap_dir_light[1] = 0.0f;
+    g_cap_dir_light[2] = 0.0f;
+    g_cap_dir_lum = 0.0f;
+    ::ReleaseSRWLockExclusive(&g_dir_light_lock);
+}
+
+bool GetCapturedDirectionalLight(float out_dir[3], float* out_lum) {
+    if (!out_dir || !out_lum) {
+        return false;
+    }
+    ::AcquireSRWLockShared(&g_dir_light_lock);
+    const bool ok = g_cap_has_dir_light;
+    out_dir[0] = g_cap_dir_light[0];
+    out_dir[1] = g_cap_dir_light[1];
+    out_dir[2] = g_cap_dir_light[2];
+    *out_lum = g_cap_has_dir_diffuse ? g_cap_dir_lum : 1.0f;
+    ::ReleaseSRWLockShared(&g_dir_light_lock);
+    return ok;
 }
 
 bool WriteExplicitPsNamedFloat(uintptr_t params, const char* name, float v) {

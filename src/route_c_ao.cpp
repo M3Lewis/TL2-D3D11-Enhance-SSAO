@@ -2,6 +2,7 @@
 #include "route_c_d3d11.h"
 #include "phase3_scene_pipeline.h"
 #include "config_panel.h"
+#include "hlsl_cbuffer_fastpath.h"
 
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
@@ -50,10 +51,21 @@ using VpGetCameraFn = void*(__fastcall*)(const void* vp);
 using VpGetTargetFn = void*(__fastcall*)(const void* vp);
 using VpGetActualDimsFn = void(__fastcall*)(const void* vp, int& left, int& top, int& width, int& height);
 using VpGetBoolFn = bool(__fastcall*)(const void* vp);
+struct OgreColourValueRaw {
+    float r = 0.0f;
+    float g = 0.0f;
+    float b = 0.0f;
+    float a = 1.0f;
+};
+static_assert(sizeof(OgreColourValueRaw) == 16, "Ogre::ColourValue must be 16 bytes");
+
 using FrustumGetMatFn = const OgreMatrix4Raw&(__fastcall*)(const void* frustum);
 using CamGetFloatFn = float(__fastcall*)(const void* cam);
 using ObjGetNameFn = const std::string&(__fastcall*)(const void* obj);
 using RtGetCustomAttrFn = void(__fastcall*)(void* rt, const std::string& name, void* out_data);
+using SmGetIntFn = int(__fastcall*)(const void* sm);
+using SmGetColourFn = const OgreColourValueRaw&(__fastcall*)(const void* sm);
+using SmGetFloatFn = float(__fastcall*)(const void* sm);
 
 struct OgreC0Api {
     VpGetCameraFn vp_get_camera = nullptr;
@@ -63,11 +75,16 @@ struct OgreC0Api {
     VpGetBoolFn vp_get_overlays = nullptr;
     VpGetBoolFn vp_get_shadows = nullptr;
     FrustumGetMatFn frustum_get_proj_rs = nullptr;
+    FrustumGetMatFn cam_get_view = nullptr;
     CamGetFloatFn cam_get_near = nullptr;
     CamGetFloatFn cam_get_far = nullptr;
     ObjGetNameFn rt_get_name = nullptr;
     ObjGetNameFn sm_get_name = nullptr;
     ObjGetNameFn cam_get_name = nullptr;
+    SmGetIntFn sm_get_fog_mode = nullptr;
+    SmGetColourFn sm_get_fog_colour = nullptr;
+    SmGetFloatFn sm_get_fog_start = nullptr;
+    SmGetFloatFn sm_get_fog_end = nullptr;
 };
 
 struct D3DResourceInfo {
@@ -118,6 +135,12 @@ struct ActiveSceneFrame {
     float near_clip = 1.0f;
     float far_clip = 100.0f;
     OgreMatrix4Raw proj{};
+    OgreMatrix4Raw view{};
+    bool has_view = false;
+    int fog_mode = 0;
+    float fog_rgb[3]{};
+    float fog_start = 0.0f;
+    float fog_end = 0.0f;
     char rt_name[48]{};
     ActiveQueueCounters queue{};
 };
@@ -317,6 +340,11 @@ bool InitOgreC0Api(HMODULE ogre_mod) {
     ok &= ResolveOgreProc(ogre_mod, "?getName@RenderTarget@Ogre@@UEBAAEBV?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@XZ", &g_api.rt_get_name);
     ok &= ResolveOgreProc(ogre_mod, "?getName@SceneManager@Ogre@@QEBAAEBV?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@XZ", &g_api.sm_get_name);
     ok &= ResolveOgreProc(ogre_mod, "?getName@Camera@Ogre@@UEBAAEBV?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@XZ", &g_api.cam_get_name);
+    (void)ResolveOgreProc(ogre_mod, "?getViewMatrix@Camera@Ogre@@UEBAAEBVMatrix4@2@XZ", &g_api.cam_get_view);
+    (void)ResolveOgreProc(ogre_mod, "?getFogMode@SceneManager@Ogre@@UEBA?AW4FogMode@2@XZ", &g_api.sm_get_fog_mode);
+    (void)ResolveOgreProc(ogre_mod, "?getFogColour@SceneManager@Ogre@@UEBAAEBVColourValue@2@XZ", &g_api.sm_get_fog_colour);
+    (void)ResolveOgreProc(ogre_mod, "?getFogStart@SceneManager@Ogre@@UEBAMXZ", &g_api.sm_get_fog_start);
+    (void)ResolveOgreProc(ogre_mod, "?getFogEnd@SceneManager@Ogre@@UEBAMXZ", &g_api.sm_get_fog_end);
     return ok;
 }
 
@@ -668,6 +696,46 @@ void TryDispatchAoForFrame(ActiveSceneFrame& frame, const char* trigger_src, uin
     req.capture_particle_depth = sp_on;
     req.aerial_enabled = (dbg_mode <= 0) && aerial_on;
     req.filter_preset = GetP2FilterPreset();
+    req.sscs_key_dir[0] = 0.42f;
+    req.sscs_key_dir[1] = -0.907f;
+    req.has_sscs_key_dir = false;
+    if (req.sscs_enabled && frame.has_view) {
+        float dir_world[3]{};
+        float dir_lum = 0.0f;
+        if (GetCapturedDirectionalLight(dir_world, &dir_lum) && dir_lum > 1e-3f) {
+            const float lx = -(
+                frame.view.m[0][0] * dir_world[0] +
+                frame.view.m[0][1] * dir_world[1] +
+                frame.view.m[0][2] * dir_world[2]);
+            const float ly = -(
+                frame.view.m[1][0] * dir_world[0] +
+                frame.view.m[1][1] * dir_world[1] +
+                frame.view.m[1][2] * dir_world[2]);
+            const float px = lx;
+            const float py = -ly;
+            const float len = std::sqrt(px * px + py * py);
+            if (len > 0.05f && std::isfinite(len)) {
+                const float inv_len = 1.0f / len;
+                const float nx = px * inv_len;
+                const float ny = py * inv_len;
+                const float blend = (std::min)(1.0f, (std::max)(0.0f, (len - 0.05f) * 5.0f));
+                const float bx = 0.42f * (1.0f - blend) + nx * blend;
+                const float by = -0.907f * (1.0f - blend) + ny * blend;
+                const float blen = std::sqrt(bx * bx + by * by);
+                if (blen > 1e-4f) {
+                    req.sscs_key_dir[0] = bx / blen;
+                    req.sscs_key_dir[1] = by / blen;
+                    req.has_sscs_key_dir = true;
+                }
+            }
+        }
+    }
+    req.map_fog_mode = frame.fog_mode;
+    req.map_fog_rgb[0] = frame.fog_rgb[0];
+    req.map_fog_rgb[1] = frame.fog_rgb[1];
+    req.map_fog_rgb[2] = frame.fog_rgb[2];
+    req.map_fog_start = frame.fog_start;
+    req.map_fog_end = frame.fog_end;
     const bool ok = ExecuteRouteCAoPass(req, g_log);
     frame.particle_depth_ready = ok && sp_on;
     g_world_depth_ready_for_particles.store(frame.particle_depth_ready, std::memory_order_release);
@@ -911,8 +979,9 @@ void __fastcall HookRenderScene(void* sm, void* cam, void* vp, uint8_t show_over
     const bool ao_on = g_ao_runtime_enabled.load(std::memory_order_relaxed);
     const int dbg_mode = ao_on ? g_ao_debug_mode.load(std::memory_order_relaxed) : -1;
     const bool sp_on = g_p1_soft_particles_enabled.load(std::memory_order_relaxed);
-    const bool need_depth_pipeline = (dbg_mode >= 0) || sp_on;
-    const bool need_filter_fallback = (GetP2FilterPreset() > 0) && !WasP2PostShaderSeenRecently();
+    const bool aerial_on = g_p2_aerial_vignette_enabled.load(std::memory_order_relaxed);
+    const bool need_depth_pipeline = (dbg_mode >= 0) || sp_on || aerial_on;
+    const bool need_filter_fallback = ((GetP2FilterPreset() > 0) || aerial_on) && !WasP2PostShaderSeenRecently();
     if ((!survey_on && !need_depth_pipeline && !need_filter_fallback) || g_scene_depth >= kMaxSceneStack || !sm || !vp) {
         const bool prev_ready = g_world_depth_ready_for_particles.exchange(false, std::memory_order_acq_rel);
         g_orig_render_scene(sm, cam, vp, show_overlays);
@@ -980,6 +1049,28 @@ void __fastcall HookRenderScene(void* sm, void* cam, void* vp, uint8_t show_over
     frame.near_clip = g_api.cam_get_near(active_cam);
     frame.far_clip = g_api.cam_get_far(active_cam);
     frame.proj = proj;
+    if (ao_eligible) {
+        ResetCapturedDirectionalLight();
+        if (g_api.cam_get_view) {
+            frame.view = g_api.cam_get_view(active_cam);
+            frame.has_view = true;
+        }
+        if (g_api.sm_get_fog_mode) {
+            frame.fog_mode = g_api.sm_get_fog_mode(sm);
+            if (g_api.sm_get_fog_colour) {
+                const OgreColourValueRaw& fc = g_api.sm_get_fog_colour(sm);
+                frame.fog_rgb[0] = fc.r;
+                frame.fog_rgb[1] = fc.g;
+                frame.fog_rgb[2] = fc.b;
+            }
+            if (g_api.sm_get_fog_start) {
+                frame.fog_start = g_api.sm_get_fog_start(sm);
+            }
+            if (g_api.sm_get_fog_end) {
+                frame.fog_end = g_api.sm_get_fog_end(sm);
+            }
+        }
+    }
     if (rt_str_ptr) {
         CopyTruncatedStr(frame.rt_name, sizeof(frame.rt_name), *rt_str_ptr);
     }

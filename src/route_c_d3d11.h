@@ -16,10 +16,12 @@ struct alignas(16) CbAoParams {
     float vp_rect[4];        // (vpOriginX, vpOriginY, vpWidth, vpHeight)
     int32_t vp_clamp[4];     // (minX, minY, maxX, maxY)
     float ao_params[4];      // (radiusWorld, biasCos, strength, minAoFloor)
-    float blur_and_mode[4];  // (invVpW, invVpH, depthEdgeScale, debugMode)
-    float sscs_params[4];    // (sscsEnabled, sscsStrength, tintStrength, aerialMode: 0=off, 1=Hob/neutral, 2=DarkFilm)
+    float blur_and_mode[4];        // (invVpW, invVpH, depthEdgeScale, debugMode)
+    float sscs_params[4];          // (sscsEnabled, sscsStrength, tintStrength, aerialMode: 0=off, 1=Hob/neutral, 2=DarkFilm)
+    float sscs_key_and_range[4];   // (keyDirX, keyDirY, aerialStart, invAerialSpan)
+    float aerial_fog_params[4];    // (hazeR, hazeG, hazeB, maxAerialAlpha)
 };
-static_assert(sizeof(CbAoParams) == 112, "CbAoParams must match 7 float4 HLSL registers");
+static_assert(sizeof(CbAoParams) == 144, "CbAoParams must match 9 float4 HLSL registers");
 
 struct RouteCAoRenderRequest {
     ID3D11DeviceContext* ctx = nullptr;
@@ -38,6 +40,12 @@ struct RouteCAoRenderRequest {
     bool capture_particle_depth = false;
     bool aerial_enabled = false;
     int filter_preset = 1;  // 0=OFF, 1=HOB, 2=DRK
+    float sscs_key_dir[2] = {0.42f, -0.907f};
+    bool has_sscs_key_dir = false;
+    int map_fog_mode = 0;  // Ogre::FogMode: 0=NONE, 1=EXP, 2=EXP2, 3=LINEAR
+    float map_fog_rgb[3] = {0.0f, 0.0f, 0.0f};
+    float map_fog_start = 0.0f;
+    float map_fog_end = 0.0f;
 };
 
 struct RouteCD3DStats {

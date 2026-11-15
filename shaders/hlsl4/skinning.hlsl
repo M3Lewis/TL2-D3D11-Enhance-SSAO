@@ -68,13 +68,13 @@ void PopulateViewSpaceExtras(
 {
     float3 viewNormal = normalize(mul((float3x3)viewMatrix, worldNorm));
     float3 viewPos = mul(viewMatrix, float4(blendPos.xyz, 1.0)).xyz;
-    float3 viewDir = normalize(-viewPos);
     float3 viewLightDir0 = normalize(mul((float3x3)viewMatrix, lightDir0));
 
     result.Texcoord4 = float4(saturate(diffuse.rgb * lightDiffuseColour[0].rgb), 1.0);
     result.Texcoord5 = float4(viewLightDir0, saturate(dot(worldNorm, lightDir0)));
     result.Texcoord6 = float4(viewNormal, 1.0);
-    result.Texcoord7 = float4(viewDir, 1.0);
+    // Keep unnormalized -viewPos so PS derives exact view-space dPdx/dPdy and normalized V.
+    result.Texcoord7 = float4(-viewPos, 1.0);
 }
 
 VS_OUTPUT BuildStandardSkin(int boneCount, float4 position, float3 normal, float2 uv, uint4 blendIdx, float4 blendWgt, bool isSecondary, bool isEnviro)

@@ -2,6 +2,7 @@
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#include <d3d11.h>
 
 #include <algorithm>
 #include <atomic>
@@ -12,6 +13,7 @@
 #include <exception>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 
 #include "fixed_func_manual_uniforms.h"
 #include "hlsl_cbuffer_fastpath.h"
@@ -24,17 +26,23 @@ namespace {
 // Verified RVAs for Torchlight II 2026 x64 (TimeDateStamp 0x6af5fabf / 0x6af5faa0)
 constexpr uintptr_t kRvaGetFixedFuncShaderSource = 0x352B0;
 constexpr uintptr_t kRvaSetFixedFuncParams = 0x37ED0;
+constexpr uintptr_t kRvaRenderBindSrvs = 0x179FF;
+constexpr uintptr_t kRvaRenderBindSrvsResume = 0x17A0F;
 constexpr uintptr_t kRvaSceneMgrSetPass = 0x1903C0;
 
-// Verified D3D11RenderSystem offsets
+// Verified D3D11RenderSystem / D3D11Texture offsets
+constexpr uintptr_t kRsOffDeviceContext = 0x03D0;
 constexpr uintptr_t kRsOffBoundFragmentProgram = 0x0EF8;
+constexpr uintptr_t kD3D11TexOffSrv = 0x0198;  // 408 bytes: ID3D11ShaderResourceView*
 constexpr size_t kRsVtblBindGpuProgram = 0x300 / sizeof(uintptr_t);            // 96
 constexpr size_t kRsVtblBindGpuProgramParameters = 0x308 / sizeof(uintptr_t);  // 97
 
-// Verified GpuProgram vtable offsets (from Ogre::SceneManager::_setPass & sub_180031180)
+// Verified Ogre::Resource / GpuProgram vtable offsets (decompiled.c L19310-19311 & sub_180031180)
 constexpr size_t kGpuProgVtblLoad = 120 / sizeof(uintptr_t);               // 15
 constexpr size_t kGpuProgVtblBindingDelegate = 424 / sizeof(uintptr_t);    // 53
 constexpr size_t kGpuProgVtblCreateParameters = 440 / sizeof(uintptr_t);   // 55
+constexpr size_t kResVtblLoad = 184 / sizeof(uintptr_t);                   // 23
+constexpr size_t kResVtblIsLoaded = 216 / sizeof(uintptr_t);               // 27
 
 // Verified SceneManager offset (+72 -> mDestRenderSystem, +17457 -> mSuppressRenderStateChanges)
 constexpr uintptr_t kSmOffDestRenderSystem = 72;
@@ -46,6 +54,8 @@ constexpr uint8_t kExpectedGetShaderSource[14] = {
     0x48, 0x8B, 0xC4, 0x48, 0x89, 0x58, 0x08, 0x48, 0x89, 0x50, 0x10, 0x55, 0x56, 0x57};
 constexpr uint8_t kExpectedSetFfParams[14] = {
     0x48, 0x8B, 0xC4, 0x48, 0x89, 0x58, 0x18, 0x55, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55};
+constexpr uint8_t kExpectedRenderBindSrvs[16] = {
+    0x49, 0x8B, 0x8F, 0xD0, 0x03, 0x00, 0x00, 0x48, 0x8B, 0x01, 0x45, 0x33, 0xC9, 0x45, 0x33, 0xC0};
 
 // Ogre ABI compatible POD layouts (MSVC x64 /MD)
 struct OgreSharedPtr {
@@ -153,6 +163,20 @@ using TusGetStringFn = const std::string&(__fastcall*)(const void* tus);
 using TusGetMatrixFn = const OgreMatrix4Raw&(__fastcall*)(const void* tus);
 using TusGetBlendModeFn = const OgreLayerBlendModeExRaw&(__fastcall*)(const void* tus);
 
+using RgmExistsAnyFn = bool(__fastcall*)(void* rgm, const std::string& filename);
+using RgmFindGroupFn = const std::string&(__fastcall*)(void* rgm, const std::string& filename);
+using TexMgrLoadFn = OgreSharedPtr*(__fastcall*)(
+    void* tex_mgr,
+    OgreSharedPtr* out_sp,
+    const std::string& name,
+    const std::string& group,
+    int tex_type,
+    int num_mipmaps,
+    float gamma,
+    bool is_alpha,
+    int desired_format,
+    bool hw_gamma_read);
+
 struct OgreApiTable {
     GetSingletonPtrFn hl_mgr_singleton = nullptr;
     GetSingletonPtrFn gpu_mgr_singleton = nullptr;
@@ -160,6 +184,12 @@ struct OgreApiTable {
     CreateSharedParamsFn create_shared_params = nullptr;
     GetSharedParamsFn get_shared_params = nullptr;
     AddSharedConstDefFn add_shared_const_def = nullptr;
+
+    void** rgm_singleton_ptr = nullptr;
+    void** tex_mgr_singleton_ptr = nullptr;
+    RgmExistsAnyFn rgm_exists_any = nullptr;
+    RgmFindGroupFn rgm_find_group = nullptr;
+    TexMgrLoadFn tex_mgr_load = nullptr;
 
     PassGetStringFn pass_get_name = nullptr;
     PassGetBoolFn pass_has_vp = nullptr;
@@ -212,10 +242,31 @@ Phase3LogFn g_log = nullptr;
 Detour64 g_detour_set_pass;
 Detour64 g_detour_get_shader_src;
 Detour64 g_detour_set_ff_params;
+RawPatch64 g_patch_render_bind_srvs;
 
 SceneMgrSetPassFn g_orig_set_pass = nullptr;
 GetFfShaderSourceFn g_orig_get_shader_src = nullptr;
 SetFfProgramsParamsFn g_orig_set_ff_params = nullptr;
+
+struct CompanionEntry {
+    OgreSharedPtr norm_sp{};
+    OgreSharedPtr spec_sp{};
+    bool has_norm = false;
+    bool has_spec = false;
+};
+
+struct ActiveCompanionBinding {
+    uintptr_t rs = 0;
+    ID3D11ShaderResourceView* srvs[2] = {nullptr, nullptr};
+    bool valid = false;
+};
+
+std::unordered_map<std::string, CompanionEntry> g_companion_cache;
+SRWLOCK g_companion_lock = SRWLOCK_INIT;
+ActiveCompanionBinding g_active_companion{};
+std::atomic<uint64_t> g_companion_norm_hits{0};
+std::atomic<uint64_t> g_companion_spec_hits{0};
+std::atomic<uint64_t> g_companion_draw_binds{0};
 
 OgreSharedPtr g_shared_per_frame_sp{};
 bool g_shared_params_init_done = false;
@@ -951,6 +1002,10 @@ PassArchetype ClassifyPass(
                     }
                 }
             }
+            out_flags2[0] = 0.0f;
+            out_flags2[1] = 0.0f;
+            out_flags2[2] = 0.0f;
+            out_flags2[3] = 0.0f;
             return has_alpha_reject ? PassArchetype::SkinnedDiffAlpha : PassArchetype::SkinnedDiffOpaque;
         }
         *out_reason = SkipReason::OtherExplicitVp;
@@ -1042,7 +1097,10 @@ void ApplyPassFogAndAlphaToExplicitPs(
 
     flags[2] = static_cast<float>(fog_mode);
     WriteExplicitPsNamedFloat4(ps_params, "p3Flags", flags);
-    if (arch == PassArchetype::DiffPassOpaque || arch == PassArchetype::DiffPassAlpha) {
+    if (arch == PassArchetype::DiffPassOpaque ||
+        arch == PassArchetype::DiffPassAlpha ||
+        arch == PassArchetype::SkinnedDiffOpaque ||
+        arch == PassArchetype::SkinnedDiffAlpha) {
         WriteExplicitPsNamedFloat4(ps_params, "p3Flags2", flags2);
     }
 
@@ -1108,6 +1166,250 @@ void RecordBindStat(PassArchetype arch) {
     }
 }
 
+bool IsEligibleCompanionSourceName(std::string_view lower_name) {
+    if (lower_name.empty()) {
+        return false;
+    }
+    const size_t dot = lower_name.rfind('.');
+    const size_t slash = lower_name.rfind('/');
+    const std::string_view no_ext = (dot != std::string_view::npos && (slash == std::string_view::npos || dot > slash))
+                                        ? lower_name.substr(0, dot)
+                                        : lower_name;
+    const size_t base_start = (slash == std::string_view::npos) ? 0 : (slash + 1);
+    const std::string_view base = no_ext.substr(base_start);
+    if (base.empty()) {
+        return false;
+    }
+    static constexpr const char* kSkipTags[] = {
+        "_glow", "_illum", "_spec", "_mask", "_shadow", "_fog", "_alphatop", "_tl2n", "_tl2s", "_norm", "_nrm",
+    };
+    for (const char* tag : kSkipTags) {
+        if (base.find(tag) != std::string_view::npos) {
+            return false;
+        }
+    }
+    if (base == "black" || base == "white" || base == "gradient" || base == "alphatop" ||
+        base == "fogbank" || base == "fogbankmask" || base == "noise" || base == "alpha" ||
+        base.rfind("alpha_", 0) == 0) {
+        return false;
+    }
+    static constexpr const char* kSkipDirs[] = {
+        "/ui/", "/particles/", "/townsplash/", "/paperdoll/", "/cursors/", "/fonts/", "/icons/", "/sky/",
+    };
+    for (const char* dir : kSkipDirs) {
+        if (lower_name.find(dir) != std::string_view::npos) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool TryLoadOgreCompanionTexture(const std::string& tex_name, OgreSharedPtr* out_sp) {
+    if (!out_sp || !g_api.rgm_singleton_ptr || !*g_api.rgm_singleton_ptr ||
+        !g_api.tex_mgr_singleton_ptr || !*g_api.tex_mgr_singleton_ptr ||
+        !g_api.rgm_exists_any || !g_api.rgm_find_group || !g_api.tex_mgr_load) {
+        return false;
+    }
+    void* rgm = *g_api.rgm_singleton_ptr;
+    void* tex_mgr = *g_api.tex_mgr_singleton_ptr;
+    try {
+        if (!g_api.rgm_exists_any(rgm, tex_name)) {
+            return false;
+        }
+        const std::string& group = g_api.rgm_find_group(rgm, tex_name);
+        OgreSharedPtr loaded{};
+        g_api.tex_mgr_load(tex_mgr, &loaded, tex_name, group, kTexType2D, -1, 1.0f, false, 0, false);
+        if (!loaded.rep) {
+            return false;
+        }
+        *out_sp = loaded;
+        return true;
+    } catch (const std::exception&) {
+        return false;
+    } catch (...) {
+        return false;
+    }
+}
+
+ID3D11ShaderResourceView* ExtractD3D11TextureSrv(const OgreSharedPtr& sp) {
+    if (!sp.rep) {
+        return nullptr;
+    }
+    auto* vtbl = *reinterpret_cast<uintptr_t**>(sp.rep);
+    if (!vtbl) {
+        return nullptr;
+    }
+    using IsLoadedFn = bool(__fastcall*)(void*);
+    using LoadFn = void(__fastcall*)(void*, bool);
+    if (!reinterpret_cast<IsLoadedFn>(vtbl[kResVtblIsLoaded])(sp.rep)) {
+        try {
+            reinterpret_cast<LoadFn>(vtbl[kResVtblLoad])(sp.rep, false);
+        } catch (...) {
+            return nullptr;
+        }
+    }
+    return *reinterpret_cast<ID3D11ShaderResourceView* const*>(
+        reinterpret_cast<const uint8_t*>(sp.rep) + kD3D11TexOffSrv);
+}
+
+void ResolveCompanionMapsForPass(
+    uintptr_t rs,
+    const void* pass,
+    PassArchetype arch,
+    float flags2[4],
+    ActiveCompanionBinding* out_comp) {
+    flags2[2] = 0.0f;
+    flags2[3] = 0.0f;
+    *out_comp = {};
+
+    const bool supports_companion =
+        (arch == PassArchetype::DiffPassOpaque || arch == PassArchetype::DiffPassAlpha ||
+         arch == PassArchetype::SkinnedDiffOpaque || arch == PassArchetype::SkinnedDiffAlpha);
+    if (!supports_companion || !pass || !g_api.pass_get_tus || !g_api.tus_get_texture_name) {
+        return;
+    }
+    const void* tus0 = g_api.pass_get_tus(pass, 0);
+    if (!tus0 || (g_api.tus_is_blank && g_api.tus_is_blank(tus0)) ||
+        (g_api.tus_get_num_frames && g_api.tus_get_num_frames(tus0) > 1)) {
+        return;
+    }
+
+    const std::string& raw_name = g_api.tus_get_texture_name(tus0);
+    if (raw_name.empty()) {
+        return;
+    }
+
+    std::string norm_key = raw_name;
+    for (char& ch : norm_key) {
+        if (ch == '\\') {
+            ch = '/';
+        } else {
+            ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+        }
+    }
+
+    OgreSharedPtr norm_sp{};
+    OgreSharedPtr spec_sp{};
+    bool found_in_cache = false;
+
+    ::AcquireSRWLockShared(&g_companion_lock);
+    auto it = g_companion_cache.find(norm_key);
+    if (it != g_companion_cache.end()) {
+        norm_sp = it->second.norm_sp;
+        spec_sp = it->second.spec_sp;
+        found_in_cache = true;
+    }
+    ::ReleaseSRWLockShared(&g_companion_lock);
+
+    if (!found_in_cache) {
+        CompanionEntry entry{};
+        if (IsEligibleCompanionSourceName(norm_key)) {
+            std::string canonical_orig = raw_name;
+            for (char& ch : canonical_orig) {
+                if (ch == '\\') {
+                    ch = '/';
+                }
+            }
+            const size_t dot = canonical_orig.rfind('.');
+            const size_t slash = canonical_orig.rfind('/');
+            const std::string stem = (dot != std::string::npos && (slash == std::string::npos || dot > slash))
+                                         ? canonical_orig.substr(0, dot)
+                                         : canonical_orig;
+            if (!stem.empty()) {
+                entry.has_norm = TryLoadOgreCompanionTexture(stem + "_tl2n.dds", &entry.norm_sp);
+                entry.has_spec = TryLoadOgreCompanionTexture(stem + "_tl2s.dds", &entry.spec_sp);
+            }
+        }
+        ::AcquireSRWLockExclusive(&g_companion_lock);
+        auto [ins_it, inserted] = g_companion_cache.emplace(norm_key, entry);
+        if (!inserted) {
+            ReleaseOgreSharedPtr(entry.norm_sp);
+            ReleaseOgreSharedPtr(entry.spec_sp);
+        }
+        norm_sp = ins_it->second.norm_sp;
+        spec_sp = ins_it->second.spec_sp;
+        ::ReleaseSRWLockExclusive(&g_companion_lock);
+    }
+
+    ID3D11ShaderResourceView* norm_srv = norm_sp.rep ? ExtractD3D11TextureSrv(norm_sp) : nullptr;
+    ID3D11ShaderResourceView* spec_srv = spec_sp.rep ? ExtractD3D11TextureSrv(spec_sp) : nullptr;
+    if (norm_srv) {
+        flags2[2] = 1.0f;
+        g_companion_norm_hits.fetch_add(1, std::memory_order_relaxed);
+    }
+    if (spec_srv) {
+        flags2[3] = 1.0f;
+        g_companion_spec_hits.fetch_add(1, std::memory_order_relaxed);
+    }
+    if (norm_srv || spec_srv) {
+        out_comp->rs = rs;
+        out_comp->srvs[0] = norm_srv;
+        out_comp->srvs[1] = spec_srv;
+        out_comp->valid = true;
+    }
+}
+
+void __fastcall BindActiveCompanionSrvs(uintptr_t rs) {
+    if (!g_active_companion.valid || rs != g_active_companion.rs) {
+        return;
+    }
+    auto* ctx = *reinterpret_cast<ID3D11DeviceContext* const*>(rs + kRsOffDeviceContext);
+    if (!ctx) {
+        return;
+    }
+    ctx->PSSetShaderResources(3, 2, g_active_companion.srvs);
+    g_companion_draw_binds.fetch_add(1, std::memory_order_relaxed);
+}
+
+void AppendAbsJmpBytes(std::vector<uint8_t>& out, uint64_t addr) {
+    const uint8_t jmp[6] = {0xFF, 0x25, 0x00, 0x00, 0x00, 0x00};
+    out.insert(out.end(), jmp, jmp + 6);
+    const auto* p = reinterpret_cast<const uint8_t*>(&addr);
+    out.insert(out.end(), p, p + 8);
+}
+
+void AppendMovRaxImm64CallBytes(std::vector<uint8_t>& out, uint64_t addr) {
+    const uint8_t rex_b8[2] = {0x48, 0xB8};
+    out.insert(out.end(), rex_b8, rex_b8 + 2);
+    const auto* p = reinterpret_cast<const uint8_t*>(&addr);
+    out.insert(out.end(), p, p + 8);
+    out.push_back(0xFF);
+    out.push_back(0xD0);
+}
+
+bool InstallRenderBindSrvsStub(uintptr_t d3d_base) {
+    std::vector<uint8_t> stub = {
+        0x48, 0x83, 0xEC, 0x20,  // sub rsp, 20h
+        0x49, 0x8B, 0xCF,        // mov rcx, r15 (D3D11RenderSystem*)
+    };
+    AppendMovRaxImm64CallBytes(stub, reinterpret_cast<uint64_t>(&BindActiveCompanionSrvs));
+    const uint8_t post_call[20] = {
+        0x48, 0x83, 0xC4, 0x20,                    // add rsp, 20h
+        0x49, 0x8B, 0x8F, 0xD0, 0x03, 0x00, 0x00,  // mov rcx, [r15+3D0h]
+        0x48, 0x8B, 0x01,                          // mov rax, [rcx]
+        0x45, 0x33, 0xC9,                          // xor r9d, r9d
+        0x45, 0x33, 0xC0,                          // xor r8d, r8d
+    };
+    stub.insert(stub.end(), post_call, post_call + sizeof(post_call));
+    AppendAbsJmpBytes(stub, d3d_base + kRvaRenderBindSrvsResume);
+    return g_patch_render_bind_srvs.InstallJumpToAllocatedStub(
+        reinterpret_cast<void*>(d3d_base + kRvaRenderBindSrvs),
+        kExpectedRenderBindSrvs,
+        sizeof(kExpectedRenderBindSrvs),
+        stub);
+}
+
+void ClearCompanionCache() {
+    g_active_companion = {};
+    ::AcquireSRWLockExclusive(&g_companion_lock);
+    for (auto& kv : g_companion_cache) {
+        ReleaseOgreSharedPtr(kv.second.norm_sp);
+        ReleaseOgreSharedPtr(kv.second.spec_sp);
+    }
+    g_companion_cache.clear();
+    ::ReleaseSRWLockExclusive(&g_companion_lock);
+}
+
 const void* __fastcall HookSceneManagerSetPass(
     uintptr_t scene_mgr,
     const void* pass,
@@ -1116,6 +1418,7 @@ const void* __fastcall HookSceneManagerSetPass(
     g_setpass_calls.fetch_add(1, std::memory_order_relaxed);
     SetActiveExplicitPsForwardTarget(0);
     g_active_binding = {};
+    g_active_companion = {};
 
     const void* used_pass = g_orig_set_pass(scene_mgr, pass, even_if_suppressed, shadow_derivation);
     if (!scene_mgr || !used_pass) {
@@ -1163,6 +1466,7 @@ const void* __fastcall HookSceneManagerSetPass(
 
     const ExplicitProgramSlot& slot = g_slots[static_cast<size_t>(arch)];
     const uintptr_t ps_params_raw = reinterpret_cast<uintptr_t>(slot.params_sp.rep);
+    ResolveCompanionMapsForPass(rs, used_pass, arch, flags2, &g_active_companion);
     ApplyPassFogAndAlphaToExplicitPs(scene_mgr, used_pass, arch, ps_params_raw, flags, flags2);
     BindExplicitPsToRenderSystem(rs, slot.delegate, &slot.params_sp);
     RecordBindStat(arch);
@@ -1214,7 +1518,7 @@ void* __fastcall HookGetFixedFuncShaderSource(
     inject += has_normal ? "float4(N,1)" : "float4(0,0,1,0)";
     inject += ";\noutput.Texcoord7=";
     inject += has_cam
-        ? "float4((dot(cameraPos.xyz,cameraPos.xyz)>1e-6?normalize(-cameraPos.xyz):float3(0,0,1)),1)"
+        ? "float4(-cameraPos.xyz,1)"
         : "float4(0,0,1,1)";
     inject += ";\n";
 
@@ -1298,6 +1602,13 @@ bool ResolveAllOgreExports(HMODULE ogre_mod) {
     ok &= ResolveExport(ogre_mod, "?getTextureTransform@TextureUnitState@Ogre@@QEBAAEBVMatrix4@2@XZ", g_api.tus_get_tex_transform);
     ok &= ResolveExport(ogre_mod, "?getColourBlendMode@TextureUnitState@Ogre@@QEBAAEBVLayerBlendModeEx@2@XZ", g_api.tus_get_colour_blend);
     ok &= ResolveExport(ogre_mod, "?getAlphaBlendMode@TextureUnitState@Ogre@@QEBAAEBVLayerBlendModeEx@2@XZ", g_api.tus_get_alpha_blend);
+
+    // Optional companion texture resolution exports (don't fail Phase 3 if absent).
+    ResolveExport(ogre_mod, "?ms_Singleton@?$Singleton@VResourceGroupManager@Ogre@@@Ogre@@1PEAVResourceGroupManager@2@EA", g_api.rgm_singleton_ptr);
+    ResolveExport(ogre_mod, "?ms_Singleton@?$Singleton@VTextureManager@Ogre@@@Ogre@@1PEAVTextureManager@2@EA", g_api.tex_mgr_singleton_ptr);
+    ResolveExport(ogre_mod, "?resourceExistsInAnyGroup@ResourceGroupManager@Ogre@@QEAA_NAEBV?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@@Z", g_api.rgm_exists_any);
+    ResolveExport(ogre_mod, "?findGroupContainingResource@ResourceGroupManager@Ogre@@QEAAAEBV?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@AEBV34@@Z", g_api.rgm_find_group);
+    ResolveExport(ogre_mod, "?load@TextureManager@Ogre@@UEAA?AVTexturePtr@2@AEBV?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@0W4TextureType@2@HM_NW4PixelFormat@2@2@Z", g_api.tex_mgr_load);
     return ok;
 }
 
@@ -1373,16 +1684,18 @@ bool InstallPhase3ScenePipeline(void* d3d11_base, void* ogre_main_base, Phase3Lo
     g_orig_set_ff_params = reinterpret_cast<SetFfProgramsParamsFn>(orig_ff_params);
 
     EnsureSharedPerFrameLighting();
+    const bool srv_hook_ok = InstallRenderBindSrvsStub(d3d_base);
     const bool ff_manual_ok = InstallFixedFuncManualUniforms(d3d11_base, g_log);
     g_hooked.store(true, std::memory_order_relaxed);
     if (g_log) {
         g_log(
-            "[RouteB][Phase3] Scene pipeline installed (diff=%d skin=%d light=%d rim=%d ffManual=%d)",
+            "[RouteB][Phase3] Scene pipeline installed (diff=%d skin=%d light=%d rim=%d ffManual=%d normSpecSrv=%d)",
             g_toggles.diff_pass ? 1 : 0,
             g_toggles.skinned_diff ? 1 : 0,
             g_toggles.light_pass ? 1 : 0,
             g_toggles.rim_lit ? 1 : 0,
-            ff_manual_ok ? 1 : 0);
+            ff_manual_ok ? 1 : 0,
+            srv_hook_ok ? 1 : 0);
     }
     return true;
 }
@@ -1393,6 +1706,8 @@ void RemovePhase3ScenePipeline() {
     SetActiveExplicitPsForwardTarget(0);
     g_active_binding = {};
 
+    g_patch_render_bind_srvs.Remove();
+    ClearCompanionCache();
     RemoveFixedFuncManualUniforms();
     g_detour_set_ff_params.Remove();
     g_detour_get_shader_src.Remove();
@@ -1464,6 +1779,11 @@ void LogPhase3PassDiagnostics(Phase3LogFn logger) {
             static_cast<unsigned long long>(skip_entries[i].hits));
     }
     logger("[RouteB][Phase3][SkipSummary] %s", summary_buf);
+    logger("[RouteB][Phase3][Companion] cache=%zu normHits=%llu specHits=%llu drawBinds=%llu",
+           g_companion_cache.size(),
+           static_cast<unsigned long long>(g_companion_norm_hits.load(std::memory_order_relaxed)),
+           static_cast<unsigned long long>(g_companion_spec_hits.load(std::memory_order_relaxed)),
+           static_cast<unsigned long long>(g_companion_draw_binds.load(std::memory_order_relaxed)));
 
     struct Row {
         uint64_t hits = 0;

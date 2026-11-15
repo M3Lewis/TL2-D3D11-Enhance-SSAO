@@ -49,6 +49,15 @@ using PassSetNameFn = void(__fastcall*)(void* pass, const std::string& name);
 using PassSetAlphaRejectFn = void(__fastcall*)(void* pass, int func, uint8_t val, bool alpha_to_cov);
 using PassSetVpFn = void(__fastcall*)(void* pass, const std::string& name, bool reset_params);
 using PassCreateTusFn = void*(__fastcall*)(void* pass);
+using TusSetTexNameFn = void(__fastcall*)(void* tus, const std::string& name, int tex_type);
+using SmCreateMoFn = void*(__fastcall*)(void* sm, const std::string& name);
+using SmGetRootNodeFn = void*(__fastcall*)(void* sm);
+using SnAttachObjFn = void(__fastcall*)(void* node, void* obj);
+using MoBeginFn = void(__fastcall*)(void* mo, const std::string& mat_name, int op_type, const std::string& group_name);
+using MoPosFn = void(__fastcall*)(void* mo, float x, float y, float z);
+using MoNormFn = void(__fastcall*)(void* mo, float x, float y, float z);
+using MoTc2Fn = void(__fastcall*)(void* mo, float u, float v);
+using MoEndFn = void*(__fastcall*)(void* mo);
 using SmSetPassFn = const void*(__fastcall*)(void* sm, const void* pass, bool even_if_suppressed, bool shadow_deriv);
 
 bool ExercisePhase3PassLifecycle(HMODULE ogre, void* root, void* win) {
@@ -63,6 +72,15 @@ bool ExercisePhase3PassLifecycle(HMODULE ogre, void* root, void* win) {
     PassSetAlphaRejectFn pass_set_alpha = nullptr;
     PassSetVpFn pass_set_vp = nullptr;
     PassCreateTusFn pass_create_tus = nullptr;
+    TusSetTexNameFn tus_set_tex_name = nullptr;
+    SmCreateMoFn sm_create_mo = nullptr;
+    SmGetRootNodeFn sm_get_root_node = nullptr;
+    SnAttachObjFn sn_attach_obj = nullptr;
+    MoBeginFn mo_begin = nullptr;
+    MoPosFn mo_pos = nullptr;
+    MoNormFn mo_norm = nullptr;
+    MoTc2Fn mo_tc2 = nullptr;
+    MoEndFn mo_end = nullptr;
     SmSetPassFn sm_set_pass = nullptr;
     void** mat_mgr_ptr = nullptr;
 
@@ -78,6 +96,15 @@ bool ExercisePhase3PassLifecycle(HMODULE ogre, void* root, void* win) {
     ok &= Resolve(ogre, "?setAlphaRejectSettings@Pass@Ogre@@QEAAXW4CompareFunction@2@E_N@Z", pass_set_alpha);
     ok &= Resolve(ogre, "?setVertexProgram@Pass@Ogre@@QEAAXAEBV?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@_N@Z", pass_set_vp);
     ok &= Resolve(ogre, "?createTextureUnitState@Pass@Ogre@@QEAAPEAVTextureUnitState@2@XZ", pass_create_tus);
+    ok &= Resolve(ogre, "?setTextureName@TextureUnitState@Ogre@@QEAAXAEBV?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@W4TextureType@2@@Z", tus_set_tex_name);
+    ok &= Resolve(ogre, "?createManualObject@SceneManager@Ogre@@UEAAPEAVManualObject@2@AEBV?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@@Z", sm_create_mo);
+    ok &= Resolve(ogre, "?getRootSceneNode@SceneManager@Ogre@@UEAAPEAVSceneNode@2@XZ", sm_get_root_node);
+    ok &= Resolve(ogre, "?attachObject@SceneNode@Ogre@@UEAAXPEAVMovableObject@2@@Z", sn_attach_obj);
+    ok &= Resolve(ogre, "?begin@ManualObject@Ogre@@UEAAXAEBV?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@W4OperationType@RenderOperation@2@0@Z", mo_begin);
+    ok &= Resolve(ogre, "?position@ManualObject@Ogre@@UEAAXMMM@Z", mo_pos);
+    ok &= Resolve(ogre, "?normal@ManualObject@Ogre@@UEAAXMMM@Z", mo_norm);
+    ok &= Resolve(ogre, "?textureCoord@ManualObject@Ogre@@UEAAXMM@Z", mo_tc2);
+    ok &= Resolve(ogre, "?end@ManualObject@Ogre@@UEAAPEAVManualObjectSection@12@XZ", mo_end);
     ok &= Resolve(ogre, "?_setPass@SceneManager@Ogre@@UEAAPEBVPass@2@PEBV32@_N1@Z", sm_set_pass);
     ok &= Resolve(ogre, "?ms_Singleton@?$Singleton@VMaterialManager@Ogre@@@Ogre@@1PEAVMaterialManager@2@EA", mat_mgr_ptr);
     if (!ok || !*mat_mgr_ptr) {
@@ -120,10 +147,29 @@ bool ExercisePhase3PassLifecycle(HMODULE ogre, void* root, void* win) {
             pass_set_vp(pass, "Ogre/HardwareSkinningOne", true);
         }
         for (int t = 0; t < spec.tus_count; ++t) {
-            pass_create_tus(pass);
+            void* tus = pass_create_tus(pass);
+            if (tus && t == 0 && std::string(spec.mat_name) == "Verify/DiffOpaque") {
+                tus_set_tex_name(tus, "FLOOR_01.dds", 2 /*TEX_TYPE_2D*/);
+            }
         }
         passes.push_back(pass);
     }
+
+    // Attach a simple textured triangle facing the camera so D3D11RenderSystem::_render executes
+    // through DiffPass_ps.hlsl and our 0x179FF companion normal/spec SRV binding hook.
+    void* mo = sm_create_mo(sm, "VerifyQuad");
+    mo_begin(mo, "Verify/DiffOpaque", 4 /*OT_TRIANGLE_LIST*/, "Shaders");
+    mo_pos(mo, -1.0f, -1.0f, -4.0f);
+    mo_norm(mo, 0.0f, 0.0f, 1.0f);
+    mo_tc2(mo, 0.0f, 1.0f);
+    mo_pos(mo, 1.0f, -1.0f, -4.0f);
+    mo_norm(mo, 0.0f, 0.0f, 1.0f);
+    mo_tc2(mo, 1.0f, 1.0f);
+    mo_pos(mo, 0.0f, 1.0f, -4.0f);
+    mo_norm(mo, 0.0f, 0.0f, 1.0f);
+    mo_tc2(mo, 0.5f, 0.0f);
+    mo_end(mo);
+    sn_attach_obj(sm_get_root_node(sm), mo);
 
     // Bind every Phase 3 explicit PS archetype repeatedly across frames to catch any
     // SharedPtr<GpuProgramParameters> premature destruction or constant buffer corruption.
@@ -236,6 +282,22 @@ int main(int argc, char** argv) {
         void* rgm = *rgm_singleton_ptr;
         add_res_loc(rgm, "programs/", "FileSystem", "Shaders", true);
         init_res_grp(rgm, "Shaders");
+        if (is_d3d11) {
+            char exe_path[MAX_PATH] = {};
+            ::GetModuleFileNameA(nullptr, exe_path, MAX_PATH);
+            std::string exe_dir(exe_path);
+            const size_t slash = exe_dir.find_last_of("\\/");
+            if (slash != std::string::npos) {
+                exe_dir.resize(slash);
+            }
+            const std::string test_tex_dir = exe_dir + R"(\test_norm_mod\MEDIA\LEVELSETS\CATACOMB)";
+            if (::GetFileAttributesA(test_tex_dir.c_str()) != INVALID_FILE_ATTRIBUTES) {
+                add_res_loc(rgm, test_tex_dir, "FileSystem", "General", true);
+                init_res_grp(rgm, "General");
+            } else {
+                std::printf("[WARN] missing test_tex_dir: %s\n", test_tex_dir.c_str());
+            }
+        }
         if (is_d3d11 && !ExercisePhase3PassLifecycle(ogre, root, win)) {
             exit_code = 5;
         }
@@ -255,7 +317,14 @@ int main(int argc, char** argv) {
             std::printf("[FAIL] d3d11 toast diag log missing drawn=1 in TL2_RouteB_D3D11.log\n");
             return 6;
         }
-        std::printf("[PASS] d3d11 toast overlay rendered cleanly (drawn=1) via swapBuffers hook!\n");
+        if (route_log.find("normSpecSrv=1") == std::string::npos ||
+            route_log.find("normHits=0") != std::string::npos ||
+            route_log.find("drawBinds=0") != std::string::npos ||
+            route_log.find("[RouteB][Phase3][Companion]") == std::string::npos) {
+            std::printf("[FAIL] d3d11 companion normal/spec SRV binding did not activate in TL2_RouteB_D3D11.log\n");
+            return 7;
+        }
+        std::printf("[PASS] d3d11 toast overlay + companion _tl2n/_tl2s D3D11 draw binding verified cleanly!\n");
     }
     return exit_code;
 }

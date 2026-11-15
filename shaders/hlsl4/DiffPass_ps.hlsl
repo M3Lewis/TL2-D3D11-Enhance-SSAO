@@ -20,6 +20,8 @@ Texture2D    Texture1 : register(t1);
 SamplerState Sampler1 : register(s1);
 Texture2D    Texture2 : register(t2);
 SamplerState Sampler2 : register(s2);
+Texture2D    Texture3 : register(t3); // Optional _tl2n.dds (DXT5nm: A = nx, G = ny)
+Texture2D    Texture4 : register(t4); // Optional _tl2s.dds (DXT1: R = smoothness, G = metal, B = cavityAO)
 
 float4x4 View;
 float4 BaseLightAmbient;
@@ -45,6 +47,8 @@ float4 p3Flags = float4(0.0, 1.0, 0.0, 0.0);
 // p3Flags2:
 //   x = stage2 blend op (0=none, 1=modulate, 2=add, 3=alpha_blend, 4=modulate_x2, 5=modulate_x4)
 //   y = stage2 projective flag (0=planar .xy, 1=projective .xy/.w)
+//   z = companion _tl2n normal map bound in t3 (0/1)
+//   w = companion _tl2s spec/cavity map bound in t4 (0/1)
 float4 p3Flags2 = float4(0.0, 0.0, 0.0, 0.0);
 
 float2 ResolveFixedFuncUv(float4 rawUv, bool isProjective)
@@ -233,6 +237,28 @@ SurfaceDetail AnalyzeSurfaceDetail(
     return sd;
 }
 
+float3 PerturbNormalFromMap(float3 N, float3 V_unnorm, float2 uv, float3 tsNormal, float bumpScale)
+{
+    float3 dp1 = ddx(-V_unnorm);
+    float3 dp2 = ddy(-V_unnorm);
+    float2 duv1 = ddx(uv);
+    float2 duv2 = ddy(uv);
+
+    float3 dp2perp = cross(N, dp2);
+    float3 dp1perp = cross(dp1, N);
+    float3 T = dp2perp * duv1.x + dp1perp * duv2.x;
+    float3 B = dp2perp * duv1.y + dp1perp * duv2.y;
+
+    float maxSq = max(dot(T, T), dot(B, B));
+    if (maxSq < 1e-10)
+        return N;
+
+    float invmax = rsqrt(maxSq);
+    float3x3 tbn = float3x3(T * invmax, B * invmax, N);
+    float3 scaled = float3(tsNormal.x * bumpScale, tsNormal.y * bumpScale, max(tsNormal.z, 0.05));
+    return normalize(mul(scaled, tbn));
+}
+
 float4 ShadeDiffPass(VS_OUTPUT input, bool doAlphaReject)
 {
     float2 duvX = ddx(input.Texcoord0.xy);
@@ -268,7 +294,49 @@ float4 ShadeDiffPass(VS_OUTPUT input, bool doAlphaReject)
         }
     }
 
-    SurfaceDetail sd = AnalyzeSurfaceDetail(input.Texcoord0.xy, duvX, duvY, albedo.rgb, N, hasNormal, detailWeight);
+    bool hasNormMap = (p3Flags2.z > 0.5);
+    bool hasSpecMap = (p3Flags2.w > 0.5);
+
+    SurfaceDetail sd;
+    if (hasNormMap || hasSpecMap)
+    {
+        float uvFoot = max(length(duvX), length(duvY));
+        sd.albedo = albedo.rgb;
+        sd.microNormal = N;
+        sd.detailFade = (1.0 - smoothstep(0.014, 0.052, uvFoot)) * detailWeight;
+        sd.reliefFade = (1.0 - smoothstep(0.018, 0.068, uvFoot)) * detailWeight;
+
+        if (hasSpecMap)
+        {
+            float3 spSample = Texture4.SampleGrad(Sampler0, input.Texcoord0.xy, duvX, duvY).rgb;
+            sd.smoothness = saturate(spSample.r);
+            sd.metalMask = saturate(spSample.g);
+            float cavityAO = saturate(spSample.b);
+            sd.albedo = saturate(albedo.rgb * lerp(1.0, lerp(0.76, 1.06, cavityAO), sd.detailFade));
+        }
+        else
+        {
+            const float3 lumaW3 = float3(0.299, 0.587, 0.114);
+            float maxC3 = max(albedo.r, max(albedo.g, albedo.b));
+            float minC3 = min(albedo.r, min(albedo.g, albedo.b));
+            float sat3 = (maxC3 > 1e-4) ? ((maxC3 - minC3) / maxC3) : 0.0;
+            float lum3 = dot(albedo.rgb, lumaW3);
+            sd.smoothness = saturate(0.24 * smoothstep(0.08, 0.34, lum3));
+            sd.metalMask = (1.0 - smoothstep(0.14, 0.34, sat3)) * smoothstep(0.18, 0.32, lum3) * (1.0 - smoothstep(0.68, 0.84, lum3));
+        }
+
+        if (hasNormMap && hasNormal && sd.reliefFade > 0.01)
+        {
+            float4 nSample = Texture3.SampleGrad(Sampler0, input.Texcoord0.xy, duvX, duvY);
+            float2 xy = float2(nSample.a, nSample.g) * 2.0 - 1.0;
+            float nz = sqrt(saturate(1.0 - dot(xy, xy)));
+            sd.microNormal = PerturbNormalFromMap(N, input.Texcoord7.xyz, input.Texcoord0.xy, float3(xy, nz), 1.15 * sd.reliefFade);
+        }
+    }
+    else
+    {
+        sd = AnalyzeSurfaceDetail(input.Texcoord0.xy, duvX, duvY, albedo.rgb, N, hasNormal, detailWeight);
+    }
 
     float3 litEnv = input.Color.rgb;
     float3 specAdd = float3(0.0, 0.0, 0.0);

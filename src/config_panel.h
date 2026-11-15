@@ -23,7 +23,10 @@ struct VisualConfig {
     bool p0_sscs_enabled = true;
     bool p1_soft_particles = true;
     bool p2_aerial_vignette = true;
+    bool p2_ssr_enabled = true;
+    bool p2_bloom_pyramid = true;
     int p2_filter_preset = 1;  // 0=Off, 1=Hob, 2=Dark Film
+    int p2_lut_preset = 0;     // 0=Off, 1=CinemaTealOrange, 2=ColdNordic, 3=CustomCube
 
     bool operator==(const VisualConfig& other) const = default;
 };

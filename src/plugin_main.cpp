@@ -560,7 +560,7 @@ extern "C" __declspec(dllexport) int RouteB_RunConfigPanelSelfTest() {
         return 1;
     }
 
-    // Mutate all toggles + filter, save into custom preset 1 (index 0).
+    // Mutate all toggles + filter + LUT, save into custom preset 1 (index 0).
     routeb::SetPhase3RuntimeEnhanceEnabled(true);
     routeb::SetF11VisualEnhanceEnabled(false);
     routeb::SetP0RimLitEnhanceEnabled(true);
@@ -568,7 +568,10 @@ extern "C" __declspec(dllexport) int RouteB_RunConfigPanelSelfTest() {
     routeb::SetRouteCSscsRuntimeEnabled(false);
     routeb::SetP1SoftParticlesEnabled(true);
     routeb::SetP2AerialVignetteEnabled(false);
+    routeb::SetP2SsrEnabled(false);
+    routeb::SetP2BloomPyramidEnabled(true);
     routeb::SetP2FilterPreset(2);
+    routeb::SetP2LutPreset(1);
     if (!routeb::SaveCustomPreset(0)) {
         return 2;
     }
@@ -580,7 +583,8 @@ extern "C" __declspec(dllexport) int RouteB_RunConfigPanelSelfTest() {
     const routeb::VisualConfig vanilla = routeb::CaptureVisualConfigFromEngine();
     if (vanilla.phase3_enhance || vanilla.af_point_enhance || vanilla.p0_rimlit_enhance ||
         vanilla.ao_enabled || vanilla.p0_sscs_enabled || vanilla.p1_soft_particles ||
-        vanilla.p2_aerial_vignette || vanilla.p2_filter_preset != 0) {
+        vanilla.p2_aerial_vignette || vanilla.p2_ssr_enabled || vanilla.p2_bloom_pyramid ||
+        vanilla.p2_filter_preset != 0 || vanilla.p2_lut_preset != 0) {
         return 4;
     }
 
@@ -591,7 +595,8 @@ extern "C" __declspec(dllexport) int RouteB_RunConfigPanelSelfTest() {
     const routeb::VisualConfig applied = routeb::CaptureVisualConfigFromEngine();
     if (!applied.phase3_enhance || applied.af_point_enhance || !applied.p0_rimlit_enhance ||
         applied.ao_enabled || applied.p0_sscs_enabled || !applied.p1_soft_particles ||
-        applied.p2_aerial_vignette || applied.p2_filter_preset != 2) {
+        applied.p2_aerial_vignette || applied.p2_ssr_enabled || !applied.p2_bloom_pyramid ||
+        applied.p2_filter_preset != 2 || applied.p2_lut_preset != 1) {
         return 6;
     }
 

@@ -333,6 +333,7 @@ std::atomic<bool> g_sampler_hooked{false};
 std::atomic<bool> g_runtime_enhance_enabled{true};
 std::atomic<bool> g_f11_enhance_enabled{true};
 std::atomic<bool> g_p0_rimlit_enhance_enabled{true};
+std::atomic<bool> g_frame_water_pass_hint{false};
 std::atomic<int> g_p2_filter_preset{1};
 std::atomic<uint64_t> g_p2_bloom_last_tick_ms{0};
 std::atomic<uint64_t> g_p2_fxaa_last_tick_ms{0};
@@ -607,11 +608,12 @@ void MaybeApplyP2FilterUniformsToPass(const void* pass) {
     const bool bloom_recent = (bloom_ms != 0 && (now_ms - bloom_ms) < 250ULL);
     const float apply_tonemap = (is_bright_bloom || is_bloom_blend || !bloom_recent) ? 1.0f : 0.0f;
     const float apply_vignette = (is_fxaa && IsP2AerialVignetteEnabled()) ? 1.0f : 0.0f;
+    const float bloom_pyramid_active = IsP2BloomPyramidEnabled() ? 1.0f : 0.0f;
     const float params[4] = {
         static_cast<float>(g_p2_filter_preset.load(std::memory_order_relaxed)),
         apply_tonemap,
         apply_vignette,
-        0.0f,
+        bloom_pyramid_active,
     };
 
     OgreSharedPtr fp_params_sp{};
@@ -640,6 +642,53 @@ bool ContainsAsciiInsensitive(std::string_view haystack, std::string_view needle
             return std::tolower(static_cast<unsigned char>(a)) == std::tolower(static_cast<unsigned char>(b));
         });
     return it != haystack.end();
+}
+
+bool HasWaterKeyword(std::string_view tex_name) {
+    if (tex_name.empty()) {
+        return false;
+    }
+    if (ContainsAsciiInsensitive(tex_name, "lava") ||
+        ContainsAsciiInsensitive(tex_name, "magma") ||
+        ContainsAsciiInsensitive(tex_name, "fire") ||
+        ContainsAsciiInsensitive(tex_name, "smoke") ||
+        ContainsAsciiInsensitive(tex_name, "blood") ||
+        ContainsAsciiInsensitive(tex_name, "icon") ||
+        ContainsAsciiInsensitive(tex_name, "ui")) {
+        return false;
+    }
+    return ContainsAsciiInsensitive(tex_name, "water") ||
+           ContainsAsciiInsensitive(tex_name, "river") ||
+           ContainsAsciiInsensitive(tex_name, "pond") ||
+           ContainsAsciiInsensitive(tex_name, "lake") ||
+           ContainsAsciiInsensitive(tex_name, "pool") ||
+           ContainsAsciiInsensitive(tex_name, "puddle") ||
+           ContainsAsciiInsensitive(tex_name, "stream") ||
+           ContainsAsciiInsensitive(tex_name, "fountain") ||
+           ContainsAsciiInsensitive(tex_name, "marsh") ||
+           ContainsAsciiInsensitive(tex_name, "swamp");
+}
+
+void MaybeDetectWaterPassHint(const void* pass) {
+    if (!pass || g_frame_water_pass_hint.load(std::memory_order_relaxed) || !IsP2SsrEnabled()) {
+        return;
+    }
+    if (!g_api.pass_get_num_tus || !g_api.pass_get_tus || !g_api.tus_get_texture_name) {
+        return;
+    }
+    const uint16_t num_tus = g_api.pass_get_num_tus(pass);
+    const uint16_t max_check = (num_tus < 4) ? num_tus : 4;
+    for (uint16_t i = 0; i < max_check; ++i) {
+        const void* tus = g_api.pass_get_tus(pass, i);
+        if (!tus) {
+            continue;
+        }
+        const std::string& tex_name = g_api.tus_get_texture_name(tus);
+        if (HasWaterKeyword(tex_name)) {
+            g_frame_water_pass_hint.store(true, std::memory_order_relaxed);
+            return;
+        }
+    }
 }
 
 int MapOgreBlendOpToShader(int ogre_lbx_op) {
@@ -1701,6 +1750,7 @@ const void* __fastcall HookSceneManagerSetPass(
     bool is_ff_vs = false;
     SkipReason skip_reason = SkipReason::Matched;
     const PassArchetype arch = ClassifyPass(used_pass, flags, flags2, &is_ff_vs, &skip_reason);
+    MaybeDetectWaterPassHint(used_pass);
     RecordPassDiag(used_pass, arch, skip_reason);
     if (Phase3PassObserverFn observer = g_pass_observer.load(std::memory_order_acquire)) {
         const char* pass_name = g_api.pass_get_name ? g_api.pass_get_name(used_pass).c_str() : "";
@@ -2250,6 +2300,10 @@ bool WasP2PostShaderSeenRecently() {
         return true;
     }
     return false;
+}
+
+bool ConsumeFrameWaterPassHint() {
+    return g_frame_water_pass_hint.exchange(false, std::memory_order_relaxed);
 }
 
 void SetPhase3PassObserver(Phase3PassObserverFn observer) {

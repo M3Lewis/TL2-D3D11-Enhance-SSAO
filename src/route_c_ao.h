@@ -35,6 +35,16 @@ bool ToggleP1SoftParticlesEnabled();
 void SetP2AerialVignetteEnabled(bool enabled);
 bool IsP2AerialVignetteEnabled();
 bool ToggleP2AerialVignetteEnabled();
+void SetP2SsrEnabled(bool enabled);
+bool IsP2SsrEnabled();
+bool ToggleP2SsrEnabled();
+void SetP2BloomPyramidEnabled(bool enabled);
+bool IsP2BloomPyramidEnabled();
+bool ToggleP2BloomPyramidEnabled();
+void SetP2LutPreset(int preset);
+int GetP2LutPreset();
+const char* P2LutPresetName(int preset);
+bool IsP2CustomCubeLutLoaded();
 bool IsRouteCWorldDepthReadyForParticles();
 void TriggerRouteCToastForTest();
 

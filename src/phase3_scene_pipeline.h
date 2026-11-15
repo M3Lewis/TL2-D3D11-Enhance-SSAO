@@ -149,6 +149,7 @@ int GetP2FilterPreset();
 int CycleP2FilterPreset();
 const char* P2FilterPresetName(int preset);
 bool WasP2PostShaderSeenRecently();
+bool ConsumeFrameWaterPassHint();
 
 using Phase3PassObserverFn = void (*)(
     const char* pass_name,

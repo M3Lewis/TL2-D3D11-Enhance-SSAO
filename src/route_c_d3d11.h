@@ -20,14 +20,18 @@ struct alignas(16) CbAoParams {
     float sscs_params[4];          // (sscsEnabled, sscsStrength, tintStrength, aerialMode: 0=off, 1=Hob/neutral, 2=DarkFilm)
     float sscs_key_and_range[4];   // (keyDirX, keyDirY, aerialStart, invAerialSpan)
     float aerial_fog_params[4];    // (hazeR, hazeG, hazeB, maxAerialAlpha)
+    float view_up_and_water[4];    // (worldUpVs.xyz, waterHint)
+    float inv_view_row0[4];        // (worldXBasisVs.xyz, camPosVsToWorldOffsetX)
+    float inv_view_row2[4];        // (worldZBasisVs.xyz, camPosVsToWorldOffsetZ)
 };
-static_assert(sizeof(CbAoParams) == 144, "CbAoParams must match 9 float4 HLSL registers");
+static_assert(sizeof(CbAoParams) == 192, "CbAoParams must match 12 float4 HLSL registers");
 
 struct RouteCAoRenderRequest {
     ID3D11DeviceContext* ctx = nullptr;
     ID3D11RenderTargetView* fallback_rtv = nullptr;  // Borrowed, optional
     ID3D11DepthStencilView* fallback_dsv = nullptr;  // Borrowed, optional
     const float* proj_4x4 = nullptr;                 // Row-major Ogre::Matrix4 (16 floats)
+    const float* view_4x4 = nullptr;                 // Optional row-major Ogre::Matrix4 (16 floats)
     float near_clip = 1.0f;
     float far_clip = 100.0f;
     int vp_left = 0;
@@ -39,6 +43,10 @@ struct RouteCAoRenderRequest {
     bool sscs_enabled = true;
     bool capture_particle_depth = false;
     bool aerial_enabled = false;
+    bool ssr_enabled = false;
+    bool bloom_pyramid_enabled = false;
+    int lut_preset = 0;     // 0=OFF, 1=CinemaTealOrange, 2=ColdNordic, 3=Custom(.cube)
+    bool water_hint = false;
     int filter_preset = 1;  // 0=OFF, 1=HOB, 2=DRK
     float sscs_key_dir[2] = {0.42f, -0.907f};
     bool has_sscs_key_dir = false;
@@ -112,6 +120,7 @@ bool ExecuteRouteCToastOverlay(
 bool VerifyRouteCShadersCompile(RouteCD3DLogFn logger);
 void ShutdownRouteCD3D11Resources();
 RouteCD3DStats GetRouteCD3DStats();
+bool IsCustomCubeLutLoaded();
 
 // P1 Screen-Space Soft Particles depth sharing & b6/t7 state binding.
 struct RouteCParticleDepthSnapshot {

@@ -41,6 +41,20 @@ bool ToggleP2SsrEnabled();
 void SetP2LutPreset(int preset);
 int GetP2LutPreset();
 const char* P2LutPresetName(int preset);
+
+void SetRouteCAoStrengthPct(int pct);
+int GetRouteCAoStrengthPct();
+void SetRouteCSscsStrengthPct(int pct);
+int GetRouteCSscsStrengthPct();
+void SetP1SoftParticlesStrengthPct(int pct);
+int GetP1SoftParticlesStrengthPct();
+void SetP2AerialVignetteStrengthPct(int pct);
+int GetP2AerialVignetteStrengthPct();
+void SetP2SsrStrengthPct(int pct);
+int GetP2SsrStrengthPct();
+void SetP2LutStrengthPct(int pct);
+int GetP2LutStrengthPct();
+
 bool IsP2CustomCubeLutLoaded();
 bool IsRouteCWorldDepthReadyForParticles();
 void TriggerRouteCToastForTest();

@@ -67,8 +67,9 @@ float4 p3Flags = float4(0.0, 1.0, 0.0, 0.0);
 float4 p3Flags2 = float4(0.0, 0.0, 0.0, 0.0);
 
 // p3EnhanceFlags:
-//   x = F11 dynamic PointLight micro-normal relief + Blinn-Phong specular toggle (0/1)
-float4 p3EnhanceFlags = float4(0.0, 0.0, 0.0, 0.0);
+//   x = F11 dynamic PointLight micro-normal relief + Blinn-Phong specular scale (0..2)
+//   z = Phase 3 material clarity, micro-normal relief & directional specular scale (0..2)
+float4 p3EnhanceFlags = float4(0.0, 0.0, 1.0, 0.0);
 
 float2 ResolveFixedFuncUv(float4 rawUv, bool isProjective)
 {
@@ -144,7 +145,8 @@ SurfaceDetail AnalyzeSurfaceDetail(
     float3 centerAlbedo,
     float3 baseNormal,
     bool hasNormal,
-    float detailWeight)
+    float detailWeight,
+    float p3Scale)
 {
     SurfaceDetail sd;
     sd.albedo = centerAlbedo;
@@ -209,11 +211,11 @@ SurfaceDetail AnalyzeSurfaceDetail(
         float3 macroHF = clamp(centerAlbedo - avgMacro, -0.10, 0.10);
         float3 enhanced = saturate(
             centerAlbedo +
-            (fineHF * (0.62 * fadeFine * dxtGate) + macroHF * (0.48 * fadeMacro)) * lumHeadroom);
+            (fineHF * (0.62 * fadeFine * dxtGate) + macroHF * (0.48 * fadeMacro)) * lumHeadroom * p3Scale);
 
         float dip = max(lumFine - lumC, 0.0) * 0.40 + max(lumMacro - lumC, 0.0) * 0.85;
         float relDip = dip / max(lumMacro, 0.12);
-        float crevice = 1.0 - saturate(relDip * 0.85) * (0.28 * fadeMacro * smoothstep(0.02, 0.10, lumMacro));
+        float crevice = 1.0 - saturate(relDip * 0.85) * saturate(0.28 * fadeMacro * smoothstep(0.02, 0.10, lumMacro) * p3Scale);
 
         sd.albedo = enhanced * crevice;
         sd.detailFade = fadeFine;
@@ -232,7 +234,7 @@ SurfaceDetail AnalyzeSurfaceDetail(
                 float shapedLen = (gradLen * 2.6) / (1.0 + gradLen * 2.8);
                 tanGrad *= (shapedLen / gradLen);
             }
-            sd.microNormal = normalize(baseNormal - tanGrad);
+            sd.microNormal = normalize(baseNormal - tanGrad * p3Scale);
         }
     }
 
@@ -364,7 +366,8 @@ float4 ShadeDiffPass(VS_OUTPUT input, bool doAlphaReject)
         }
     }
 
-    SurfaceDetail sd = AnalyzeSurfaceDetail(input.Texcoord0.xy, duvX, duvY, albedo.rgb, N, hasNormal, detailWeight);
+    float p3Scale = max(p3EnhanceFlags.z, 0.0);
+    SurfaceDetail sd = AnalyzeSurfaceDetail(input.Texcoord0.xy, duvX, duvY, albedo.rgb, N, hasNormal, detailWeight, p3Scale);
 
     bool hasNormMap = (p3Flags2.z > 0.5);
     bool hasSpecMap = (p3Flags2.w > 0.5);
@@ -381,15 +384,15 @@ float4 ShadeDiffPass(VS_OUTPUT input, bool doAlphaReject)
             sd.metalMask = saturate(spSample.g);
             float cavityAO = saturate(spSample.b);
             // Deepen real recessed crevices without lifting flat diffuse brightness above 1.0.
-            sd.albedo = saturate(sd.albedo * lerp(1.0, lerp(0.72, 1.00, cavityAO), sd.detailFade));
+            sd.albedo = saturate(sd.albedo * lerp(1.0, lerp(0.72, 1.00, cavityAO), saturate(sd.detailFade * p3Scale)));
         }
 
-        if (hasNormMap && hasNormal && sd.reliefFade > 0.01)
+        if (hasNormMap && hasNormal && sd.reliefFade > 0.01 && p3Scale > 0.001)
         {
             float4 nSample = Texture3.SampleGrad(Sampler0, input.Texcoord0.xy, duvX, duvY);
             float2 xy = float2(nSample.a, nSample.g) * 2.0 - 1.0;
             float nz = sqrt(saturate(1.0 - dot(xy, xy)));
-            sd.microNormal = PerturbNormalFromMap(N, input.Texcoord7.xyz, input.Texcoord0.xy, float3(xy, nz), 1.45 * sd.reliefFade);
+            sd.microNormal = PerturbNormalFromMap(N, input.Texcoord7.xyz, input.Texcoord0.xy, float3(xy, nz), 1.45 * sd.reliefFade * p3Scale);
         }
     }
 
@@ -403,7 +406,7 @@ float4 ShadeDiffPass(VS_OUTPUT input, bool doAlphaReject)
 
         // Preserve original lighting feel while carving multi-scale stone/brick bevels
         float bevel = dot(Nmicro, V) - dot(N, V);
-        litEnv *= saturate(1.0 + bevel * (0.48 * sd.reliefFade));
+        litEnv *= saturate(1.0 + bevel * (0.48 * sd.reliefFade * p3Scale));
 
         float basePow = clamp((MaterialPower > 1.0) ? MaterialPower : 24.0, 14.0, 64.0);
         float specPow = lerp(basePow * 0.85, max(basePow, 52.0), max(sd.smoothness, sd.metalMask));
@@ -421,38 +424,41 @@ float4 ShadeDiffPass(VS_OUTPUT input, bool doAlphaReject)
             {
                 float3 L0 = rawL0 * rsqrt(l0LenSq);
                 float relief = dot(Nmicro, L0) - dot(N, L0);
-                litEnv *= saturate(1.0 + relief * (0.85 * sd.reliefFade));
+                litEnv *= saturate(1.0 + relief * (0.85 * sd.reliefFade * p3Scale));
 
                 float ndlRaw = dot(Nmicro, L0);
                 float3 H = normalize(L0 + V);
                 float ndh = max(dot(Nmicro, H), 0.0);
                 float termMask = saturate(ndlRaw * 2.5 + 0.15);
-                float specScalar = pow(ndh, specPow) * matScale * fresnel * termMask * detailWeight;
+                float specScalar = pow(ndh, specPow) * matScale * fresnel * termMask * detailWeight * p3Scale;
 
                 specAdd = DirectionalLight0_Diffuse.rgb * MaterialDiffuse.rgb * surfTint * specScalar;
             }
         }
 
-        if (p3EnhanceFlags.x > 0.5)
+        float afPointScale = max(p3EnhanceFlags.x, 0.0);
+        if (afPointScale > 0.01)
         {
             float3 Pview = -input.Texcoord7.xyz;
             float3 pointReliefSum = float3(0.0, 0.0, 0.0);
+            float3 pointSpecSum = float3(0.0, 0.0, 0.0);
             AccumulatePointLightRelief(
                 PointLight0_Position, PointLight0_Diffuse.rgb, PointLight0_Specular.rgb,
                 PointLight0_Range, PointLight0_Attenuation,
                 Pview, N, Nmicro, V, specPow, fresnel, matScale, surfTint,
-                sd.reliefFade, detailWeight, pointReliefSum, specAdd);
+                sd.reliefFade, detailWeight, pointReliefSum, pointSpecSum);
             AccumulatePointLightRelief(
                 PointLight1_Position, PointLight1_Diffuse.rgb, PointLight1_Specular.rgb,
                 PointLight1_Range, PointLight1_Attenuation,
                 Pview, N, Nmicro, V, specPow, fresnel, matScale, surfTint,
-                sd.reliefFade, detailWeight, pointReliefSum, specAdd);
+                sd.reliefFade, detailWeight, pointReliefSum, pointSpecSum);
             AccumulatePointLightRelief(
                 PointLight2_Position, PointLight2_Diffuse.rgb, PointLight2_Specular.rgb,
                 PointLight2_Range, PointLight2_Attenuation,
                 Pview, N, Nmicro, V, specPow, fresnel, matScale, surfTint,
-                sd.reliefFade, detailWeight, pointReliefSum, specAdd);
-            litEnv = max(litEnv + pointReliefSum, float3(0.0, 0.0, 0.0));
+                sd.reliefFade, detailWeight, pointReliefSum, pointSpecSum);
+            litEnv = max(litEnv + pointReliefSum * afPointScale, float3(0.0, 0.0, 0.0));
+            specAdd += pointSpecSum * afPointScale;
         }
     }
 

@@ -65,9 +65,10 @@ float4 p3Flags = float4(2.0, 1.0, 0.0, 1.0);
 float4 p3Flags2 = float4(0.0, 0.0, 0.0, 0.0);
 
 // p3EnhanceFlags:
-//   x = F11 AF+PointLight global toggle (0/1)
-//   y = P0-1 RimLit dynamic relief, metallic specular & 3-stage _GLO boost (0/1)
-float4 p3EnhanceFlags = float4(1.0, 1.0, 0.0, 0.0);
+//   x = F11 AF+PointLight scale (0..2)
+//   y = P0-1 RimLit dynamic relief, metallic specular & 3-stage _GLO boost scale (0..2)
+//   z = Phase 3 material clarity & micro-normal slope scale (0..2)
+float4 p3EnhanceFlags = float4(1.0, 1.0, 1.0, 0.0);
 
 float3 ApplyTextureStageOp(float3 baseColor, float4 tSample, int op)
 {
@@ -141,7 +142,7 @@ struct SurfaceDetail
     float  metalMask;
 };
 
-SurfaceDetail AnalyzeSurfaceDetail(float2 uv, float2 duvX, float2 duvY, float3 centerAlbedo, float3 baseNormal, bool hasNormal)
+SurfaceDetail AnalyzeSurfaceDetail(float2 uv, float2 duvX, float2 duvY, float3 centerAlbedo, float3 baseNormal, bool hasNormal, float p3Scale)
 {
     SurfaceDetail sd;
     sd.albedo = centerAlbedo;
@@ -179,10 +180,10 @@ SurfaceDetail AnalyzeSurfaceDetail(float2 uv, float2 duvX, float2 duvY, float3 c
         // Zero-mean micro-detail clarity + subtle crevice etching
         float lumHeadroom = saturate(min(lumC, 1.0 - lumC) * 4.5);
         float3 highFreq = clamp(centerAlbedo - avg4, -0.07, 0.07);
-        float3 enhanced = saturate(centerAlbedo + highFreq * (0.42 * fade * lumHeadroom));
+        float3 enhanced = saturate(centerAlbedo + highFreq * (0.42 * fade * lumHeadroom * p3Scale));
 
         float dip = max(lumAvg - lumC, 0.0);
-        float crevice = 1.0 - saturate(dip * 1.15) * (0.16 * fade);
+        float crevice = 1.0 - saturate(dip * 1.15) * saturate(0.16 * fade * p3Scale);
         sd.albedo = enhanced * crevice;
         sd.detailFade = fade;
 
@@ -196,7 +197,7 @@ SurfaceDetail AnalyzeSurfaceDetail(float2 uv, float2 duvX, float2 duvY, float3 c
                 float shapedLen = (gradLen * 1.8) / (1.0 + gradLen * 2.4);
                 tanGrad *= (shapedLen / gradLen);
             }
-            sd.microNormal = normalize(baseNormal - tanGrad * fade);
+            sd.microNormal = normalize(baseNormal - tanGrad * (fade * p3Scale));
         }
     }
 
@@ -286,7 +287,8 @@ void ComputeRimLitLighting(
     float3 V = input.Texcoord7.xyz * rsqrt(vLenSq);
     float3 Nmicro = sd.microNormal;
 
-    if (p3EnhanceFlags.y <= 0.5)
+    float rimScale = max(p3EnhanceFlags.y, 0.0);
+    if (rimScale <= 0.01)
     {
         float bevel = dot(Nmicro, V) - dot(N, V);
         litBase *= saturate(1.0 + bevel * (0.14 * sd.detailFade));
@@ -300,8 +302,8 @@ void ComputeRimLitLighting(
 
     float NdotV = saturate(dot(Nmicro, V));
     float bevel = dot(Nmicro, V) - dot(N, V);
-    litEnv *= saturate(1.0 + bevel * (0.36 * sd.detailFade));
-    fresnelWeight = lerp(0.78, 1.28, pow(1.0 - NdotV, 1.80));
+    litEnv *= saturate(1.0 + bevel * (0.36 * sd.detailFade * rimScale));
+    fresnelWeight = lerp(max(1.0 - 0.22 * rimScale, 0.45), 1.0 + 0.28 * rimScale, pow(1.0 - NdotV, 1.80));
 
     float basePow = clamp((MaterialPower > 1.0) ? MaterialPower : 24.0, 14.0, 64.0);
     float specPow = lerp(basePow * 0.85, max(basePow, 48.0), max(sd.smoothness, sd.metalMask));
@@ -309,6 +311,7 @@ void ComputeRimLitLighting(
     float matScale = lerp(0.06, 0.24, sd.smoothness * sd.smoothness) + sd.metalMask * 0.16;
     float tintWeight = lerp(0.38, 0.78, sd.metalMask);
     float3 surfTint = lerp(float3(1.0, 1.0, 1.0), sd.albedo, tintWeight);
+    float afPointScale = max(p3EnhanceFlags.x, 0.0);
 
     if (p3Flags2.w > 0.5)
     {
@@ -318,32 +321,32 @@ void ComputeRimLitLighting(
         {
             float3 L0 = input.Texcoord5.xyz * rsqrt(l0LenSq);
             float relief0 = dot(Nmicro, L0) - dot(N, L0);
-            litEnv *= saturate(1.0 + relief0 * (0.68 * sd.detailFade));
+            litEnv *= saturate(1.0 + relief0 * (0.68 * sd.detailFade * rimScale));
 
             float3 H0 = normalize(L0 + V);
             float ndh0 = max(dot(Nmicro, H0), 0.0);
             float ndlMask0 = saturate(dot(Nmicro, L0) * 2.5 + 0.18);
             float specScalar0 = pow(ndh0, specPow) * matScale * fresnelSpec * ndlMask0;
             float rimGlance = pow(1.0 - NdotV, 2.8) * lerp(0.05, 0.12, max(sd.smoothness, sd.metalMask));
-            specAdd += input.Texcoord4.rgb * surfTint * (specScalar0 + rimGlance);
+            specAdd += input.Texcoord4.rgb * surfTint * ((specScalar0 + rimGlance) * rimScale);
         }
 
         float l1LenSq = dot(input.Texcoord3.xyz, input.Texcoord3.xyz);
-        if (p3EnhanceFlags.x > 0.5 && input.Texcoord3.w > 1e-4 && l1LenSq > 1e-6)
+        if (afPointScale > 0.01 && input.Texcoord3.w > 1e-4 && l1LenSq > 1e-6)
         {
             float3 L1 = input.Texcoord3.xyz * rsqrt(l1LenSq);
             float relief1 = saturate(dot(Nmicro, L1)) - saturate(dot(N, L1));
-            float l1Strength = saturate(input.Texcoord3.w);
+            float l1Strength = saturate(input.Texcoord3.w) * afPointScale;
             float3 envTint = input.Color.rgb / max(max(input.Color.r, max(input.Color.g, input.Color.b)), 0.05);
             float3 l1Tint = lerp(float3(1.0, 0.92, 0.82), saturate(envTint), 0.65);
 
-            litEnv = max(litEnv + l1Tint * (relief1 * l1Strength * 0.85 * sd.detailFade), float3(0.0, 0.0, 0.0));
+            litEnv = max(litEnv + l1Tint * (relief1 * l1Strength * 0.85 * sd.detailFade * rimScale), float3(0.0, 0.0, 0.0));
 
             float3 H1 = normalize(L1 + V);
             float ndh1 = max(dot(Nmicro, H1), 0.0);
             float ndlMask1 = saturate(dot(Nmicro, L1) * 2.5 + 0.15);
             float specScalar1 = pow(ndh1, specPow) * matScale * fresnelSpec * ndlMask1 * l1Strength;
-            specAdd += l1Tint * surfTint * specScalar1;
+            specAdd += l1Tint * surfTint * (specScalar1 * rimScale);
         }
     }
     else
@@ -358,36 +361,38 @@ void ComputeRimLitLighting(
             {
                 float3 L0 = rawL0 * rsqrt(l0LenSq);
                 float relief = dot(Nmicro, L0) - dot(N, L0);
-                litEnv *= saturate(1.0 + relief * (0.78 * sd.detailFade));
+                litEnv *= saturate(1.0 + relief * (0.78 * sd.detailFade * rimScale));
 
                 float3 H = normalize(L0 + V);
                 float ndh = max(dot(Nmicro, H), 0.0);
                 float termMask = saturate(dot(Nmicro, L0) * 2.5 + 0.15);
                 float specScalar = pow(ndh, specPow) * matScale * fresnelSpec * termMask;
-                specAdd += DirectionalLight0_Diffuse.rgb * MaterialDiffuse.rgb * surfTint * specScalar;
+                specAdd += DirectionalLight0_Diffuse.rgb * MaterialDiffuse.rgb * surfTint * (specScalar * rimScale);
             }
         }
 
-        if (p3EnhanceFlags.x > 0.5)
+        if (afPointScale > 0.01)
         {
             float3 Pview = -input.Texcoord7.xyz;
             float3 pointReliefSum = float3(0.0, 0.0, 0.0);
+            float3 pointSpecSum = float3(0.0, 0.0, 0.0);
             AccumulatePointLightRim(
                 PointLight0_Position, PointLight0_Diffuse.rgb, PointLight0_Specular.rgb,
                 PointLight0_Range, PointLight0_Attenuation,
                 Pview, N, Nmicro, V, specPow, fresnelSpec, matScale, surfTint, sd.detailFade,
-                pointReliefSum, specAdd);
+                pointReliefSum, pointSpecSum);
             AccumulatePointLightRim(
                 PointLight1_Position, PointLight1_Diffuse.rgb, PointLight1_Specular.rgb,
                 PointLight1_Range, PointLight1_Attenuation,
                 Pview, N, Nmicro, V, specPow, fresnelSpec, matScale, surfTint, sd.detailFade,
-                pointReliefSum, specAdd);
+                pointReliefSum, pointSpecSum);
             AccumulatePointLightRim(
                 PointLight2_Position, PointLight2_Diffuse.rgb, PointLight2_Specular.rgb,
                 PointLight2_Range, PointLight2_Attenuation,
                 Pview, N, Nmicro, V, specPow, fresnelSpec, matScale, surfTint, sd.detailFade,
-                pointReliefSum, specAdd);
-            litEnv = max(litEnv + pointReliefSum, float3(0.0, 0.0, 0.0));
+                pointReliefSum, pointSpecSum);
+            litEnv = max(litEnv + pointReliefSum * (afPointScale * rimScale), float3(0.0, 0.0, 0.0));
+            specAdd += pointSpecSum * (afPointScale * rimScale);
         }
     }
 
@@ -407,7 +412,7 @@ float4 main_2d(VS_OUTPUT input) : SV_TARGET
 
     bool hasNormal = (input.Texcoord6.w > 0.5 && dot(input.Texcoord6.xyz, input.Texcoord6.xyz) > 1e-6);
     float3 N = hasNormal ? normalize(input.Texcoord6.xyz) : float3(0.0, 0.0, 1.0);
-    SurfaceDetail sd = AnalyzeSurfaceDetail(input.Texcoord0.xy, duvX, duvY, albedo.rgb, N, hasNormal);
+    SurfaceDetail sd = AnalyzeSurfaceDetail(input.Texcoord0.xy, duvX, duvY, albedo.rgb, N, hasNormal, max(p3EnhanceFlags.z, 0.0));
 
     float3 base = 0.0;
     float fresnelWeight = 1.0;
@@ -436,19 +441,20 @@ float4 main_cube(VS_OUTPUT input) : SV_TARGET
 
     bool hasNormal = (input.Texcoord6.w > 0.5 && dot(input.Texcoord6.xyz, input.Texcoord6.xyz) > 1e-6);
     float3 N = hasNormal ? normalize(input.Texcoord6.xyz) : float3(0.0, 0.0, 1.0);
-    SurfaceDetail sd = AnalyzeSurfaceDetail(input.Texcoord0.xy, duvX, duvY, albedo.rgb, N, hasNormal);
+    SurfaceDetail sd = AnalyzeSurfaceDetail(input.Texcoord0.xy, duvX, duvY, albedo.rgb, N, hasNormal, max(p3EnhanceFlags.z, 0.0));
 
     float3 base = 0.0;
     float fresnelWeight = 1.0;
     ComputeRimLitLighting(input, sd, N, hasNormal, base, fresnelWeight);
 
     float3 cubeDir = input.Texcoord1.xyz;
+    float rimScale = max(p3EnhanceFlags.y, 0.0);
     if (hasNormal)
     {
         if (dot(cubeDir, cubeDir) <= 1e-6)
             cubeDir = N;
-        if (p3EnhanceFlags.y > 0.5 && sd.detailFade > 0.01)
-            cubeDir = normalize(cubeDir + (sd.microNormal - N) * (0.45 * sd.detailFade));
+        if (rimScale > 0.01 && sd.detailFade > 0.01)
+            cubeDir = normalize(cubeDir + (sd.microNormal - N) * (0.45 * sd.detailFade * rimScale));
     }
 
     float4 rimSample = TextureCube1.Sample(Sampler1, cubeDir);
@@ -473,7 +479,7 @@ float4 main_cube3(VS_OUTPUT input) : SV_TARGET
 
     bool hasNormal = (input.Texcoord6.w > 0.5 && dot(input.Texcoord6.xyz, input.Texcoord6.xyz) > 1e-6);
     float3 N = hasNormal ? normalize(input.Texcoord6.xyz) : float3(0.0, 0.0, 1.0);
-    SurfaceDetail sd = AnalyzeSurfaceDetail(input.Texcoord0.xy, duvX, duvY, albedo.rgb, N, hasNormal);
+    SurfaceDetail sd = AnalyzeSurfaceDetail(input.Texcoord0.xy, duvX, duvY, albedo.rgb, N, hasNormal, max(p3EnhanceFlags.z, 0.0));
 
     float3 base = 0.0;
     float fresnelWeight = 1.0;
@@ -483,14 +489,15 @@ float4 main_cube3(VS_OUTPUT input) : SV_TARGET
     float2 stage1Uv = enviroSwap ? input.Texcoord2.xy : input.Texcoord1.xy;
     float3 cubeDir  = enviroSwap ? input.Texcoord1.xyz : input.Texcoord2.xyz;
 
+    float rimScale = max(p3EnhanceFlags.y, 0.0);
     int stage1Op = (int)(p3Flags2.x + 0.5);
     if (stage1Op > 0)
     {
         float4 stage1Sample = Texture1.Sample(Sampler1, stage1Uv);
-        if (stage1Op == 2 && p3EnhanceFlags.y > 0.5)
+        if (stage1Op == 2 && rimScale > 0.01)
         {
             // Accentuate _GLO emissive runes/backpack cores cleanly
-            stage1Sample.rgb *= 1.24;
+            stage1Sample.rgb *= (1.0 + 0.24 * rimScale);
         }
         base = ApplyTextureStageOp(base, stage1Sample, stage1Op);
     }
@@ -499,8 +506,8 @@ float4 main_cube3(VS_OUTPUT input) : SV_TARGET
     {
         if (dot(cubeDir, cubeDir) <= 1e-6)
             cubeDir = N;
-        if (p3EnhanceFlags.y > 0.5 && sd.detailFade > 0.01)
-            cubeDir = normalize(cubeDir + (sd.microNormal - N) * (0.45 * sd.detailFade));
+        if (rimScale > 0.01 && sd.detailFade > 0.01)
+            cubeDir = normalize(cubeDir + (sd.microNormal - N) * (0.45 * sd.detailFade * rimScale));
     }
 
     float4 rimSample = TextureCube2.Sample(Sampler2, cubeDir);

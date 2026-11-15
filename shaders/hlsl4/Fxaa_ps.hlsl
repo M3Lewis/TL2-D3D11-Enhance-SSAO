@@ -179,12 +179,15 @@ float4 postprocess_impl(float2 uv)
     float4 fxaaColor = (lumaB < lumaMin || lumaB > lumaMax) ? a : b;
     float edgeDelta = length(fxaaColor.rgb - centre.rgb);
     float3 casRgb = ApplyCasMicroContrast(uv, texel, fxaaColor.rgb, centre.rgb, edgeDelta);
-    float3 resolvedRgb = (p2FilterParams.x > 0.5 && p2FilterParams.y > 0.5)
-        ? ApplyP2HobFilter(casRgb, p2FilterParams.x)
-        : ApplySoftHighlightShoulder(casRgb);
-    if (p2FilterParams.z > 0.5)
+    float3 baseRgb = ApplySoftHighlightShoulder(casRgb);
+    float filterStrength = clamp(p2FilterParams.w, 0.0, 1.65);
+    float3 resolvedRgb = (p2FilterParams.x > 0.5 && p2FilterParams.y > 0.5 && filterStrength > 0.001)
+        ? saturate(lerp(baseRgb, ApplyP2HobFilter(casRgb, p2FilterParams.x), filterStrength))
+        : baseRgb;
+    if (p2FilterParams.z > 0.001)
     {
-        resolvedRgb *= ComputeP2OpticalVignette(uv);
+        float vig = ComputeP2OpticalVignette(uv);
+        resolvedRgb *= max(1.0 - (1.0 - vig) * p2FilterParams.z, 0.35);
     }
     return float4(resolvedRgb, centre.a);
 #endif

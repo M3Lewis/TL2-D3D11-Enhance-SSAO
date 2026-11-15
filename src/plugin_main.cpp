@@ -571,6 +571,16 @@ extern "C" __declspec(dllexport) int RouteB_RunConfigPanelSelfTest() {
     routeb::SetP2SsrEnabled(false);
     routeb::SetP2FilterPreset(2);
     routeb::SetP2LutPreset(1);
+    routeb::SetPhase3StrengthPct(-25);      // clamps to 0
+    routeb::SetF11PointLightStrengthPct(135);
+    routeb::SetP0RimLitStrengthPct(150);
+    routeb::SetRouteCAoStrengthPct(85);
+    routeb::SetRouteCSscsStrengthPct(120);
+    routeb::SetP1SoftParticlesStrengthPct(160);
+    routeb::SetP2AerialVignetteStrengthPct(75);
+    routeb::SetP2SsrStrengthPct(250);       // clamps to 200
+    routeb::SetP2FilterStrengthPct(115);
+    routeb::SetP2LutStrengthPct(90);
     if (!routeb::SaveCustomPreset(9)) {
         return 2;
     }
@@ -617,7 +627,12 @@ extern "C" __declspec(dllexport) int RouteB_RunConfigPanelSelfTest() {
     if (!applied.phase3_enhance || applied.af_point_enhance || !applied.p0_rimlit_enhance ||
         applied.ao_enabled || applied.p0_sscs_enabled || !applied.p1_soft_particles ||
         applied.p2_aerial_vignette || applied.p2_ssr_enabled ||
-        applied.p2_filter_preset != 2 || applied.p2_lut_preset != 1) {
+        applied.p2_filter_preset != 2 || applied.p2_lut_preset != 1 ||
+        applied.phase3_strength != 0 || applied.af_point_strength != 135 ||
+        applied.p0_rimlit_strength != 150 || applied.ao_strength != 85 ||
+        applied.p0_sscs_strength != 120 || applied.p1_soft_strength != 160 ||
+        applied.p2_aerial_strength != 75 || applied.p2_ssr_strength != 200 ||
+        applied.p2_filter_strength != 115 || applied.p2_lut_strength != 90) {
         return 6;
     }
 

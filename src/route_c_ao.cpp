@@ -205,6 +205,12 @@ std::atomic<bool> g_p1_soft_particles_enabled{true};
 std::atomic<bool> g_p2_aerial_vignette_enabled{true};
 std::atomic<bool> g_p2_ssr_enabled{true};
 std::atomic<int> g_p2_lut_preset{0};  // 0=OFF, 1=CinemaTealOrange, 2=ColdNordic, 3=CustomCube
+std::atomic<int> g_ao_strength_pct{100};
+std::atomic<int> g_sscs_strength_pct{100};
+std::atomic<int> g_p1_soft_particles_strength_pct{100};
+std::atomic<int> g_p2_aerial_vignette_strength_pct{100};
+std::atomic<int> g_p2_ssr_strength_pct{100};
+std::atomic<int> g_p2_lut_strength_pct{100};
 std::atomic<bool> g_world_depth_ready_for_particles{false};
 std::atomic<uint64_t> g_toast_expire_tick_ms{0};
 std::atomic<int> g_ao_debug_mode{0};  // Phase C2 default: DebugMode=0 (Live AO Composite)
@@ -707,6 +713,10 @@ void TryDispatchAoForFrame(ActiveSceneFrame& frame, const char* trigger_src, uin
     req.lut_preset = 0;
     req.water_hint = water_hint;
     req.filter_preset = GetP2FilterPreset();
+    req.ao_strength_scale = static_cast<float>(GetRouteCAoStrengthPct()) * 0.01f;
+    req.sscs_strength_scale = static_cast<float>(GetRouteCSscsStrengthPct()) * 0.01f;
+    req.aerial_strength_scale = static_cast<float>(GetP2AerialVignetteStrengthPct()) * 0.01f;
+    req.ssr_strength_scale = static_cast<float>(GetP2SsrStrengthPct()) * 0.01f;
     req.sscs_key_dir[0] = 0.42f;
     req.sscs_key_dir[1] = -0.907f;
     req.has_sscs_key_dir = false;
@@ -810,6 +820,8 @@ void TryDispatchPostWorldForFrame(ActiveSceneFrame& frame) {
     req.lut_preset = lut_preset;
     req.water_hint = water_hint;
     req.filter_preset = GetP2FilterPreset();
+    req.ssr_strength_scale = static_cast<float>(GetP2SsrStrengthPct()) * 0.01f;
+    req.lut_strength_scale = static_cast<float>(GetP2LutStrengthPct()) * 0.01f;
     (void)ExecuteRouteCPostWorldPass(req, g_log);
     SafeRelease(ctx);
 }
@@ -851,6 +863,8 @@ void TryDispatchP2FilterFallbackForFrame(ActiveSceneFrame& frame, uint8_t qid) {
     req.vp_height = frame.vp_h;
     req.filter_preset = preset;
     req.vignette_enabled = vig_on;
+    req.filter_strength_scale = static_cast<float>(GetP2FilterStrengthPct()) * 0.01f;
+    req.vignette_strength_scale = static_cast<float>(GetP2AerialVignetteStrengthPct()) * 0.01f;
     const bool ok = ExecuteRouteCP2FilterPass(req, g_log);
 
     static std::atomic<bool> s_logged_fb{false};
@@ -1549,6 +1563,54 @@ const char* P2LutPresetName(int preset) {
         case 3: return "CUBE";
         default: return "OFF";
     }
+}
+
+void SetRouteCAoStrengthPct(int pct) {
+    g_ao_strength_pct.store((std::clamp)(pct, 0, 200), std::memory_order_relaxed);
+}
+
+int GetRouteCAoStrengthPct() {
+    return (std::clamp)(g_ao_strength_pct.load(std::memory_order_relaxed), 0, 200);
+}
+
+void SetRouteCSscsStrengthPct(int pct) {
+    g_sscs_strength_pct.store((std::clamp)(pct, 0, 200), std::memory_order_relaxed);
+}
+
+int GetRouteCSscsStrengthPct() {
+    return (std::clamp)(g_sscs_strength_pct.load(std::memory_order_relaxed), 0, 200);
+}
+
+void SetP1SoftParticlesStrengthPct(int pct) {
+    g_p1_soft_particles_strength_pct.store((std::clamp)(pct, 0, 200), std::memory_order_relaxed);
+}
+
+int GetP1SoftParticlesStrengthPct() {
+    return (std::clamp)(g_p1_soft_particles_strength_pct.load(std::memory_order_relaxed), 0, 200);
+}
+
+void SetP2AerialVignetteStrengthPct(int pct) {
+    g_p2_aerial_vignette_strength_pct.store((std::clamp)(pct, 0, 200), std::memory_order_relaxed);
+}
+
+int GetP2AerialVignetteStrengthPct() {
+    return (std::clamp)(g_p2_aerial_vignette_strength_pct.load(std::memory_order_relaxed), 0, 200);
+}
+
+void SetP2SsrStrengthPct(int pct) {
+    g_p2_ssr_strength_pct.store((std::clamp)(pct, 0, 200), std::memory_order_relaxed);
+}
+
+int GetP2SsrStrengthPct() {
+    return (std::clamp)(g_p2_ssr_strength_pct.load(std::memory_order_relaxed), 0, 200);
+}
+
+void SetP2LutStrengthPct(int pct) {
+    g_p2_lut_strength_pct.store((std::clamp)(pct, 0, 200), std::memory_order_relaxed);
+}
+
+int GetP2LutStrengthPct() {
+    return (std::clamp)(g_p2_lut_strength_pct.load(std::memory_order_relaxed), 0, 200);
 }
 
 bool IsP2CustomCubeLutLoaded() {

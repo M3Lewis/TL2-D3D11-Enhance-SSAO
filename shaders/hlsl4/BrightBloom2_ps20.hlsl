@@ -23,7 +23,15 @@ float4 p2FilterParams;  // x=preset (0=OFF, 1=HOB, 2=DRK), y=tonemap, z=vignette
 float4 postprocess_impl(float2 texCoord)
 {
     float4 tex = RT.Sample(RTSampler, texCoord);
-    if (p2FilterParams.x > 0.5)
+
+    // Vanilla BrightBloom2 response
+    float4 vanTex = tex - 1;
+    float4 bright4 = -2 * vanTex * vanTex + 1.05 + Bloom;
+    float bright = dot(bright4, float4(0.333333, 0.333333, 0.333333, 0));
+    vanTex += bright + 0.0 + Bloom * 0.5;
+
+    float filterStrength = saturate(p2FilterParams.w);
+    if (p2FilterParams.x > 0.5 && filterStrength > 0.001)
     {
         float3 col = max(tex.rgb, 0.0);
         float peak = max(col.r, max(col.g, col.b));
@@ -36,15 +44,11 @@ float4 postprocess_impl(float2 texCoord)
         soft = (soft * soft) / (4.0 * knee + 1e-5);
         float contrib = max(soft, energy - threshold) / max(energy, 1e-4);
         float boost = 1.45 + max(Bloom, 0.0) * 0.65;
-        return float4(col * saturate(contrib) * boost, tex.a);
+        float4 hobTex = float4(col * saturate(contrib) * boost, tex.a);
+        return lerp(vanTex, hobTex, filterStrength);
     }
 
-    // Vanilla BrightBloom2 fallback when F10 filter is OFF
-    tex -= 1;
-    float4 bright4 = -2 * tex * tex + 1.05 + Bloom;
-    float bright = dot(bright4, float4(0.333333, 0.333333, 0.333333, 0));
-    tex += bright + 0.0 + Bloom * 0.5;
-    return tex;
+    return vanTex;
 }
 
 float4 main(VS_OUTPUT input) : SV_Target

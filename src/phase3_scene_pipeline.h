@@ -148,6 +148,16 @@ void SetP2FilterPreset(int preset);
 int GetP2FilterPreset();
 int CycleP2FilterPreset();
 const char* P2FilterPresetName(int preset);
+
+void SetPhase3StrengthPct(int pct);
+int GetPhase3StrengthPct();
+void SetF11PointLightStrengthPct(int pct);
+int GetF11PointLightStrengthPct();
+void SetP0RimLitStrengthPct(int pct);
+int GetP0RimLitStrengthPct();
+void SetP2FilterStrengthPct(int pct);
+int GetP2FilterStrengthPct();
+
 bool WasP2PostShaderSeenRecently();
 bool ConsumeFrameWaterPassHint();
 

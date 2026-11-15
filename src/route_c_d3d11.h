@@ -47,6 +47,10 @@ struct RouteCAoRenderRequest {
     int lut_preset = 0;     // 0=OFF, 1=CinemaTealOrange, 2=ColdNordic, 3=Custom(.cube)
     bool water_hint = false;
     int filter_preset = 1;  // 0=OFF, 1=HOB, 2=DRK
+    float ao_strength_scale = 1.0f;
+    float sscs_strength_scale = 1.0f;
+    float aerial_strength_scale = 1.0f;
+    float ssr_strength_scale = 1.0f;
     float sscs_key_dir[2] = {0.42f, -0.907f};
     bool has_sscs_key_dir = false;
     int map_fog_mode = 0;  // Ogre::FogMode: 0=NONE, 1=EXP, 2=EXP2, 3=LINEAR
@@ -90,6 +94,8 @@ struct RouteCPostWorldRequest {
     int lut_preset = 0;     // 0=OFF, 1=CinemaTealOrange, 2=ColdNordic, 3=Custom(.cube)
     bool water_hint = false;
     int filter_preset = 1;  // 0=OFF, 1=HOB, 2=DRK
+    float ssr_strength_scale = 1.0f;
+    float lut_strength_scale = 1.0f;
 };
 bool ExecuteRouteCPostWorldPass(const RouteCPostWorldRequest& req, RouteCD3DLogFn logger);
 void ResetRouteCPostWorldDepthSnapshot();
@@ -102,6 +108,8 @@ struct RouteCP2FilterRequest {
     int vp_height = 0;
     int filter_preset = 1;  // 0=OFF, 1=HOB, 2=DRK
     bool vignette_enabled = false;
+    float filter_strength_scale = 1.0f;
+    float vignette_strength_scale = 1.0f;
 };
 bool ExecuteRouteCP2FilterPass(const RouteCP2FilterRequest& req, RouteCD3DLogFn logger);
 struct RouteCPanelOverlayRequest {

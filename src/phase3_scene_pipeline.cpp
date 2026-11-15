@@ -335,6 +335,10 @@ std::atomic<bool> g_f11_enhance_enabled{true};
 std::atomic<bool> g_p0_rimlit_enhance_enabled{true};
 std::atomic<bool> g_frame_water_pass_hint{false};
 std::atomic<int> g_p2_filter_preset{1};
+std::atomic<int> g_phase3_strength_pct{100};
+std::atomic<int> g_f11_point_light_strength_pct{100};
+std::atomic<int> g_p0_rimlit_strength_pct{100};
+std::atomic<int> g_p2_filter_strength_pct{100};
 std::atomic<uint64_t> g_p2_bloom_last_tick_ms{0};
 std::atomic<uint64_t> g_p2_fxaa_last_tick_ms{0};
 std::atomic<Phase3PassObserverFn> g_pass_observer{nullptr};
@@ -607,12 +611,17 @@ void MaybeApplyP2FilterUniformsToPass(const void* pass) {
     const uint64_t bloom_ms = g_p2_bloom_last_tick_ms.load(std::memory_order_relaxed);
     const bool bloom_recent = (bloom_ms != 0 && (now_ms - bloom_ms) < 250ULL);
     const float apply_tonemap = (is_bright_bloom || is_bloom_blend || !bloom_recent) ? 1.0f : 0.0f;
-    const float apply_vignette = (is_fxaa && IsP2AerialVignetteEnabled()) ? 1.0f : 0.0f;
+    const float vig_scale =
+        (is_fxaa && IsP2AerialVignetteEnabled())
+            ? (static_cast<float>(GetP2AerialVignetteStrengthPct()) * 0.01f)
+            : 0.0f;
+    const float filter_scale =
+        static_cast<float>((std::clamp)(g_p2_filter_strength_pct.load(std::memory_order_relaxed), 0, 200)) * 0.01f;
     const float params[4] = {
         static_cast<float>(g_p2_filter_preset.load(std::memory_order_relaxed)),
         apply_tonemap,
-        apply_vignette,
-        0.0f,
+        vig_scale,
+        filter_scale,
     };
 
     OgreSharedPtr fp_params_sp{};
@@ -1319,10 +1328,20 @@ void ApplyPassFogAndAlphaToExplicitPs(
             is_rim ? (is_ff_vs ? 0.0f : 1.0f) : flags2[3],
         };
         WriteExplicitPsNamedFloat4(ps_params, "p3Flags2", synced_flags2);
+        const float af_scale =
+            g_f11_enhance_enabled.load(std::memory_order_relaxed)
+                ? (static_cast<float>((std::clamp)(g_f11_point_light_strength_pct.load(std::memory_order_relaxed), 0, 200)) * 0.01f)
+                : 0.0f;
+        const float rim_scale =
+            g_p0_rimlit_enhance_enabled.load(std::memory_order_relaxed)
+                ? (static_cast<float>((std::clamp)(g_p0_rimlit_strength_pct.load(std::memory_order_relaxed), 0, 200)) * 0.01f)
+                : 0.0f;
+        const float p3_scale =
+            static_cast<float>((std::clamp)(g_phase3_strength_pct.load(std::memory_order_relaxed), 0, 200)) * 0.01f;
         const float enhance_flags[4] = {
-            g_f11_enhance_enabled.load(std::memory_order_relaxed) ? 1.0f : 0.0f,
-            g_p0_rimlit_enhance_enabled.load(std::memory_order_relaxed) ? 1.0f : 0.0f,
-            0.0f,
+            af_scale,
+            rim_scale,
+            p3_scale,
             0.0f,
         };
         WriteExplicitPsNamedFloat4(ps_params, "p3EnhanceFlags", enhance_flags);
@@ -1775,10 +1794,13 @@ const void* __fastcall HookSceneManagerSetPass(
     if (arch == PassArchetype::None) {
         if (IsRouteCWorldDepthReadyForParticles()) {
             const int soft_mode = ClassifySoftParticleMode(used_pass);
-            if (soft_mode > 0) {
+            const int sp_pct = GetP1SoftParticlesStrengthPct();
+            if (soft_mode > 0 && sp_pct > 0) {
+                const float sp_scale = (std::max)(0.05f, static_cast<float>(sp_pct) * 0.01f);
+                const float base_inv = (soft_mode == 1) ? (1.0f / 0.65f) : (1.0f / 0.24f);
                 g_active_soft_particle.rs = rs;
                 g_active_soft_particle.soft_mode = soft_mode;
-                g_active_soft_particle.inv_soft_range = (soft_mode == 1) ? (1.0f / 0.65f) : (1.0f / 0.24f);
+                g_active_soft_particle.inv_soft_range = base_inv / sp_scale;
                 g_active_soft_particle.valid = true;
             }
         }
@@ -2294,6 +2316,38 @@ const char* P2FilterPresetName(int preset) {
         case 2: return "DRK";
         default: return "OFF";
     }
+}
+
+void SetPhase3StrengthPct(int pct) {
+    g_phase3_strength_pct.store((std::clamp)(pct, 0, 200), std::memory_order_relaxed);
+}
+
+int GetPhase3StrengthPct() {
+    return (std::clamp)(g_phase3_strength_pct.load(std::memory_order_relaxed), 0, 200);
+}
+
+void SetF11PointLightStrengthPct(int pct) {
+    g_f11_point_light_strength_pct.store((std::clamp)(pct, 0, 200), std::memory_order_relaxed);
+}
+
+int GetF11PointLightStrengthPct() {
+    return (std::clamp)(g_f11_point_light_strength_pct.load(std::memory_order_relaxed), 0, 200);
+}
+
+void SetP0RimLitStrengthPct(int pct) {
+    g_p0_rimlit_strength_pct.store((std::clamp)(pct, 0, 200), std::memory_order_relaxed);
+}
+
+int GetP0RimLitStrengthPct() {
+    return (std::clamp)(g_p0_rimlit_strength_pct.load(std::memory_order_relaxed), 0, 200);
+}
+
+void SetP2FilterStrengthPct(int pct) {
+    g_p2_filter_strength_pct.store((std::clamp)(pct, 0, 200), std::memory_order_relaxed);
+}
+
+int GetP2FilterStrengthPct() {
+    return (std::clamp)(g_p2_filter_strength_pct.load(std::memory_order_relaxed), 0, 200);
 }
 
 bool WasP2PostShaderSeenRecently() {

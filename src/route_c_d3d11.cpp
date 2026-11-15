@@ -775,7 +775,7 @@ float4 PS_WetFloorSsr(VsOut input) : SV_Target0
         gAoInputTex.SampleLevel(gAoSamp, hitTexUv + float2( bOfs.x, -bOfs.y), 0).rgb * 0.25f +
         gAoInputTex.SampleLevel(gAoSamp, hitTexUv + float2(-bOfs.x,  bOfs.y), 0).rgb * 0.25f +
         gAoInputTex.SampleLevel(gAoSamp, hitTexUv + float2( bOfs.x,  bOfs.y), 0).rgb * 0.25f;
-    float alpha = saturate(wetMask * fresnel * edgeFade) * 0.44f;
+    float alpha = saturate(wetMask * fresnel * edgeFade * 0.44f * max(gAoParams.z, 0.0f));
     return float4(saturate(reflCol * float3(0.92f, 0.97f, 1.03f)), alpha);
 }
 )HLSL";
@@ -816,7 +816,7 @@ float4 PS_LutGrade3D(VS_OUT input) : SV_Target0
     float3 src = saturate(gTex0.SampleLevel(gSamp, ClampSrcUv(uv), 0).rgb);
     float3 lutUv = src * ((gMixAndLut.y - 1.0f) * gMixAndLut.z) + (0.5f * gMixAndLut.z);
     float3 graded = saturate(gLutTex.SampleLevel(gSamp, lutUv, 0).rgb);
-    return float4(lerp(src, graded, gMixAndLut.w), 1.0f);
+    return float4(saturate(lerp(src, graded, gMixAndLut.w)), 1.0f);
 }
 )HLSL";
 
@@ -1059,10 +1059,13 @@ float ComputeP2OpticalVignette(float2 uv) {
 float4 PS_P2FilterFallback(VS_OUT input) : SV_Target0 {
     int2 px = int2(input.pos.xy);
     float4 src = gSceneTex.Load(int3(px, 0));
-    float3 outRgb = ApplyP2HobFilter(src.rgb, p2FilterParams.x);
-    if (p2FilterParams.z > 0.5f) {
+    float filterStrength = clamp(p2FilterParams.w, 0.0f, 1.65f);
+    float3 hobRgb = ApplyP2HobFilter(src.rgb, p2FilterParams.x);
+    float3 outRgb = (p2FilterParams.x > 0.5f) ? saturate(lerp(src.rgb, hobRgb, filterStrength)) : src.rgb;
+    if (p2FilterParams.z > 0.001f) {
         float2 uv = saturate((input.pos.xy - p2VpRect.xy) / max(p2VpRect.zw, 1.0f));
-        outRgb *= ComputeP2OpticalVignette(uv);
+        float vig = ComputeP2OpticalVignette(uv);
+        outRgb *= max(1.0f - (1.0f - vig) * p2FilterParams.z, 0.35f);
     }
     return float4(outRgb, 1.0f);
 }
@@ -2200,7 +2203,8 @@ void PopulateDynamicAoAerialParams(const RouteCAoRenderRequest& req, CbAoParams&
     cb.aerial_fog_params[0] = haze_rgb[0];
     cb.aerial_fog_params[1] = haze_rgb[1];
     cb.aerial_fog_params[2] = haze_rgb[2];
-    cb.aerial_fog_params[3] = req.aerial_enabled ? max_alpha : 0.0f;
+    const float aerial_scale = (std::clamp)(req.aerial_strength_scale, 0.0f, 2.0f);
+    cb.aerial_fog_params[3] = req.aerial_enabled ? (std::clamp)(max_alpha * aerial_scale, 0.0f, 0.65f) : 0.0f;
 
     if (req.view_4x4) {
         const float* V = req.view_4x4;
@@ -2866,17 +2870,20 @@ bool ExecuteRouteCAoPass(const RouteCAoRenderRequest& req, RouteCD3DLogFn logger
         cb.vp_clamp[1] = min_y;
         cb.vp_clamp[2] = max_x;
         cb.vp_clamp[3] = max_y;
+        const float ao_scale = (std::clamp)(req.ao_strength_scale, 0.0f, 2.0f);
+        const float sscs_scale = (std::clamp)(req.sscs_strength_scale, 0.0f, 2.0f);
+        const float extra_ao_floor = (ao_scale > 1.0f) ? (ao_scale - 1.0f) * 0.22f : 0.0f;
         cb.ao_params[0] = cfg.radius_world;
         cb.ao_params[1] = cfg.bias_cos;
-        cb.ao_params[2] = cfg.strength;
-        cb.ao_params[3] = cfg.min_ao_floor;
+        cb.ao_params[2] = cfg.strength * ao_scale;
+        cb.ao_params[3] = (std::clamp)(cfg.min_ao_floor - extra_ao_floor, 0.30f, 0.90f);
         cb.blur_and_mode[0] = 1.0f / static_cast<float>(req.vp_width);
         cb.blur_and_mode[1] = 1.0f / static_cast<float>(req.vp_height);
         cb.blur_and_mode[2] = cfg.depth_edge_scale;
         cb.blur_and_mode[3] = static_cast<float>(req.debug_mode);
         cb.sscs_params[0] = req.sscs_enabled ? 1.0f : 0.0f;
-        cb.sscs_params[1] = 1.15f;
-        cb.sscs_params[2] = 0.90f;
+        cb.sscs_params[1] = 1.15f * sscs_scale;
+        cb.sscs_params[2] = (std::clamp)(0.90f * sscs_scale, 0.0f, 1.0f);
         cb.sscs_params[3] = req.aerial_enabled ? ((req.filter_preset == 2) ? 2.0f : 1.0f) : 0.0f;
         PopulateDynamicAoAerialParams(req, cb);
         std::memcpy(mapped.pData, &cb, sizeof(cb));
@@ -3165,6 +3172,7 @@ bool ExecuteRouteCPostWorldPass(const RouteCPostWorldRequest& req, RouteCD3DLogF
             cb_ssr.view_up_and_water[3] = want_hint;
             std::memcpy(g_st.post_world_cb_bytes, &cb_ssr, sizeof(cb_ssr));
         }
+        cb_ssr.ao_params[2] = (std::clamp)(req.ssr_strength_scale, 0.0f, 2.0f);
         D3D11_MAPPED_SUBRESOURCE mapped_ao{};
         if (SUCCEEDED(req.ctx->Map(g_st.cb_params, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped_ao)) && mapped_ao.pData) {
             std::memcpy(mapped_ao.pData, &cb_ssr, sizeof(cb_ssr));
@@ -3190,7 +3198,8 @@ bool ExecuteRouteCPostWorldPass(const RouteCPostWorldRequest& req, RouteCD3DLogF
         const float rt_w = static_cast<float>(rt_desc.Width);
         const float rt_h = static_cast<float>(rt_desc.Height);
         const float lut_sz = static_cast<float>(g_st.lut_size[req.lut_preset]);
-        const float lut_mix = (req.lut_preset == 3) ? 1.0f : 0.88f;
+        const float base_mix = (req.lut_preset == 3) ? 1.0f : 0.88f;
+        const float lut_mix = (std::clamp)(base_mix * req.lut_strength_scale, 0.0f, 1.35f);
         if (UploadBloomLutCb(req.ctx,
                              static_cast<float>(req.vp_left), static_cast<float>(req.vp_top),
                              static_cast<float>(req.vp_width), static_cast<float>(req.vp_height),
@@ -3281,8 +3290,8 @@ bool ExecuteRouteCP2FilterPass(const RouteCP2FilterRequest& req, RouteCD3DLogFn 
     auto* cb = static_cast<CbP2FilterParams*>(mapped.pData);
     cb->params[0] = static_cast<float>(req.filter_preset);
     cb->params[1] = 1.0f;
-    cb->params[2] = req.vignette_enabled ? 1.0f : 0.0f;
-    cb->params[3] = 0.0f;
+    cb->params[2] = req.vignette_enabled ? (std::clamp)(req.vignette_strength_scale, 0.0f, 2.0f) : 0.0f;
+    cb->params[3] = (std::clamp)(req.filter_strength_scale, 0.0f, 2.0f);
     cb->vp_rect[0] = static_cast<float>(req.vp_left);
     cb->vp_rect[1] = static_cast<float>(req.vp_top);
     cb->vp_rect[2] = static_cast<float>(req.vp_width);

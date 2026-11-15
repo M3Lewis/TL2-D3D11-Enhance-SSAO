@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <mutex>
@@ -21,11 +22,19 @@
 namespace routeb {
 namespace {
 
-constexpr uint32_t kPanelWidth = 520;
+constexpr uint32_t kPanelWidth = 610;
 constexpr uint32_t kPanelHeight = 704;
 constexpr float kPanelMargin = 16.0f;
 constexpr int kTitleBarHeight = 42;
 constexpr int kPaddingX = 16;
+
+constexpr int kSliderZoneLeft = 408;
+constexpr int kSliderZoneRight = 594;
+constexpr int kSliderTrackLeft = 414;
+constexpr int kSliderTrackRight = 540;
+constexpr int kSliderReadoutLeft = 544;
+constexpr int kSliderReadoutRight = 590;
+constexpr int kSliderMaxPct = 200;
 
 enum class HitTargetKind {
     None = 0,
@@ -71,6 +80,17 @@ enum class HitTargetKind {
     CustomSave7,
     CustomSave8,
     CustomSave9,
+    ResetStrengths,
+    Slider0,
+    Slider1,
+    Slider2,
+    Slider3,
+    Slider4,
+    Slider5,
+    Slider6,
+    Slider7,
+    Slider8,
+    Slider9,
 };
 
 struct HitZone {
@@ -92,6 +112,7 @@ struct PanelRuntimeState {
     bool dragging = false;
     int drag_offset_x = 0;
     int drag_offset_y = 0;
+    int active_slider_index = -1;
 
     int hover_index = -1;
     POINT cursor_panel{-1, -1};
@@ -100,7 +121,7 @@ struct PanelRuntimeState {
     std::array<PresetSlot, kCustomPresetCount> presets{};
     int active_custom_slot = -1;
     std::wstring ini_path;
-    std::wstring status_text = L"按 F8 / ESC 关闭  |  左键拖动标题栏";
+    std::wstring status_text = L"F8/ESC关闭 · 拖动滑块/滚轮调强度 · 右键滑块归位100%";
 
     HWND hwnd = nullptr;
     WNDPROC orig_wndproc = nullptr;
@@ -128,6 +149,60 @@ int ClampFilterPreset(int v) {
 int ClampLutPreset(int v) {
     if (v < 0 || v > 3) return 0;
     return v;
+}
+
+int ClampStrengthPct(int v) {
+    return (std::clamp)(v, 0, kSliderMaxPct);
+}
+
+struct EffectSliderSpec {
+    const wchar_t* ini_key;
+    const wchar_t* label;
+    int VisualConfig::*member;
+    void (*set_fn)(int);
+    int (*get_fn)();
+};
+
+constexpr size_t kEffectSliderCount = 10;
+constexpr std::array<EffectSliderSpec, kEffectSliderCount> kSliderSpecs = {{
+    {L"Phase3Strength", L"Phase 3 材质/边缘光", &VisualConfig::phase3_strength, &SetPhase3StrengthPct, &GetPhase3StrengthPct},
+    {L"AfPointStrength", L"动态点光增强", &VisualConfig::af_point_strength, &SetF11PointLightStrengthPct, &GetF11PointLightStrengthPct},
+    {L"P0RimLitStrength", L"P0-1 RimLit / _GLO", &VisualConfig::p0_rimlit_strength, &SetP0RimLitStrengthPct, &GetP0RimLitStrengthPct},
+    {L"AoStrength", L"Route C SSAO", &VisualConfig::ao_strength, &SetRouteCAoStrengthPct, &GetRouteCAoStrengthPct},
+    {L"P0SscsStrength", L"P0-2 SSCS + 冷色调", &VisualConfig::p0_sscs_strength, &SetRouteCSscsStrengthPct, &GetRouteCSscsStrengthPct},
+    {L"P1SoftStrength", L"P1 屏幕空间软粒子", &VisualConfig::p1_soft_strength, &SetP1SoftParticlesStrengthPct, &GetP1SoftParticlesStrengthPct},
+    {L"P2AerialStrength", L"P2 空气透视 + 暗角", &VisualConfig::p2_aerial_strength, &SetP2AerialVignetteStrengthPct, &GetP2AerialVignetteStrengthPct},
+    {L"P2SsrStrength", L"P2 水面 SSR 反射", &VisualConfig::p2_ssr_strength, &SetP2SsrStrengthPct, &GetP2SsrStrengthPct},
+    {L"P2FilterStrength", L"P2 画面风格滤镜", &VisualConfig::p2_filter_strength, &SetP2FilterStrengthPct, &GetP2FilterStrengthPct},
+    {L"P2LutStrength", L"P2 3D LUT 调色", &VisualConfig::p2_lut_strength, &SetP2LutStrengthPct, &GetP2LutStrengthPct},
+}};
+
+int PctFromTrackX(int local_x) {
+    const float span = static_cast<float>(kSliderTrackRight - kSliderTrackLeft);
+    const float norm = (std::clamp)(static_cast<float>(local_x - kSliderTrackLeft) / span, 0.0f, 1.0f);
+    const int step5 = static_cast<int>(std::lround(norm * 40.0f)) * 5;
+    return ClampStrengthPct(step5);
+}
+
+void ApplyEffectStrengthByIndex(int slider_idx, int pct) {
+    if (slider_idx < 0 || static_cast<size_t>(slider_idx) >= kEffectSliderCount) {
+        return;
+    }
+    const int clamped = ClampStrengthPct(pct);
+    kSliderSpecs[static_cast<size_t>(slider_idx)].set_fn(clamped);
+    wchar_t msg[96] = {};
+    swprintf_s(msg, L"%ls 强度已调至: %d%%",
+               kSliderSpecs[static_cast<size_t>(slider_idx)].label, clamped);
+    g_panel.status_text = msg;
+    g_panel.active_custom_slot = -1;
+    g_panel.dirty = true;
+}
+
+int GetEffectStrengthByIndex(int slider_idx) {
+    if (slider_idx < 0 || static_cast<size_t>(slider_idx) >= kEffectSliderCount) {
+        return 100;
+    }
+    return ClampStrengthPct(kSliderSpecs[static_cast<size_t>(slider_idx)].get_fn());
 }
 
 std::wstring GetExecutableDirectory() {
@@ -165,6 +240,9 @@ void SaveVisualConfigToSection(const wchar_t* section, const VisualConfig& cfg, 
     WriteIniInt(section, L"P2SsrEnabled", cfg.p2_ssr_enabled ? 1 : 0, path);
     WriteIniInt(section, L"P2FilterPreset", ClampFilterPreset(cfg.p2_filter_preset), path);
     WriteIniInt(section, L"P2LutPreset", ClampLutPreset(cfg.p2_lut_preset), path);
+    for (const auto& spec : kSliderSpecs) {
+        WriteIniInt(section, spec.ini_key, ClampStrengthPct(cfg.*(spec.member)), path);
+    }
 }
 
 VisualConfig LoadVisualConfigFromSection(
@@ -184,6 +262,10 @@ VisualConfig LoadVisualConfigFromSection(
         ReadIniInt(section, L"P2FilterPreset", fallback.p2_filter_preset, path));
     out.p2_lut_preset = ClampLutPreset(
         ReadIniInt(section, L"P2LutPreset", fallback.p2_lut_preset, path));
+    for (const auto& spec : kSliderSpecs) {
+        out.*(spec.member) = ClampStrengthPct(
+            ReadIniInt(section, spec.ini_key, ClampStrengthPct(fallback.*(spec.member)), path));
+    }
     return out;
 }
 
@@ -230,7 +312,7 @@ std::wstring FormatPresetSummary(const VisualConfig& cfg) {
     return buf;
 }
 
-constexpr size_t kHitZoneCount = 42;
+constexpr size_t kHitZoneCount = 53;
 
 std::array<HitZone, kHitZoneCount> BuildHitZones() {
     std::array<HitZone, kHitZoneCount> zones{};
@@ -245,10 +327,10 @@ std::array<HitZone, kHitZoneCount> BuildHitZones() {
                     HitTargetKind::TitleDrag, L""};
 
     // 2..3: Select All / Clear All batch toggles on Section 1 header bar
-    zones[idx++] = {RECT{360, 46, 429, 65}, HitTargetKind::ToggleAllOn, L"全部开启"};
-    zones[idx++] = {RECT{435, 46, 504, 65}, HitTargetKind::ToggleAllOff, L"全部关闭"};
+    zones[idx++] = {RECT{430, 46, 508, 65}, HitTargetKind::ToggleAllOn, L"全部开启"};
+    zones[idx++] = {RECT{516, 46, 594, 65}, HitTargetKind::ToggleAllOff, L"全部关闭"};
 
-    // 4..11: 8 Feature checkboxes
+    // 4..11: 8 Feature checkboxes (left half of each row)
     const struct {
         HitTargetKind kind;
         const wchar_t* label;
@@ -264,14 +346,14 @@ std::array<HitZone, kHitZoneCount> BuildHitZones() {
     };
     int y = 72;
     for (const auto& t : kToggles) {
-        zones[idx++] = {RECT{kPaddingX, y, static_cast<LONG>(kPanelWidth - kPaddingX), y + 27},
+        zones[idx++] = {RECT{kPaddingX, y, kSliderZoneLeft - 4, y + 27},
                         t.kind, t.label};
         y += 30;
     }
 
     // 12..14: P2 Filter pills
     y = 340;
-    const int pill_w = 156;
+    const int pill_w = 186;
     const int pill_gap = 10;
     zones[idx++] = {RECT{kPaddingX, y, kPaddingX + pill_w, y + 28},
                     HitTargetKind::FilterOff, L"关闭滤镜"};
@@ -284,7 +366,7 @@ std::array<HitZone, kHitZoneCount> BuildHitZones() {
 
     // 15..18: P2 3D LUT pills (4 pills)
     y = 398;
-    const int lut_w = 116;
+    const int lut_w = 138;
     const int lut_gap = 8;
     const struct {
         HitTargetKind kind;
@@ -313,9 +395,9 @@ std::array<HitZone, kHitZoneCount> BuildHitZones() {
 
     // 22..41: 10 Custom preset slots (2 columns x 5 rows, Load + Save)
     const int base_y = 516;
-    const int col_w = 239;
+    const int col_w = 284;
     const int col_gap = 10;
-    const int save_w = 40;
+    const int save_w = 46;
     const int save_gap = 4;
     const int load_w = col_w - save_w - save_gap;
     for (int i = 0; i < kCustomPresetCount; ++i) {
@@ -328,6 +410,20 @@ std::array<HitZone, kHitZoneCount> BuildHitZones() {
         zones[idx++] = {RECT{cx, ry, cx + load_w, ry + 27}, load_kind, L""};
         zones[idx++] = {RECT{cx + load_w + save_gap, ry, cx + col_w, ry + 27}, save_kind, L"保存"};
     }
+
+    // 42: Reset all effect strengths back to 100%
+    zones[idx++] = {RECT{350, 46, 422, 65}, HitTargetKind::ResetStrengths, L"强度归位"};
+
+    // 43..50: Sliders 0..7 on the right half of the 8 toggle rows
+    y = 72;
+    for (int i = 0; i < 8; ++i) {
+        const auto s_kind = static_cast<HitTargetKind>(static_cast<int>(HitTargetKind::Slider0) + i);
+        zones[idx++] = {RECT{kSliderZoneLeft, y, kSliderZoneRight, y + 27}, s_kind, L""};
+        y += 30;
+    }
+    // 51..52: Sliders 8..9 on Section 2 & Section 3 headers
+    zones[idx++] = {RECT{kSliderZoneLeft, 314, kSliderZoneRight, 336}, HitTargetKind::Slider8, L""};
+    zones[idx++] = {RECT{kSliderZoneLeft, 372, kSliderZoneRight, 394}, HitTargetKind::Slider9, L""};
 
     return zones;
 }
@@ -495,6 +591,60 @@ void DrawSectionHeader(HDC dc, int y, const wchar_t* title) {
     ::DeleteObject(pen);
 }
 
+void DrawIntensitySlider(
+    HDC dc,
+    const RECT& zone_rect,
+    int pct,
+    bool effect_active,
+    bool hovered,
+    bool dragging) {
+    const int clamped = ClampStrengthPct(pct);
+    const int cy = (zone_rect.top + zone_rect.bottom) / 2;
+    const float t = static_cast<float>(clamped) / static_cast<float>(kSliderMaxPct);
+    const int knob_x = kSliderTrackLeft +
+                       static_cast<int>(std::lround(t * static_cast<float>(kSliderTrackRight - kSliderTrackLeft)));
+
+    // Track groove
+    const RECT track_r{kSliderTrackLeft, cy - 3, kSliderTrackRight, cy + 3};
+    DrawBorderRect(dc, track_r, RGB(16, 20, 30),
+                   (hovered || dragging) ? RGB(92, 146, 212) : RGB(46, 56, 76), 4);
+
+    // 100% baseline notch at midpoint
+    const int mid_x = (kSliderTrackLeft + kSliderTrackRight) / 2;
+    HPEN notch_pen = ::CreatePen(PS_SOLID, 1, RGB(84, 98, 124));
+    HGDIOBJ old_pen = ::SelectObject(dc, notch_pen);
+    ::MoveToEx(dc, mid_x, cy - 6, nullptr);
+    ::LineTo(dc, mid_x, cy + 7);
+    ::SelectObject(dc, old_pen);
+    ::DeleteObject(notch_pen);
+
+    // Filled active bar
+    if (knob_x > kSliderTrackLeft + 1) {
+        const COLORREF fill_col = !effect_active ? RGB(66, 76, 94)
+                                                 : (clamped > 100 ? RGB(236, 168, 72) : RGB(64, 186, 148));
+        const RECT fill_r{kSliderTrackLeft + 1, cy - 2, knob_x, cy + 2};
+        FillSolidRect(dc, fill_r, fill_col);
+    }
+
+    // Thumb knob
+    const RECT knob_r{knob_x - 4, cy - 7, knob_x + 4, cy + 7};
+    const COLORREF knob_fill = dragging ? RGB(246, 250, 255)
+                                        : (hovered ? RGB(204, 228, 255)
+                                                   : (effect_active ? RGB(154, 218, 245) : RGB(118, 128, 148)));
+    const COLORREF knob_border = (dragging || hovered) ? RGB(114, 194, 255) : RGB(42, 64, 92);
+    DrawBorderRect(dc, knob_r, knob_fill, knob_border, 4);
+
+    // Numeric percentage readout
+    wchar_t pct_buf[16] = {};
+    swprintf_s(pct_buf, L"%d%%", clamped);
+    const COLORREF txt_col = !effect_active
+                                 ? RGB(112, 120, 138)
+                                 : (clamped == 100 ? RGB(172, 224, 200)
+                                                   : (clamped > 100 ? RGB(248, 198, 110) : RGB(152, 204, 248)));
+    const RECT read_r{kSliderReadoutLeft, zone_rect.top, kSliderReadoutRight, zone_rect.bottom};
+    DrawTextBox(dc, g_panel.font_small, txt_col, read_r, pct_buf, DT_RIGHT | DT_VCENTER);
+}
+
 void PaintPanelToDibLocked() {
     if (!EnsureGdiSurfaceLocked()) {
         return;
@@ -543,7 +693,22 @@ void PaintPanelToDibLocked() {
     };
     const bool all_on = std::all_of(std::begin(toggle_states), std::end(toggle_states), [](bool v) { return v; });
     const bool all_off = std::all_of(std::begin(toggle_states), std::end(toggle_states), [](bool v) { return !v; });
+    bool all_default_str = true;
+    for (const auto& spec : kSliderSpecs) {
+        if (ClampStrengthPct(cfg.*(spec.member)) != 100) {
+            all_default_str = false;
+            break;
+        }
+    }
     {
+        const bool h_rst = (g_panel.hover_index == 42);
+        DrawBorderRect(dc, zones[42].rect,
+                       all_default_str ? RGB(26, 36, 48) : (h_rst ? RGB(58, 86, 128) : RGB(36, 56, 86)),
+                       all_default_str ? RGB(58, 74, 98) : (h_rst ? RGB(126, 192, 255) : RGB(94, 152, 220)), 5);
+        DrawTextBox(dc, g_panel.font_small,
+                    all_default_str ? RGB(156, 176, 204) : RGB(224, 240, 255),
+                    zones[42].rect, zones[42].label, DT_CENTER | DT_VCENTER);
+
         const bool h_on = (g_panel.hover_index == 2);
         DrawBorderRect(dc, zones[2].rect,
                        all_on ? RGB(36, 120, 88) : (h_on ? RGB(42, 68, 58) : RGB(26, 36, 48)),
@@ -562,17 +727,22 @@ void PaintPanelToDibLocked() {
     }
     for (int i = 0; i < 8; ++i) {
         const size_t z_idx = static_cast<size_t>(4 + i);
-        const RECT& r = zones[z_idx].rect;
-        const bool hovered = (g_panel.hover_index == static_cast<int>(z_idx));
+        const size_t s_idx = static_cast<size_t>(43 + i);
+        const RECT& tog_r = zones[z_idx].rect;
+        const RECT& sld_r = zones[s_idx].rect;
+        const RECT row_r{tog_r.left, tog_r.top, sld_r.right, tog_r.bottom};
+        const bool tog_hover = (g_panel.hover_index == static_cast<int>(z_idx));
+        const bool sld_hover = (g_panel.hover_index == static_cast<int>(s_idx));
+        const bool sld_drag = (g_panel.active_slider_index == i);
         const bool on = toggle_states[i];
 
-        const COLORREF row_fill = hovered ? RGB(34, 43, 61) : RGB(24, 30, 42);
-        const COLORREF row_border = hovered ? RGB(92, 152, 226)
-                                            : (on ? RGB(48, 86, 118) : RGB(42, 49, 64));
-        DrawBorderRect(dc, r, row_fill, row_border, 6);
+        const COLORREF row_fill = (tog_hover || sld_hover || sld_drag) ? RGB(32, 41, 58) : RGB(24, 30, 42);
+        const COLORREF row_border = (tog_hover || sld_hover || sld_drag) ? RGB(92, 152, 226)
+                                                                         : (on ? RGB(48, 86, 118) : RGB(42, 49, 64));
+        DrawBorderRect(dc, row_r, row_fill, row_border, 6);
 
         // Checkbox square
-        const RECT box{r.left + 8, r.top + 5, r.left + 25, r.top + 22};
+        const RECT box{tog_r.left + 8, tog_r.top + 5, tog_r.left + 25, tog_r.top + 22};
         DrawBorderRect(dc, box,
                        on ? RGB(42, 168, 116) : RGB(20, 24, 34),
                        on ? RGB(105, 232, 178) : RGB(96, 110, 136), 4);
@@ -581,20 +751,30 @@ void PaintPanelToDibLocked() {
                         DT_CENTER | DT_VCENTER);
         }
 
-        // Label + right status tag
-        RECT text_r{r.left + 35, r.top, r.right - 46, r.bottom};
+        // Label + status tag
+        RECT text_r{tog_r.left + 32, tog_r.top, tog_r.right - 38, tog_r.bottom};
         DrawTextBox(dc, g_panel.font_body,
                     on ? RGB(232, 240, 250) : RGB(148, 158, 176),
                     text_r, zones[z_idx].label, DT_LEFT | DT_VCENTER);
 
-        RECT tag_r{r.right - 44, r.top, r.right - 8, r.bottom};
+        RECT tag_r{tog_r.right - 38, tog_r.top, tog_r.right - 4, tog_r.bottom};
         DrawTextBox(dc, g_panel.font_small,
                     on ? RGB(102, 232, 170) : RGB(128, 134, 150),
                     tag_r, on ? L"开启" : L"关闭", DT_RIGHT | DT_VCENTER);
+
+        // Interactive strength slider
+        DrawIntensitySlider(dc, sld_r, cfg.*(kSliderSpecs[static_cast<size_t>(i)].member),
+                            on, sld_hover, sld_drag);
     }
 
-    // Section 2: P2 Filter pills
+    // Section 2: P2 Filter pills + strength slider on header bar
     DrawSectionHeader(dc, 318, L"P2 画面风格滤镜");
+    DrawTextBox(dc, g_panel.font_small, RGB(154, 176, 206),
+                RECT{372, 314, 406, 336}, L"强度", DT_RIGHT | DT_VCENTER);
+    DrawIntensitySlider(dc, zones[51].rect, cfg.p2_filter_strength,
+                        cfg.p2_filter_preset > 0,
+                        g_panel.hover_index == 51,
+                        g_panel.active_slider_index == 8);
     for (int i = 0; i < 3; ++i) {
         const size_t z_idx = static_cast<size_t>(12 + i);
         const RECT& r = zones[z_idx].rect;
@@ -610,11 +790,17 @@ void PaintPanelToDibLocked() {
                     r, zones[z_idx].label, DT_CENTER | DT_VCENTER);
     }
 
-    // Section 3: P2 3D LUT Color Grading pills
+    // Section 3: P2 3D LUT Color Grading pills + hint + strength slider on header bar
     DrawSectionHeader(dc, 376, L"P2 3D LUT 电影调色");
     DrawTextBox(dc, g_panel.font_small, RGB(218, 182, 116),
-                RECT{kPaddingX + 145, 376, static_cast<LONG>(kPanelWidth - kPaddingX), 394},
-                L"外部需改名 TL2_CustomLUT.cube 放游戏根目录", DT_RIGHT | DT_VCENTER);
+                RECT{kPaddingX + 144, 372, 370, 394},
+                L"外部: 根目录 TL2_CustomLUT.cube", DT_LEFT | DT_VCENTER);
+    DrawTextBox(dc, g_panel.font_small, RGB(154, 176, 206),
+                RECT{372, 372, 406, 394}, L"强度", DT_RIGHT | DT_VCENTER);
+    DrawIntensitySlider(dc, zones[52].rect, cfg.p2_lut_strength,
+                        cfg.p2_lut_preset > 0,
+                        g_panel.hover_index == 52,
+                        g_panel.active_slider_index == 9);
     for (int i = 0; i < 4; ++i) {
         const size_t z_idx = static_cast<size_t>(15 + i);
         const RECT& r = zones[z_idx].rect;
@@ -715,7 +901,16 @@ void HandleHitClickLocked(int hit_idx) {
         case HitTargetKind::CloseButton:
             g_panel.open = false;
             g_panel.dragging = false;
+            g_panel.active_slider_index = -1;
             return;
+        case HitTargetKind::ResetStrengths: {
+            for (const auto& spec : kSliderSpecs) {
+                spec.set_fn(100);
+            }
+            g_panel.active_custom_slot = -1;
+            g_panel.status_text = L"已将全部 10 项渲染强度恢复为默认 100%";
+            break;
+        }
         case HitTargetKind::ToggleAllOn:
         case HitTargetKind::ToggleAllOff: {
             const bool enable_all = (kind == HitTargetKind::ToggleAllOn);
@@ -922,15 +1117,19 @@ LRESULT CALLBACK PanelHookWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPa
             g_panel.hwnd = nullptr;
             g_panel.orig_wndproc = nullptr;
             g_panel.dragging = false;
+            g_panel.active_slider_index = -1;
             g_wndproc_attached.store(false, std::memory_order_release);
-        } else if (msg == WM_CAPTURECHANGED && g_panel.dragging) {
+        } else if (msg == WM_CAPTURECHANGED && (g_panel.dragging || g_panel.active_slider_index >= 0)) {
             g_panel.dragging = false;
+            g_panel.active_slider_index = -1;
+            g_panel.dirty = true;
         } else if ((msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN) && wParam == VK_F8) {
             if ((lParam & (1LL << 30)) == 0) {
                 g_panel.open = !g_panel.open;
                 g_panel.dirty = true;
                 if (!g_panel.open) {
                     g_panel.dragging = false;
+                    g_panel.active_slider_index = -1;
                     need_release_capture = (::GetCapture() == hwnd);
                 }
             }
@@ -942,6 +1141,7 @@ LRESULT CALLBACK PanelHookWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPa
         } else if ((msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN) && wParam == VK_ESCAPE && g_panel.open) {
             g_panel.open = false;
             g_panel.dragging = false;
+            g_panel.active_slider_index = -1;
             g_panel.dirty = true;
             g_panel.swallow_esc_keyup = true;
             need_release_capture = (::GetCapture() == hwnd);
@@ -978,6 +1178,20 @@ LRESULT CALLBACK PanelHookWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPa
                     g_panel.dragging = false;
                     need_release_capture = (::GetCapture() == hwnd);
                     swallow = true;
+                } else if (g_panel.active_slider_index >= 0 && msg == WM_MOUSEMOVE) {
+                    const int local_x = static_cast<int>(rt_x - g_panel.pos_x);
+                    ApplyEffectStrengthByIndex(g_panel.active_slider_index, PctFromTrackX(local_x));
+                    g_panel.cursor_panel.x = static_cast<LONG>(rt_x);
+                    g_panel.cursor_panel.y = static_cast<LONG>(rt_y);
+                    g_panel.cursor_inside = true;
+                    swallow = true;
+                } else if (g_panel.active_slider_index >= 0 && msg == WM_LBUTTONUP) {
+                    const int local_x = static_cast<int>(rt_x - g_panel.pos_x);
+                    ApplyEffectStrengthByIndex(g_panel.active_slider_index, PctFromTrackX(local_x));
+                    g_panel.active_slider_index = -1;
+                    need_release_capture = (::GetCapture() == hwnd);
+                    SaveConfigFileLocked(nullptr);
+                    swallow = true;
                 } else {
                     const int local_x = static_cast<int>(rt_x - g_panel.pos_x);
                     const int local_y = static_cast<int>(rt_y - g_panel.pos_y);
@@ -997,21 +1211,54 @@ LRESULT CALLBACK PanelHookWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPa
 
                     if (over_panel) {
                         swallow = true;
-                        if (msg == WM_LBUTTONDOWN || msg == WM_LBUTTONDBLCLK) {
-                            if (new_hover >= 0) {
-                                const HitTargetKind kind =
-                                    GetHitZones()[static_cast<size_t>(new_hover)].kind;
-                                if (kind == HitTargetKind::TitleDrag) {
-                                    g_panel.dragging = true;
-                                    g_panel.drag_offset_x = local_x;
-                                    g_panel.drag_offset_y = local_y;
+                        if ((msg == WM_LBUTTONDOWN || msg == WM_LBUTTONDBLCLK) && new_hover >= 0) {
+                            const HitTargetKind kind =
+                                GetHitZones()[static_cast<size_t>(new_hover)].kind;
+                            if (kind == HitTargetKind::TitleDrag) {
+                                g_panel.dragging = true;
+                                g_panel.drag_offset_x = local_x;
+                                g_panel.drag_offset_y = local_y;
+                                need_set_capture = true;
+                            } else if (kind >= HitTargetKind::Slider0 && kind <= HitTargetKind::Slider9) {
+                                if (local_x <= kSliderTrackRight + 8) {
+                                    const int s_idx = static_cast<int>(kind) - static_cast<int>(HitTargetKind::Slider0);
+                                    g_panel.active_slider_index = s_idx;
                                     need_set_capture = true;
-                                } else {
-                                    HandleHitClickLocked(new_hover);
-                                    if (!g_panel.open) {
-                                        need_release_capture = (::GetCapture() == hwnd);
-                                    }
+                                    ApplyEffectStrengthByIndex(s_idx, PctFromTrackX(local_x));
                                 }
+                            } else {
+                                HandleHitClickLocked(new_hover);
+                                if (!g_panel.open) {
+                                    need_release_capture = (::GetCapture() == hwnd);
+                                }
+                            }
+                        } else if (msg == WM_RBUTTONDOWN && new_hover >= 0) {
+                            const HitTargetKind kind =
+                                GetHitZones()[static_cast<size_t>(new_hover)].kind;
+                            if (kind >= HitTargetKind::Slider0 && kind <= HitTargetKind::Slider9) {
+                                const int s_idx = static_cast<int>(kind) - static_cast<int>(HitTargetKind::Slider0);
+                                ApplyEffectStrengthByIndex(s_idx, 100);
+                                SaveConfigFileLocked(nullptr);
+                            }
+                        } else if (msg == WM_MOUSEWHEEL && new_hover >= 0) {
+                            const HitTargetKind kind =
+                                GetHitZones()[static_cast<size_t>(new_hover)].kind;
+                            int s_idx = -1;
+                            if (kind >= HitTargetKind::Slider0 && kind <= HitTargetKind::Slider9) {
+                                s_idx = static_cast<int>(kind) - static_cast<int>(HitTargetKind::Slider0);
+                            } else if (kind >= HitTargetKind::TogglePhase3 && kind <= HitTargetKind::ToggleP2Ssr) {
+                                s_idx = static_cast<int>(kind) - static_cast<int>(HitTargetKind::TogglePhase3);
+                            } else if (kind >= HitTargetKind::FilterOff && kind <= HitTargetKind::FilterDark) {
+                                s_idx = 8;
+                            } else if (kind >= HitTargetKind::LutOff && kind <= HitTargetKind::LutCustomCube) {
+                                s_idx = 9;
+                            }
+                            const int wheel_delta = GET_WHEEL_DELTA_WPARAM(wParam);
+                            if (s_idx >= 0 && wheel_delta != 0) {
+                                const int step = ((GET_KEYSTATE_WPARAM(wParam) & MK_SHIFT) ? 10 : 5) *
+                                                 ((wheel_delta > 0) ? 1 : -1);
+                                ApplyEffectStrengthByIndex(s_idx, GetEffectStrengthByIndex(s_idx) + step);
+                                SaveConfigFileLocked(nullptr);
                             }
                         }
                     }
@@ -1050,6 +1297,9 @@ VisualConfig CaptureVisualConfigFromEngine() {
     cfg.p2_ssr_enabled = IsP2SsrEnabled();
     cfg.p2_filter_preset = ClampFilterPreset(GetP2FilterPreset());
     cfg.p2_lut_preset = ClampLutPreset(GetP2LutPreset());
+    for (const auto& spec : kSliderSpecs) {
+        cfg.*(spec.member) = ClampStrengthPct(spec.get_fn());
+    }
     return cfg;
 }
 
@@ -1064,6 +1314,9 @@ void ApplyVisualConfigToEngine(const VisualConfig& cfg) {
     SetP2SsrEnabled(cfg.p2_ssr_enabled);
     SetP2FilterPreset(ClampFilterPreset(cfg.p2_filter_preset));
     SetP2LutPreset(ClampLutPreset(cfg.p2_lut_preset));
+    for (const auto& spec : kSliderSpecs) {
+        spec.set_fn(ClampStrengthPct(cfg.*(spec.member)));
+    }
 }
 
 std::wstring ResolveDefaultConfigIniPath() {
@@ -1210,11 +1463,12 @@ void ResetConfigPanelStateForTest() {
     g_panel.dirty = true;
     g_panel.has_custom_pos = false;
     g_panel.dragging = false;
+    g_panel.active_slider_index = -1;
     g_panel.hover_index = -1;
     g_panel.presets = {};
     g_panel.active_custom_slot = -1;
     g_panel.ini_path.clear();
-    g_panel.status_text = L"按 F8 / ESC 关闭  |  左键拖动标题栏";
+    g_panel.status_text = L"F8/ESC关闭 · 拖动滑块/滚轮调强度 · 右键滑块归位100%";
     ApplyVisualConfigToEngine(VisualConfig{});
 }
 

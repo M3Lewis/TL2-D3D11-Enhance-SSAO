@@ -27,6 +27,17 @@ struct VisualConfig {
     int p2_filter_preset = 1;  // 0=Off, 1=Hob, 2=Dark Film
     int p2_lut_preset = 0;     // 0=Off, 1=CinemaTealOrange, 2=ColdNordic, 3=CustomCube
 
+    int phase3_strength = 100;       // 0..200 (%)
+    int af_point_strength = 100;     // 0..200 (%)
+    int p0_rimlit_strength = 100;    // 0..200 (%)
+    int ao_strength = 100;           // 0..200 (%)
+    int p0_sscs_strength = 100;      // 0..200 (%)
+    int p1_soft_strength = 100;      // 0..200 (%)
+    int p2_aerial_strength = 100;    // 0..200 (%)
+    int p2_ssr_strength = 100;       // 0..200 (%)
+    int p2_filter_strength = 100;    // 0..200 (%)
+    int p2_lut_strength = 100;       // 0..200 (%)
+
     bool operator==(const VisualConfig& other) const = default;
 };
 

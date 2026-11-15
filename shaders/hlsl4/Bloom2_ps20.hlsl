@@ -82,9 +82,10 @@ float4 postprocess_impl(float2 texCoord)
     float4 blur = Blur1.Sample(Blur1Sampler, texCoord);
     float4 combined = blur * BlurWeight + sharp * OriginalImageWeight;
 
-    if (p2FilterParams.x > 0.5 && p2FilterParams.y > 0.5)
+    float filterStrength = clamp(p2FilterParams.w, 0.0, 1.65);
+    if (p2FilterParams.x > 0.5 && p2FilterParams.y > 0.5 && filterStrength > 0.001)
     {
-        return float4(ApplyP2HobFilter(combined.rgb, p2FilterParams.x), combined.a);
+        return float4(saturate(lerp(combined.rgb, ApplyP2HobFilter(combined.rgb, p2FilterParams.x), filterStrength)), combined.a);
     }
     return combined;
 }

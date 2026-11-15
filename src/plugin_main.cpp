@@ -194,7 +194,7 @@ void LogAllStats() {
         static_cast<unsigned long long>(cegui.fallback_skips));
     const auto p3 = routeb::GetPhase3Stats();
     LogLine(
-        "[RouteB][Phase3][Stats] Scene hooked=%d samplerHook=%d samplerCalls=%llu samplerAF=%llu shared=%d setPass=%llu diffOpaque=%llu diffAlpha=%llu skinned=%llu light=%llu rim2D=%llu rimCube=%llu rim3Cube=%llu vsInject=%llu vsVColFix=%llu ffSync=%llu",
+        "[RouteB][Phase3][Stats] Scene hooked=%d samplerHook=%d samplerCalls=%llu samplerAF=%llu shared=%d setPass=%llu diffOpaque=%llu diffAlpha=%llu skinned=%llu light=%llu rim2D=%llu rimCube=%llu rim3Cube=%llu vsInject=%llu vsVColFix=%llu ffSync=%llu p1SoftPatch=%llu p1SoftBind=%llu",
         p3.hooked ? 1 : 0,
         p3.sampler_hooked ? 1 : 0,
         static_cast<unsigned long long>(p3.sampler_hook_calls),
@@ -210,7 +210,9 @@ void LogAllStats() {
         static_cast<unsigned long long>(p3.rimlit_3cube_binds),
         static_cast<unsigned long long>(p3.vs_texcoord_injections),
         static_cast<unsigned long long>(p3.vs_missing_vcol_fixes),
-        static_cast<unsigned long long>(p3.ff_explicit_syncs));
+        static_cast<unsigned long long>(p3.ff_explicit_syncs),
+        static_cast<unsigned long long>(p3.p1_soft_shader_patches),
+        static_cast<unsigned long long>(p3.p1_soft_particle_binds));
     routeb::LogPhase3PassDiagnostics(LogLine);
     routeb::LogRouteCSurveySummary(LogLine);
     LogLine(
@@ -564,6 +566,7 @@ extern "C" __declspec(dllexport) int RouteB_RunConfigPanelSelfTest() {
     routeb::SetP0RimLitEnhanceEnabled(true);
     routeb::SetRouteCAoRuntimeEnabled(false);
     routeb::SetRouteCSscsRuntimeEnabled(false);
+    routeb::SetP1SoftParticlesEnabled(true);
     routeb::SetP2FilterPreset(2);
     if (!routeb::SaveCustomPreset(0)) {
         return 2;
@@ -575,7 +578,8 @@ extern "C" __declspec(dllexport) int RouteB_RunConfigPanelSelfTest() {
     }
     const routeb::VisualConfig vanilla = routeb::CaptureVisualConfigFromEngine();
     if (vanilla.phase3_enhance || vanilla.af_point_enhance || vanilla.p0_rimlit_enhance ||
-        vanilla.ao_enabled || vanilla.p0_sscs_enabled || vanilla.p2_filter_preset != 0) {
+        vanilla.ao_enabled || vanilla.p0_sscs_enabled || vanilla.p1_soft_particles ||
+        vanilla.p2_filter_preset != 0) {
         return 4;
     }
 
@@ -585,7 +589,8 @@ extern "C" __declspec(dllexport) int RouteB_RunConfigPanelSelfTest() {
     }
     const routeb::VisualConfig applied = routeb::CaptureVisualConfigFromEngine();
     if (!applied.phase3_enhance || applied.af_point_enhance || !applied.p0_rimlit_enhance ||
-        applied.ao_enabled || applied.p0_sscs_enabled || applied.p2_filter_preset != 2) {
+        applied.ao_enabled || applied.p0_sscs_enabled || !applied.p1_soft_particles ||
+        applied.p2_filter_preset != 2) {
         return 6;
     }
 

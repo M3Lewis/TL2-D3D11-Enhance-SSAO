@@ -368,7 +368,12 @@ int main(int argc, char** argv) {
             std::printf("[FAIL] d3d11 RimLit3CubePS 3-stage bind did not activate in TL2_RouteB_D3D11.log\n");
             return 8;
         }
-        std::printf("[PASS] d3d11 toast overlay + companion _tl2n/_tl2s + RimLit3CubePS D3D11 draw binding verified cleanly!\n");
+        if (route_log.find("p1SoftPatch=0") != std::string::npos ||
+            route_log.find("p1SoftPatch=") == std::string::npos) {
+            std::printf("[FAIL] d3d11 P1 soft particle FixedFunc patching did not run in TL2_RouteB_D3D11.log\n");
+            return 9;
+        }
+        std::printf("[PASS] d3d11 toast overlay + companion _tl2n/_tl2s + RimLit3CubePS + P1 soft particle patching verified cleanly!\n");
     }
     return exit_code;
 }

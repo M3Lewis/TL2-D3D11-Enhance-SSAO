@@ -1,5 +1,6 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#include <d3dcommon.h>
 
 #include <cstdint>
 #include <cstdio>
@@ -174,10 +175,83 @@ bool TestMissingVertexColourFallback() {
     return true;
 }
 
+bool TestSoftParticleShaderPatching() {
+    using D3DCompileFn = HRESULT(WINAPI*)(
+        LPCVOID, SIZE_T, LPCSTR, const void*, void*, LPCSTR, LPCSTR, UINT, UINT, ID3DBlob**, ID3DBlob**);
+    HMODULE d3dcomp = ::LoadLibraryW(L"d3dcompiler_47.dll");
+    D3DCompileFn compile_fn = d3dcomp ? reinterpret_cast<D3DCompileFn>(::GetProcAddress(d3dcomp, "D3DCompile")) : nullptr;
+
+    std::string std_src =
+        "struct VS_OUTPUT { float4 Pos:SV_POSITION; float4 Color:COLOR0; };\n"
+        "float4 ps_main(VS_OUTPUT input):SV_Target { float4 result=input.Color;\n"
+        "return result; }\n";
+    if (!routeb::PatchFixedFuncSoftParticles(std_src) ||
+        std_src.find("gP1SceneDepthTex") == std::string::npos ||
+        std_src.find("register(b6)") == std::string::npos ||
+        std_src.find("register(t7)") == std::string::npos ||
+        std_src.find("p1ParallelFloor") == std::string::npos) {
+        std::printf("FAILED: PatchFixedFuncSoftParticles failed on standard FixedFunc PS\n");
+        return false;
+    }
+    const std::string std_patched = std_src;
+    if (routeb::PatchFixedFuncSoftParticles(std_src) || std_src != std_patched) {
+        std::printf("FAILED: PatchFixedFuncSoftParticles must be idempotent\n");
+        return false;
+    }
+
+    std::string hdr_src =
+        "struct VS_OUTPUT { float4 Pos:SV_POSITION; float4 Color:COLOR0; };\n"
+        "struct HdrOverlayOutput { float4 colour:SV_Target0; float coverage:SV_Target1; };\n"
+        "HdrOverlayOutput ps_main(VS_OUTPUT input):SV_Target { float4 result=input.Color;\n"
+        "HdrOverlayOutput output; output.colour=result; output.coverage=1; return output; }\n";
+    if (!routeb::PatchFixedFuncSoftParticles(hdr_src)) {
+        std::printf("FAILED: PatchFixedFuncSoftParticles failed on HdrOverlayOutput PS\n");
+        return false;
+    }
+
+    std::string conflict_src =
+        "struct VS_OUTPUT { float4 Pos:SV_POSITION; float4 Color:COLOR0; };\n"
+        "Texture2D<float4> userTex :register(t7);\n"
+        "float4 ps_main(VS_OUTPUT input):SV_Target { float4 result=input.Color;\n"
+        "return result; }\n";
+    const std::string conflict_orig = conflict_src;
+    if (routeb::PatchFixedFuncSoftParticles(conflict_src) || conflict_src != conflict_orig) {
+        std::printf("FAILED: shader using :register(t7) must not be patched\n");
+        return false;
+    }
+
+    if (compile_fn) {
+        constexpr UINT kWarnAsErr = 1U << 15;  // D3DCOMPILE_WARNINGS_ARE_ERRORS
+        for (const std::string* s : {&std_src, &hdr_src}) {
+            ID3DBlob* code = nullptr;
+            ID3DBlob* err = nullptr;
+            const HRESULT hr = compile_fn(
+                s->data(), s->size(), "ff_soft_test.hlsl", nullptr, nullptr,
+                "ps_main", "ps_4_0", kWarnAsErr, 0, &code, &err);
+            if (FAILED(hr) || !code) {
+                const char* msg = err ? static_cast<const char*>(err->GetBufferPointer()) : "<none>";
+                std::printf("FAILED: patched HLSL compile failed (hr=0x%08X): %s\n",
+                            static_cast<unsigned>(hr), msg);
+                if (err) err->Release();
+                if (code) code->Release();
+                return false;
+            }
+            if (err) err->Release();
+            code->Release();
+        }
+    }
+    if (d3dcomp) {
+        ::FreeLibrary(d3dcomp);
+    }
+    return true;
+}
+
 }  // namespace
 
 int main() {
-    if (!TestManualNormalizationAndDeclInjection() || !TestMissingVertexColourFallback()) {
+    if (!TestManualNormalizationAndDeclInjection() ||
+        !TestMissingVertexColourFallback() ||
+        !TestSoftParticleShaderPatching()) {
         return 10;
     }
 

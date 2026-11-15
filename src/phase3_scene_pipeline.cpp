@@ -18,6 +18,8 @@
 #include "fixed_func_manual_uniforms.h"
 #include "hlsl_cbuffer_fastpath.h"
 #include "hook_utils.h"
+#include "route_c_ao.h"
+#include "route_c_d3d11.h"
 
 namespace routeb {
 
@@ -136,6 +138,13 @@ struct ActiveExplicitBinding {
     bool is_fixed_func_vs = false;
 };
 
+struct ActiveSoftParticleBinding {
+    uintptr_t rs = 0;
+    int soft_mode = 0;  // 0=off, 1=alpha blend, 2=additive/rgb blend
+    float inv_soft_range = 0.0f;
+    bool valid = false;
+};
+
 // Function pointer typedefs
 using SceneMgrSetPassFn = const void*(__fastcall*)(uintptr_t sm, const void* pass, bool even_if_suppressed, bool shadow_deriv);
 using GetFfShaderSourceFn = void*(__fastcall*)(uintptr_t self, std::string* out_src, const void* ve, const void* fe, const void* vdecl, const void* state);
@@ -212,8 +221,11 @@ struct OgreApiTable {
     PassGetIntFn pass_get_alpha_reject_func = nullptr;
     PassGetU8Fn pass_get_alpha_reject_val = nullptr;
     PassGetBoolFn pass_get_lighting_enabled = nullptr;
+    PassGetBoolFn pass_get_depth_check_enabled = nullptr;
     PassGetBoolFn pass_get_depth_write_enabled = nullptr;
     PassGetBoolFn pass_is_transparent = nullptr;
+    PassGetIntFn pass_get_src_blend = nullptr;
+    PassGetIntFn pass_get_dst_blend = nullptr;
     PassGetBoolFn pass_get_fog_override = nullptr;
     PassGetIntFn pass_get_fog_mode = nullptr;
     PassGetColourFn pass_get_fog_colour = nullptr;
@@ -298,6 +310,8 @@ ExplicitProgramSlot g_slots[9] = {
 };
 
 ActiveExplicitBinding g_active_binding{};
+ActiveSoftParticleBinding g_active_soft_particle{};
+std::atomic<int> g_last_bound_soft_particle_mode{0};
 
 std::atomic<uint64_t> g_setpass_calls{0};
 std::atomic<uint64_t> g_diffpass_opaque_binds{0};
@@ -312,6 +326,8 @@ std::atomic<uint64_t> g_vs_missing_vcol_fixes{0};
 std::atomic<uint64_t> g_ff_explicit_syncs{0};
 std::atomic<uint64_t> g_sampler_hook_calls{0};
 std::atomic<uint64_t> g_sampler_af_upgrades{0};
+std::atomic<uint64_t> g_p1_soft_shader_patches{0};
+std::atomic<uint64_t> g_p1_soft_particle_binds{0};
 std::atomic<bool> g_hooked{false};
 std::atomic<bool> g_sampler_hooked{false};
 std::atomic<bool> g_runtime_enhance_enabled{true};
@@ -1504,15 +1520,95 @@ void ResolveCompanionMapsForPass(
 }
 
 void __fastcall BindActiveCompanionSrvs(uintptr_t rs) {
-    if (!g_active_companion.valid || rs != g_active_companion.rs) {
-        return;
-    }
     auto* ctx = *reinterpret_cast<ID3D11DeviceContext* const*>(rs + kRsOffDeviceContext);
-    if (!ctx) {
-        return;
+    if (g_active_companion.valid && rs == g_active_companion.rs && ctx) {
+        ctx->PSSetShaderResources(3, 2, g_active_companion.srvs);
+        g_companion_draw_binds.fetch_add(1, std::memory_order_relaxed);
     }
-    ctx->PSSetShaderResources(3, 2, g_active_companion.srvs);
-    g_companion_draw_binds.fetch_add(1, std::memory_order_relaxed);
+
+    const int prev_mode = g_last_bound_soft_particle_mode.load(std::memory_order_relaxed);
+    const int want_mode = (g_active_soft_particle.valid && rs == g_active_soft_particle.rs &&
+                           IsRouteCWorldDepthReadyForParticles())
+                              ? g_active_soft_particle.soft_mode
+                              : 0;
+    if (want_mode > 0) {
+        if (ctx) {
+            RouteCParticleDepthSnapshot snap{};
+            if (GetRouteCParticleDepthSnapshot(&snap) &&
+                BindRouteCParticleState(ctx, want_mode, g_active_soft_particle.inv_soft_range, &snap)) {
+                g_last_bound_soft_particle_mode.store(want_mode, std::memory_order_relaxed);
+                g_p1_soft_particle_binds.fetch_add(1, std::memory_order_relaxed);
+                return;
+            }
+            if (prev_mode != 0) {
+                BindRouteCParticleState(ctx, 0, 0.0f, nullptr);
+                g_last_bound_soft_particle_mode.store(0, std::memory_order_relaxed);
+            }
+        }
+    } else if (prev_mode != 0) {
+        if (ctx) {
+            BindRouteCParticleState(ctx, 0, 0.0f, nullptr);
+        }
+        g_last_bound_soft_particle_mode.store(0, std::memory_order_relaxed);
+    }
+}
+
+int ClassifySoftParticleMode(const void* pass) {
+    if (!pass || !g_api.pass_has_fp || !g_api.pass_get_lighting_enabled ||
+        !g_api.pass_get_depth_write_enabled || !g_api.pass_get_depth_check_enabled ||
+        !g_api.pass_is_transparent || !g_api.pass_get_alpha_reject_func ||
+        !g_api.pass_get_src_blend || !g_api.pass_get_dst_blend) {
+        return 0;
+    }
+    if (g_api.pass_has_fp(pass) || g_api.pass_get_lighting_enabled(pass) ||
+        g_api.pass_get_depth_write_enabled(pass) || !g_api.pass_get_depth_check_enabled(pass) ||
+        !g_api.pass_is_transparent(pass) ||
+        g_api.pass_get_alpha_reject_func(pass) != kCmpAlwaysPass) {
+        return 0;
+    }
+    if (g_api.pass_get_name) {
+        const std::string& pname = g_api.pass_get_name(pass);
+        if (ContainsAsciiInsensitive(pname, "Behind") ||
+            ContainsAsciiInsensitive(pname, "Shadow") ||
+            ContainsAsciiInsensitive(pname, "Caster")) {
+            return 0;
+        }
+    }
+    const uint16_t num_tus = g_api.pass_get_num_tus ? g_api.pass_get_num_tus(pass) : 0;
+    if (num_tus == 0) {
+        return 0;
+    }
+    for (uint16_t i = 0; i < num_tus; ++i) {
+        const void* tus = g_api.pass_get_tus ? g_api.pass_get_tus(pass, i) : nullptr;
+        if (!tus) {
+            continue;
+        }
+        if (g_api.tus_has_view_rel_texgen && g_api.tus_has_view_rel_texgen(tus)) {
+            return 0;
+        }
+        if (g_api.tus_get_name) {
+            const std::string& tname = g_api.tus_get_name(tus);
+            if (ContainsAsciiInsensitive(tname, "LIGHTPASS") ||
+                ContainsAsciiInsensitive(tname, "RIMLIT")) {
+                return 0;
+            }
+        }
+    }
+
+    // Verified Ogre::SceneBlendFactor enum from OgreMain Pass::_getBlendFlags:
+    // 0=ONE, 1=ZERO, 2=DEST_COLOUR, 3=SOURCE_COLOUR, 5=ONE_MINUS_SOURCE_COLOUR,
+    // 7=SOURCE_ALPHA, 9=ONE_MINUS_SOURCE_ALPHA
+    const int src = g_api.pass_get_src_blend(pass);
+    const int dst = g_api.pass_get_dst_blend(pass);
+    if (src == 7 && (dst == 9 || dst == 0)) {
+        return 1;  // alpha blend (result.a *= p1Soft)
+    }
+    if ((src == 0 && dst == 0) ||
+        (src == 3 && (dst == 5 || dst == 0)) ||
+        (src == 2 && dst == 0)) {
+        return 2;  // additive / colour-blended glow (result.rgb *= p1Soft)
+    }
+    return 0;
 }
 
 void AppendAbsJmpBytes(std::vector<uint8_t>& out, uint64_t addr) {
@@ -1573,6 +1669,7 @@ const void* __fastcall HookSceneManagerSetPass(
     SetActiveExplicitPsForwardTarget(0);
     g_active_binding = {};
     g_active_companion = {};
+    g_active_soft_particle = {};
 
     if (scene_mgr && pass) {
         const bool pre_suppressed = (*reinterpret_cast<const uint8_t*>(scene_mgr + kSmOffSuppressRenderState) != 0);
@@ -1618,6 +1715,15 @@ const void* __fastcall HookSceneManagerSetPass(
         return used_pass;
     }
     if (arch == PassArchetype::None) {
+        if (IsRouteCWorldDepthReadyForParticles()) {
+            const int soft_mode = ClassifySoftParticleMode(used_pass);
+            if (soft_mode > 0) {
+                g_active_soft_particle.rs = rs;
+                g_active_soft_particle.soft_mode = soft_mode;
+                g_active_soft_particle.inv_soft_range = (soft_mode == 1) ? (1.0f / 0.65f) : (1.0f / 0.75f);
+                g_active_soft_particle.valid = true;
+            }
+        }
         return used_pass;
     }
 
@@ -1660,6 +1766,9 @@ void* __fastcall HookGetFixedFuncShaderSource(
 
     if (PatchFixedFuncMissingVertexColour(*out_src)) {
         g_vs_missing_vcol_fixes.fetch_add(1, std::memory_order_relaxed);
+    }
+    if (PatchFixedFuncSoftParticles(*out_src)) {
+        g_p1_soft_shader_patches.fetch_add(1, std::memory_order_relaxed);
     }
 
     const size_t fog_pos = out_src->find("output.fogDist=");
@@ -1803,7 +1912,10 @@ bool ResolveAllOgreExports(HMODULE ogre_mod) {
     ok &= ResolveExport(ogre_mod, "?getColourBlendMode@TextureUnitState@Ogre@@QEBAAEBVLayerBlendModeEx@2@XZ", g_api.tus_get_colour_blend);
     ok &= ResolveExport(ogre_mod, "?getAlphaBlendMode@TextureUnitState@Ogre@@QEBAAEBVLayerBlendModeEx@2@XZ", g_api.tus_get_alpha_blend);
 
-    // Optional pass FP parameter + companion texture resolution exports (don't fail Phase 3 if absent).
+    // Optional pass FP parameter + soft-particle blend/depth + companion texture resolution exports (don't fail Phase 3 if absent).
+    ResolveExport(ogre_mod, "?getDepthCheckEnabled@Pass@Ogre@@QEBA_NXZ", g_api.pass_get_depth_check_enabled);
+    ResolveExport(ogre_mod, "?getSourceBlendFactor@Pass@Ogre@@QEBA?AW4SceneBlendFactor@2@XZ", g_api.pass_get_src_blend);
+    ResolveExport(ogre_mod, "?getDestBlendFactor@Pass@Ogre@@QEBA?AW4SceneBlendFactor@2@XZ", g_api.pass_get_dst_blend);
     ResolveExport(ogre_mod, "?getFragmentProgramParameters@Pass@Ogre@@QEBA?AV?$SharedPtr@VGpuProgramParameters@Ogre@@@2@XZ", g_api.pass_get_fp_params);
     ResolveExport(ogre_mod, "?ms_Singleton@?$Singleton@VResourceGroupManager@Ogre@@@Ogre@@1PEAVResourceGroupManager@2@EA", g_api.rgm_singleton_ptr);
     ResolveExport(ogre_mod, "?ms_Singleton@?$Singleton@VTextureManager@Ogre@@@Ogre@@1PEAVTextureManager@2@EA", g_api.tex_mgr_singleton_ptr);
@@ -1931,6 +2043,8 @@ void RemovePhase3ScenePipeline() {
     g_detour_get_sampler.Remove();
     g_orig_get_sampler = nullptr;
     g_patch_render_bind_srvs.Remove();
+    g_active_soft_particle = {};
+    g_last_bound_soft_particle_mode.store(0, std::memory_order_relaxed);
     ClearCompanionCache();
     RemoveFixedFuncManualUniforms();
     g_detour_set_ff_params.Remove();
@@ -1964,6 +2078,8 @@ Phase3Stats GetPhase3Stats() {
     s.ff_explicit_syncs = g_ff_explicit_syncs.load(std::memory_order_relaxed);
     s.sampler_hook_calls = g_sampler_hook_calls.load(std::memory_order_relaxed);
     s.sampler_af_upgrades = g_sampler_af_upgrades.load(std::memory_order_relaxed);
+    s.p1_soft_shader_patches = g_p1_soft_shader_patches.load(std::memory_order_relaxed);
+    s.p1_soft_particle_binds = g_p1_soft_particle_binds.load(std::memory_order_relaxed);
     s.hooked = g_hooked.load(std::memory_order_relaxed);
     s.sampler_hooked = g_sampler_hooked.load(std::memory_order_relaxed);
     s.shared_params_ready = g_shared_params_ready;

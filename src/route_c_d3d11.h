@@ -33,7 +33,9 @@ struct RouteCAoRenderRequest {
     int vp_width = 0;
     int vp_height = 0;
     int debug_mode = 0;
+    bool ao_enabled = true;
     bool sscs_enabled = true;
+    bool capture_particle_depth = false;
 };
 
 struct RouteCD3DStats {
@@ -99,5 +101,20 @@ bool ExecuteRouteCToastOverlay(
 bool VerifyRouteCShadersCompile(RouteCD3DLogFn logger);
 void ShutdownRouteCD3D11Resources();
 RouteCD3DStats GetRouteCD3DStats();
+
+// P1 Screen-Space Soft Particles depth sharing & b6/t7 state binding.
+struct RouteCParticleDepthSnapshot {
+    float proj_22 = 0.0f;
+    float proj_23 = 0.0f;
+    int32_t clamp_rect[4]{};
+    bool valid = false;
+};
+bool GetRouteCParticleDepthSnapshot(RouteCParticleDepthSnapshot* out);
+bool BindRouteCParticleState(
+    ID3D11DeviceContext* ctx,
+    int soft_mode,
+    float inv_soft_range,
+    const RouteCParticleDepthSnapshot* snap);
+void ResetRouteCParticleDepthSnapshot();
 
 }  // namespace routeb

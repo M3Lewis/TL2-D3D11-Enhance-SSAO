@@ -107,6 +107,7 @@ struct ActiveSceneFrame {
     bool world_candidate = false;
     bool ao_eligible = false;
     bool ao_injected = false;
+    bool particle_depth_ready = false;
     bool filter_eligible = false;
     bool filter_injected = false;
     uint32_t world_geom_draws = 0;
@@ -175,6 +176,8 @@ std::atomic<bool> g_hooked{false};
 std::atomic<bool> g_c0_survey_active{false};
 std::atomic<bool> g_ao_runtime_enabled{true};
 std::atomic<bool> g_sscs_runtime_enabled{true};
+std::atomic<bool> g_p1_soft_particles_enabled{true};
+std::atomic<bool> g_world_depth_ready_for_particles{false};
 std::atomic<uint64_t> g_toast_expire_tick_ms{0};
 std::atomic<int> g_ao_debug_mode{0};  // Phase C2 default: DebugMode=0 (Live AO Composite)
 std::atomic<uint64_t> g_render_scene_calls{0};
@@ -630,8 +633,10 @@ void TryDispatchAoForFrame(ActiveSceneFrame& frame, const char* trigger_src, uin
     if (frame.ao_injected || !frame.ao_eligible || frame.world_geom_draws == 0) {
         return;
     }
-    const int dbg_mode = g_ao_debug_mode.load(std::memory_order_relaxed);
-    if (dbg_mode < 0) {
+    const bool ao_on = g_ao_runtime_enabled.load(std::memory_order_relaxed);
+    const int dbg_mode = ao_on ? g_ao_debug_mode.load(std::memory_order_relaxed) : -1;
+    const bool sp_on = g_p1_soft_particles_enabled.load(std::memory_order_relaxed);
+    if (dbg_mode < 0 && !sp_on) {
         return;
     }
     frame.ao_injected = true;
@@ -655,9 +660,13 @@ void TryDispatchAoForFrame(ActiveSceneFrame& frame, const char* trigger_src, uin
     req.vp_top = frame.vp_t;
     req.vp_width = frame.vp_w;
     req.vp_height = frame.vp_h;
-    req.debug_mode = dbg_mode;
+    req.debug_mode = (dbg_mode >= 0) ? dbg_mode : 0;
+    req.ao_enabled = (dbg_mode >= 0);
     req.sscs_enabled = IsRouteCSscsRuntimeEnabled();
+    req.capture_particle_depth = sp_on;
     const bool ok = ExecuteRouteCAoPass(req, g_log);
+    frame.particle_depth_ready = ok && sp_on;
+    g_world_depth_ready_for_particles.store(frame.particle_depth_ready, std::memory_order_release);
 
     static std::atomic<uint32_t> s_dispatch_logs{0};
     const uint32_t log_idx = s_dispatch_logs.fetch_add(1, std::memory_order_relaxed);
@@ -895,16 +904,22 @@ void __fastcall HookRenderScene(void* sm, void* cam, void* vp, uint8_t show_over
     const bool survey_on = g_c0_survey_active.load(std::memory_order_relaxed);
     const bool ao_on = g_ao_runtime_enabled.load(std::memory_order_relaxed);
     const int dbg_mode = ao_on ? g_ao_debug_mode.load(std::memory_order_relaxed) : -1;
+    const bool sp_on = g_p1_soft_particles_enabled.load(std::memory_order_relaxed);
+    const bool need_depth_pipeline = (dbg_mode >= 0) || sp_on;
     const bool need_filter_fallback = (GetP2FilterPreset() > 0) && !WasP2PostShaderSeenRecently();
-    if ((!survey_on && dbg_mode < 0 && !need_filter_fallback) || g_scene_depth >= kMaxSceneStack || !sm || !vp) {
+    if ((!survey_on && !need_depth_pipeline && !need_filter_fallback) || g_scene_depth >= kMaxSceneStack || !sm || !vp) {
+        const bool prev_ready = g_world_depth_ready_for_particles.exchange(false, std::memory_order_acq_rel);
         g_orig_render_scene(sm, cam, vp, show_overlays);
+        g_world_depth_ready_for_particles.store(prev_ready, std::memory_order_release);
         return;
     }
 
     void* active_cam = cam ? cam : (g_api.vp_get_camera ? g_api.vp_get_camera(vp) : nullptr);
     void* rt = g_api.vp_get_target ? g_api.vp_get_target(vp) : nullptr;
     if (!active_cam || !rt) {
+        const bool prev_ready = g_world_depth_ready_for_particles.exchange(false, std::memory_order_acq_rel);
         g_orig_render_scene(sm, cam, vp, show_overlays);
+        g_world_depth_ready_for_particles.store(prev_ready, std::memory_order_release);
         return;
     }
 
@@ -920,7 +935,7 @@ void __fastcall HookRenderScene(void* sm, void* cam, void* vp, uint8_t show_over
     const std::string& sm_str = g_api.sm_get_name(sm);
     const std::string& cam_str = g_api.cam_get_name(active_cam);
     bool ao_eligible =
-        (dbg_mode >= 0) &&
+        need_depth_pipeline &&
         world_cand &&
         (sm_str == "SMInstance") &&
         (cam_str == "PlayerCam");
@@ -1024,12 +1039,21 @@ void __fastcall HookRenderScene(void* sm, void* cam, void* vp, uint8_t show_over
     }
 
     struct SceneStackGuard {
+        bool prev_particle_ready = false;
+        explicit SceneStackGuard(bool prev) : prev_particle_ready(prev) {}
         ~SceneStackGuard() {
+            bool exited_world_depth = false;
             if (g_scene_depth > 0) {
                 --g_scene_depth;
+                exited_world_depth = g_scene_stack[g_scene_depth].particle_depth_ready;
+                g_scene_stack[g_scene_depth].particle_depth_ready = false;
             }
+            if (exited_world_depth) {
+                ResetRouteCParticleDepthSnapshot();
+            }
+            g_world_depth_ready_for_particles.store(prev_particle_ready, std::memory_order_release);
         }
-    } stack_guard;
+    } stack_guard(g_world_depth_ready_for_particles.exchange(false, std::memory_order_acq_rel));
 
     g_orig_render_scene(sm, cam, vp, show_overlays);
 }
@@ -1040,10 +1064,15 @@ uint8_t __fastcall HookFireRenderQueueStarted(void* sm, uint8_t queue_group_id, 
         ActiveSceneFrame& frame = g_scene_stack[g_scene_depth - 1];
         if (frame.sm == sm) {
             // Fallback trigger if queue 86 was absent in an empty-entity scene: inject right before q>86 starts.
-            if (queue_group_id > 86) {
+            if (queue_group_id > 86 && queue_group_id < 95) {
                 TryDispatchAoForFrame(frame, "Started>86", queue_group_id);
             }
             if (queue_group_id >= 95) {
+                if (frame.particle_depth_ready) {
+                    frame.particle_depth_ready = false;
+                    g_world_depth_ready_for_particles.store(false, std::memory_order_release);
+                    ResetRouteCParticleDepthSnapshot();
+                }
                 TryDispatchP2FilterFallbackForFrame(frame, queue_group_id);
             }
             if (g_c0_survey_active.load(std::memory_order_relaxed)) {
@@ -1222,6 +1251,8 @@ bool InstallRouteCAoPipeline(void* ogre_main_base, RouteCLogFn logger) {
     g_c0_survey_active.store(survey_on, std::memory_order_relaxed);
     g_ao_runtime_enabled.store(ao_init_on, std::memory_order_relaxed);
     g_sscs_runtime_enabled.store(!EnvFlagIsZero("TL2_P0_SSCS"), std::memory_order_relaxed);
+    g_p1_soft_particles_enabled.store(!EnvFlagIsZero("TL2_P1_SOFT_PARTICLES"), std::memory_order_relaxed);
+    g_world_depth_ready_for_particles.store(false, std::memory_order_relaxed);
     g_ao_debug_mode.store(dbg_mode, std::memory_order_relaxed);
     g_hooked.store(true, std::memory_order_relaxed);
 
@@ -1229,9 +1260,10 @@ bool InstallRouteCAoPipeline(void* ogre_main_base, RouteCLogFn logger) {
 
     if (g_log) {
         const int p2_preset = GetP2FilterPreset();
-        g_log("[RouteC][C2] Hooks installed (ao=%s, sscs=%s, debugMode=%d, p2Filter=%s, f11=%s, p0rim=%s, c0_survey=%s, injectQueue=86, hotkey=F8:ConfigPanel).",
+        g_log("[RouteC][C2] Hooks installed (ao=%s, sscs=%s, p1SoftPart=%s, debugMode=%d, p2Filter=%s, f11=%s, p0rim=%s, c0_survey=%s, injectQueue=86, hotkey=F8:ConfigPanel).",
               IsRouteCAoRuntimeEnabled() ? "ON" : "OFF",
               IsRouteCSscsRuntimeEnabled() ? "ON" : "OFF",
+              IsP1SoftParticlesEnabled() ? "ON" : "OFF",
               dbg_mode,
               P2FilterPresetName(p2_preset),
               IsF11VisualEnhanceEnabled() ? "ON" : "OFF",
@@ -1290,6 +1322,26 @@ bool ToggleRouteCSscsRuntimeEnabled() {
     while (!g_sscs_runtime_enabled.compare_exchange_weak(expected, !expected, std::memory_order_relaxed)) {
     }
     return !expected;
+}
+
+void SetP1SoftParticlesEnabled(bool enabled) {
+    g_p1_soft_particles_enabled.store(enabled, std::memory_order_relaxed);
+}
+
+bool IsP1SoftParticlesEnabled() {
+    return g_p1_soft_particles_enabled.load(std::memory_order_relaxed);
+}
+
+bool ToggleP1SoftParticlesEnabled() {
+    bool expected = g_p1_soft_particles_enabled.load(std::memory_order_relaxed);
+    while (!g_p1_soft_particles_enabled.compare_exchange_weak(expected, !expected, std::memory_order_relaxed)) {
+    }
+    return !expected;
+}
+
+bool IsRouteCWorldDepthReadyForParticles() {
+    return g_world_depth_ready_for_particles.load(std::memory_order_acquire) &&
+           g_p1_soft_particles_enabled.load(std::memory_order_relaxed);
 }
 
 void TriggerRouteCToastForTest() {

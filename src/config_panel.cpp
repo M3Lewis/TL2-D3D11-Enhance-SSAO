@@ -22,7 +22,7 @@ namespace routeb {
 namespace {
 
 constexpr uint32_t kPanelWidth = 448;
-constexpr uint32_t kPanelHeight = 544;
+constexpr uint32_t kPanelHeight = 578;
 constexpr float kPanelMargin = 16.0f;
 constexpr int kTitleBarHeight = 42;
 constexpr int kPaddingX = 16;
@@ -36,6 +36,7 @@ enum class HitTargetKind {
     ToggleP0RimLit,
     ToggleAo,
     ToggleP0Sscs,
+    ToggleP1SoftParticles,
     FilterOff,
     FilterHob,
     FilterDark,
@@ -134,6 +135,7 @@ void SaveVisualConfigToSection(const wchar_t* section, const VisualConfig& cfg, 
     WriteIniInt(section, L"P0RimLitEnhance", cfg.p0_rimlit_enhance ? 1 : 0, path);
     WriteIniInt(section, L"AoEnabled", cfg.ao_enabled ? 1 : 0, path);
     WriteIniInt(section, L"P0SscsEnabled", cfg.p0_sscs_enabled ? 1 : 0, path);
+    WriteIniInt(section, L"P1SoftParticles", cfg.p1_soft_particles ? 1 : 0, path);
     WriteIniInt(section, L"P2FilterPreset", ClampFilterPreset(cfg.p2_filter_preset), path);
 }
 
@@ -147,6 +149,7 @@ VisualConfig LoadVisualConfigFromSection(
     out.p0_rimlit_enhance = ReadIniInt(section, L"P0RimLitEnhance", fallback.p0_rimlit_enhance ? 1 : 0, path) != 0;
     out.ao_enabled = ReadIniInt(section, L"AoEnabled", fallback.ao_enabled ? 1 : 0, path) != 0;
     out.p0_sscs_enabled = ReadIniInt(section, L"P0SscsEnabled", fallback.p0_sscs_enabled ? 1 : 0, path) != 0;
+    out.p1_soft_particles = ReadIniInt(section, L"P1SoftParticles", fallback.p1_soft_particles ? 1 : 0, path) != 0;
     out.p2_filter_preset = ClampFilterPreset(
         ReadIniInt(section, L"P2FilterPreset", fallback.p2_filter_preset, path));
     return out;
@@ -181,14 +184,15 @@ std::wstring FormatPresetSummary(const VisualConfig& cfg) {
     if (cfg.p0_rimlit_enhance) ++on_count;
     if (cfg.ao_enabled) ++on_count;
     if (cfg.p0_sscs_enabled) ++on_count;
+    if (cfg.p1_soft_particles) ++on_count;
 
     wchar_t buf[64] = {};
-    swprintf_s(buf, L"%d/5开 · %ls", on_count, filter_str);
+    swprintf_s(buf, L"%d/6开 · %ls", on_count, filter_str);
     return buf;
 }
 
-std::array<HitZone, 21> BuildHitZones() {
-    std::array<HitZone, 21> zones{};
+std::array<HitZone, 22> BuildHitZones() {
+    std::array<HitZone, 22> zones{};
     size_t idx = 0;
 
     // 0: Close [X] button (must be tested before TitleDrag!)
@@ -199,16 +203,17 @@ std::array<HitZone, 21> BuildHitZones() {
     zones[idx++] = {RECT{0, 0, static_cast<LONG>(kPanelWidth), kTitleBarHeight},
                     HitTargetKind::TitleDrag, L""};
 
-    // 2..6: 5 Feature checkboxes
+    // 2..7: 6 Feature checkboxes
     const struct {
         HitTargetKind kind;
         const wchar_t* label;
-    } kToggles[5] = {
+    } kToggles[6] = {
         {HitTargetKind::TogglePhase3, L"Phase 3 材质法线与边缘光总开关"},
         {HitTargetKind::ToggleAfPoint, L"16x 各向异性过滤 + 动态点光增强"},
         {HitTargetKind::ToggleP0RimLit, L"P0-1 RimLit 微法线 / 金属高光 / _GLO 自发光"},
         {HitTargetKind::ToggleAo, L"Route C 屏幕空间环境光遮蔽 (SSAO)"},
         {HitTargetKind::ToggleP0Sscs, L"P0-2 全分辨率接触阴影 (SSCS) + 冷色调曲线"},
+        {HitTargetKind::ToggleP1SoftParticles, L"P1 屏幕空间软粒子 (消除火焰/光晕硬切线)"},
     };
     int y = 72;
     for (const auto& t : kToggles) {
@@ -217,8 +222,8 @@ std::array<HitZone, 21> BuildHitZones() {
         y += 33;
     }
 
-    // 7..9: P2 Filter pills
-    y = 264;
+    // 8..10: P2 Filter pills
+    y = 297;
     const int pill_w = 132;
     const int pill_gap = 10;
     zones[idx++] = {RECT{kPaddingX, y, kPaddingX + pill_w, y + 30},
@@ -230,8 +235,8 @@ std::array<HitZone, 21> BuildHitZones() {
                          kPaddingX + 2 * (pill_w + pill_gap) + pill_w, y + 30},
                     HitTargetKind::FilterDark, L"暗黑胶片"};
 
-    // 10..12: Built-in presets
-    y = 324;
+    // 11..13: Built-in presets
+    y = 357;
     zones[idx++] = {RECT{kPaddingX, y, kPaddingX + pill_w, y + 30},
                     HitTargetKind::BuiltinFullHd, L"全开高清"};
     zones[idx++] = {RECT{kPaddingX + (pill_w + pill_gap), y,
@@ -241,8 +246,8 @@ std::array<HitZone, 21> BuildHitZones() {
                          kPaddingX + 2 * (pill_w + pill_gap) + pill_w, y + 30},
                     HitTargetKind::BuiltinVanilla, L"纯原版"};
 
-    // 13..20: 4 Custom preset slots (Load + Save)
-    y = 384;
+    // 14..21: 4 Custom preset slots (Load + Save)
+    y = 417;
     const HitTargetKind kLoadKinds[4] = {
         HitTargetKind::CustomLoad0, HitTargetKind::CustomLoad1,
         HitTargetKind::CustomLoad2, HitTargetKind::CustomLoad3};
@@ -261,8 +266,8 @@ std::array<HitZone, 21> BuildHitZones() {
     return zones;
 }
 
-const std::array<HitZone, 21>& GetHitZones() {
-    static const std::array<HitZone, 21> kZones = BuildHitZones();
+const std::array<HitZone, 22>& GetHitZones() {
+    static const std::array<HitZone, 22> kZones = BuildHitZones();
     return kZones;
 }
 
@@ -458,16 +463,17 @@ void PaintPanelToDibLocked() {
                     DT_CENTER | DT_VCENTER);
     }
 
-    // Section 1: 5 Feature toggles
-    DrawSectionHeader(dc, 50, L"实时渲染与 P0 画质开关");
-    const bool toggle_states[5] = {
+    // Section 1: 6 Feature toggles
+    DrawSectionHeader(dc, 50, L"实时渲染与 P0 / P1 画质开关");
+    const bool toggle_states[6] = {
         cfg.phase3_enhance,
         cfg.af_point_enhance,
         cfg.p0_rimlit_enhance,
         cfg.ao_enabled,
         cfg.p0_sscs_enabled,
+        cfg.p1_soft_particles,
     };
-    for (int i = 0; i < 5; ++i) {
+    for (int i = 0; i < 6; ++i) {
         const size_t z_idx = static_cast<size_t>(2 + i);
         const RECT& r = zones[z_idx].rect;
         const bool hovered = (g_panel.hover_index == static_cast<int>(z_idx));
@@ -501,9 +507,9 @@ void PaintPanelToDibLocked() {
     }
 
     // Section 2: P2 Filter pills
-    DrawSectionHeader(dc, 242, L"P2 画面风格滤镜");
+    DrawSectionHeader(dc, 275, L"P2 画面风格滤镜");
     for (int i = 0; i < 3; ++i) {
-        const size_t z_idx = static_cast<size_t>(7 + i);
+        const size_t z_idx = static_cast<size_t>(8 + i);
         const RECT& r = zones[z_idx].rect;
         const bool active = (cfg.p2_filter_preset == i);
         const bool hovered = (g_panel.hover_index == static_cast<int>(z_idx));
@@ -518,9 +524,9 @@ void PaintPanelToDibLocked() {
     }
 
     // Section 3: Built-in presets
-    DrawSectionHeader(dc, 302, L"内置预设 (一键切换)");
+    DrawSectionHeader(dc, 335, L"内置预设 (一键切换)");
     for (int i = 0; i < 3; ++i) {
-        const size_t z_idx = static_cast<size_t>(10 + i);
+        const size_t z_idx = static_cast<size_t>(11 + i);
         const RECT& r = zones[z_idx].rect;
         const bool matches = (cfg == MakeBuiltinPreset(i));
         const bool hovered = (g_panel.hover_index == static_cast<int>(z_idx));
@@ -535,9 +541,9 @@ void PaintPanelToDibLocked() {
     }
 
     // Section 4: 4 Custom Presets
-    DrawSectionHeader(dc, 362, L"自定义预设 (保存当前配置并快速切换)");
+    DrawSectionHeader(dc, 395, L"自定义预设 (保存当前配置并快速切换)");
     for (int i = 0; i < kCustomPresetCount; ++i) {
-        const size_t load_idx = static_cast<size_t>(13 + i * 2);
+        const size_t load_idx = static_cast<size_t>(14 + i * 2);
         const size_t save_idx = load_idx + 1;
         const PresetSlot& slot = g_panel.presets[static_cast<size_t>(i)];
 
@@ -624,6 +630,12 @@ void HandleHitClickLocked(int hit_idx) {
             SetRouteCSscsRuntimeEnabled(next);
             g_panel.active_custom_slot = -1;
             g_panel.status_text = next ? L"已开启: P0-2 SSCS + 冷色调" : L"已关闭: P0-2 SSCS + 冷色调";
+            break;
+        }
+        case HitTargetKind::ToggleP1SoftParticles: {
+            const bool next = ToggleP1SoftParticlesEnabled();
+            g_panel.active_custom_slot = -1;
+            g_panel.status_text = next ? L"已开启: P1 屏幕空间软粒子" : L"已关闭: P1 屏幕空间软粒子";
             break;
         }
         case HitTargetKind::FilterOff:
@@ -854,6 +866,7 @@ VisualConfig CaptureVisualConfigFromEngine() {
     cfg.p0_rimlit_enhance = IsP0RimLitEnhanceEnabled();
     cfg.ao_enabled = IsRouteCAoRuntimeEnabled();
     cfg.p0_sscs_enabled = IsRouteCSscsRuntimeEnabled();
+    cfg.p1_soft_particles = IsP1SoftParticlesEnabled();
     cfg.p2_filter_preset = ClampFilterPreset(GetP2FilterPreset());
     return cfg;
 }
@@ -864,6 +877,7 @@ void ApplyVisualConfigToEngine(const VisualConfig& cfg) {
     SetP0RimLitEnhanceEnabled(cfg.p0_rimlit_enhance);
     SetRouteCAoRuntimeEnabled(cfg.ao_enabled);
     SetRouteCSscsRuntimeEnabled(cfg.p0_sscs_enabled);
+    SetP1SoftParticlesEnabled(cfg.p1_soft_particles);
     SetP2FilterPreset(ClampFilterPreset(cfg.p2_filter_preset));
 }
 
@@ -917,6 +931,7 @@ VisualConfig MakeBuiltinPreset(int builtin_index) {
             cfg.p0_rimlit_enhance = true;
             cfg.ao_enabled = true;
             cfg.p0_sscs_enabled = true;
+            cfg.p1_soft_particles = true;
             cfg.p2_filter_preset = 1;
             break;
         case 1:  // 暗黑地牢
@@ -925,6 +940,7 @@ VisualConfig MakeBuiltinPreset(int builtin_index) {
             cfg.p0_rimlit_enhance = true;
             cfg.ao_enabled = true;
             cfg.p0_sscs_enabled = true;
+            cfg.p1_soft_particles = true;
             cfg.p2_filter_preset = 2;
             break;
         case 2:  // 纯原版
@@ -934,6 +950,7 @@ VisualConfig MakeBuiltinPreset(int builtin_index) {
             cfg.p0_rimlit_enhance = false;
             cfg.ao_enabled = false;
             cfg.p0_sscs_enabled = false;
+            cfg.p1_soft_particles = false;
             cfg.p2_filter_preset = 0;
             break;
     }

@@ -406,6 +406,11 @@ float4 PS_BlurV(VsOut input) : SV_Target0
     return float4(v, v, v, 1.0f);
 }
 
+float4 PS_ResolveDepthMsaa(VsOut input) : SV_Target0
+{
+    return float4(LoadRawDepth(int2(input.pos.xy)), 0.0f, 0.0f, 1.0f);
+}
+
 float4 PS_AoComposite(VsOut input) : SV_Target0
 {
     int2 pix = clamp(int2(input.pos.xy), gVpClamp.xy, gVpClamp.zw);
@@ -859,6 +864,12 @@ struct alignas(16) CbP2FilterParams {
 };
 static_assert(sizeof(CbP2FilterParams) == 16, "CbP2FilterParams must be 16 bytes");
 
+struct alignas(16) CbParticleParams {
+    float soft_params[4];   // mode (0=off, 1=alpha, 2=rgb), invSoftRange, proj22, proj23
+    int32_t clamp_rect[4];  // minX, minY, maxX, maxY
+};
+static_assert(sizeof(CbParticleParams) == 32, "CbParticleParams must be 32 bytes");
+
 struct DepthCopyFormats {
     bool supported = false;
     DXGI_FORMAT tex_format = DXGI_FORMAT_UNKNOWN;
@@ -1052,6 +1063,20 @@ struct RouteCD3DState {
 
     ID3D11Texture2D* depth_copy_tex = nullptr;
     ID3D11ShaderResourceView* depth_copy_srv = nullptr;
+    ID3D11Texture2D* depth_resolve_tex = nullptr;
+    ID3D11RenderTargetView* depth_resolve_rtv = nullptr;
+    ID3D11ShaderResourceView* depth_resolve_srv = nullptr;
+    uint32_t depth_resolve_w = 0;
+    uint32_t depth_resolve_h = 0;
+    ID3D11Buffer* cb_particle = nullptr;
+    ID3D11PixelShader* ps_resolve_depth_msaa = nullptr;
+    CbParticleParams last_cb_particle{};
+    bool last_cb_particle_valid = false;
+    bool particle_depth_valid = false;
+    float particle_proj_22 = 0.0f;
+    float particle_proj_23 = 0.0f;
+    int32_t particle_clamp[4]{};
+
     ID3D11Texture2D* ao_rt_tex = nullptr;
     ID3D11RenderTargetView* ao_rt_rtv = nullptr;
     ID3D11ShaderResourceView* ao_rt_srv = nullptr;
@@ -1132,6 +1157,11 @@ void ReleaseTargets() {
     SafeRelease(g_st.ao_rt_srv);
     SafeRelease(g_st.ao_rt_rtv);
     SafeRelease(g_st.ao_rt_tex);
+    SafeRelease(g_st.depth_resolve_srv);
+    SafeRelease(g_st.depth_resolve_rtv);
+    SafeRelease(g_st.depth_resolve_tex);
+    g_st.depth_resolve_w = 0;
+    g_st.depth_resolve_h = 0;
     SafeRelease(g_st.depth_copy_srv);
     SafeRelease(g_st.depth_copy_tex);
     g_st.depth_w = 0;
@@ -1140,6 +1170,7 @@ void ReleaseTargets() {
     g_st.depth_srv_fmt = DXGI_FORMAT_UNKNOWN;
     g_st.depth_sample_count = 0;
     g_st.depth_sample_quality = 0;
+    g_st.particle_depth_valid = false;
 }
 
 void ReleaseBenchQueries() {
@@ -1169,11 +1200,14 @@ void ReleaseAllDeviceObjects() {
     SafeRelease(g_st.ps_toast);
     SafeRelease(g_st.cb_p2_filter);
     SafeRelease(g_st.ps_p2_filter);
+    SafeRelease(g_st.cb_particle);
+    SafeRelease(g_st.ps_resolve_depth_msaa);
     SafeRelease(g_st.cb_params);
     ReleaseDepthVariantShaders(g_st.shaders_msaa);
     ReleaseDepthVariantShaders(g_st.shaders_single);
     SafeRelease(g_st.vs_fullscreen);
     SafeRelease(g_st.device);
+    g_st.last_cb_particle_valid = false;
     g_st.msaa_shaders_ready = false;
     g_st.init_failed = false;
     g_shaders_ready.store(false, std::memory_order_relaxed);
@@ -1327,6 +1361,13 @@ bool EnsurePipelineObjects(ID3D11Device* dev, RouteCD3DLogFn logger) {
 
     if (ok && dev->GetFeatureLevel() >= D3D_FEATURE_LEVEL_10_1) {
         g_st.msaa_shaders_ready = CreateDepthVariantShaders(dev, compile_fn, "ps_4_1", macro_msaa, g_st.shaders_msaa, logger);
+        if (g_st.msaa_shaders_ready) {
+            if (!CompileAndCreatePixelShader(
+                    dev, compile_fn, "PS_ResolveDepthMsaa", "ps_4_1", macro_msaa, &g_st.ps_resolve_depth_msaa, logger)) {
+                SafeRelease(g_st.ps_resolve_depth_msaa);
+                g_st.msaa_shaders_ready = false;
+            }
+        }
     }
 
     if (!ok) {
@@ -1401,6 +1442,12 @@ bool EnsurePipelineObjects(ID3D11Device* dev, RouteCD3DLogFn logger) {
     cb_panel_desc.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
     cb_panel_desc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
 
+    D3D11_BUFFER_DESC cb_particle_desc{};
+    cb_particle_desc.ByteWidth = sizeof(CbParticleParams);
+    cb_particle_desc.Usage = D3D11_USAGE_DYNAMIC;
+    cb_particle_desc.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
+    cb_particle_desc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+
     D3D11_SAMPLER_DESC samp_desc{};
     samp_desc.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
     samp_desc.AddressU = D3D11_TEXTURE_ADDRESS_CLAMP;
@@ -1412,6 +1459,7 @@ bool EnsurePipelineObjects(ID3D11Device* dev, RouteCD3DLogFn logger) {
          SUCCEEDED(dev->CreateBuffer(&cb_toast_desc, nullptr, &g_st.cb_toast)) &&
          SUCCEEDED(dev->CreateBuffer(&cb_p2_desc, nullptr, &g_st.cb_p2_filter)) &&
          SUCCEEDED(dev->CreateBuffer(&cb_panel_desc, nullptr, &g_st.cb_panel)) &&
+         SUCCEEDED(dev->CreateBuffer(&cb_particle_desc, nullptr, &g_st.cb_particle)) &&
          SUCCEEDED(dev->CreateSamplerState(&samp_desc, &g_st.samp_linear)) &&
          SUCCEEDED(dev->CreateBlendState(&bd_dbg, &g_st.blend_debug_rgb)) &&
          SUCCEEDED(dev->CreateBlendState(&bd_mul, &g_st.blend_mul_rgb)) &&
@@ -1549,6 +1597,53 @@ bool EnsureAoTargets(
     return true;
 }
 
+bool EnsureDepthResolveTarget(ID3D11Device* dev, uint32_t width, uint32_t height, RouteCD3DLogFn logger) {
+    if (g_st.depth_resolve_tex && g_st.depth_resolve_rtv && g_st.depth_resolve_srv &&
+        g_st.depth_resolve_w == width && g_st.depth_resolve_h == height) {
+        return true;
+    }
+    SafeRelease(g_st.depth_resolve_srv);
+    SafeRelease(g_st.depth_resolve_rtv);
+    SafeRelease(g_st.depth_resolve_tex);
+    g_st.depth_resolve_w = 0;
+    g_st.depth_resolve_h = 0;
+
+    D3D11_TEXTURE2D_DESC td{};
+    td.Width = width;
+    td.Height = height;
+    td.MipLevels = 1;
+    td.ArraySize = 1;
+    td.Format = DXGI_FORMAT_R32_FLOAT;
+    td.SampleDesc.Count = 1;
+    td.Usage = D3D11_USAGE_DEFAULT;
+    td.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
+    if (FAILED(dev->CreateTexture2D(&td, nullptr, &g_st.depth_resolve_tex)) || !g_st.depth_resolve_tex) {
+        if (logger) {
+            logger("[RouteC][D3D11] FAILED creating R32_FLOAT MSAA depth resolve target (%ux%u).", width, height);
+        }
+        SafeRelease(g_st.depth_resolve_tex);
+        return false;
+    }
+    if (FAILED(dev->CreateRenderTargetView(g_st.depth_resolve_tex, nullptr, &g_st.depth_resolve_rtv)) || !g_st.depth_resolve_rtv) {
+        SafeRelease(g_st.depth_resolve_rtv);
+        SafeRelease(g_st.depth_resolve_tex);
+        return false;
+    }
+    D3D11_SHADER_RESOURCE_VIEW_DESC srvd{};
+    srvd.Format = DXGI_FORMAT_R32_FLOAT;
+    srvd.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
+    srvd.Texture2D.MipLevels = 1;
+    if (FAILED(dev->CreateShaderResourceView(g_st.depth_resolve_tex, &srvd, &g_st.depth_resolve_srv)) || !g_st.depth_resolve_srv) {
+        SafeRelease(g_st.depth_resolve_srv);
+        SafeRelease(g_st.depth_resolve_rtv);
+        SafeRelease(g_st.depth_resolve_tex);
+        return false;
+    }
+    g_st.depth_resolve_w = width;
+    g_st.depth_resolve_h = height;
+    return true;
+}
+
 bool EnsureBenchQueries(ID3D11Device* dev) {
     if (g_st.bench_queries_failed) {
         return false;
@@ -1649,7 +1744,8 @@ void RecordTimestamp(ID3D11DeviceContext* ctx, BenchSlot* slot, size_t idx) {
 }  // namespace
 
 bool ExecuteRouteCAoPass(const RouteCAoRenderRequest& req, RouteCD3DLogFn logger) {
-    if (!req.ctx || !req.proj_4x4 || req.vp_width <= 0 || req.vp_height <= 0) {
+    if (!req.ctx || !req.proj_4x4 || req.vp_width <= 0 || req.vp_height <= 0 ||
+        (!req.ao_enabled && !req.capture_particle_depth)) {
         return false;
     }
 
@@ -1659,6 +1755,7 @@ bool ExecuteRouteCAoPass(const RouteCAoRenderRequest& req, RouteCD3DLogFn logger
         ~LockGuard() { ::LeaveCriticalSection(&g_d3d_lock); }
     } lock_guard;
 
+    g_st.particle_depth_valid = false;
     D3D11StateGuard state_guard(req.ctx);
 
     ID3D11RenderTargetView* target_rtv = state_guard.om_rtv0() ? state_guard.om_rtv0() : req.fallback_rtv;
@@ -1743,8 +1840,7 @@ bool ExecuteRouteCAoPass(const RouteCAoRenderRequest& req, RouteCD3DLogFn logger
     }
 
     const AoTuneConfig& cfg = GetAoTuneConfig(logger);
-    BenchSlot* bench_slot = BeginBenchSlot(dev, req.ctx, cfg);
-    SafeRelease(dev);
+    BenchSlot* bench_slot = req.ao_enabled ? BeginBenchSlot(dev, req.ctx, cfg) : nullptr;
 
     // Pass 0: Unbind DSV/SRVs and copy depth cleanly.
     ID3D11ShaderResourceView* null_srvs[2] = {nullptr, nullptr};
@@ -1756,6 +1852,7 @@ bool ExecuteRouteCAoPass(const RouteCAoRenderRequest& req, RouteCD3DLogFn logger
 
     D3D11_MAPPED_SUBRESOURCE mapped{};
     if (FAILED(req.ctx->Map(g_st.cb_params, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped)) || !mapped.pData) {
+        SafeRelease(dev);
         if (bench_slot) {
             req.ctx->End(bench_slot->disjoint);
             bench_slot->in_flight = false;
@@ -1799,6 +1896,61 @@ bool ExecuteRouteCAoPass(const RouteCAoRenderRequest& req, RouteCD3DLogFn logger
     std::memcpy(mapped.pData, &cb, sizeof(cb));
     req.ctx->Unmap(g_st.cb_params, 0);
 
+    req.ctx->OMSetDepthStencilState(g_st.dss_disabled, 0);
+    req.ctx->RSSetState(g_st.rs_fullscreen);
+    req.ctx->RSSetScissorRects(0, nullptr);
+    req.ctx->IASetInputLayout(nullptr);
+    req.ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    req.ctx->VSSetShader(g_st.vs_fullscreen, nullptr, 0);
+    req.ctx->GSSetShader(nullptr, nullptr, 0);
+    req.ctx->PSSetConstantBuffers(0, 1, &g_st.cb_params);
+
+    if (req.capture_particle_depth) {
+        bool resolved_ok = true;
+        if (use_msaa) {
+            resolved_ok = g_st.ps_resolve_depth_msaa != nullptr &&
+                          EnsureDepthResolveTarget(dev, depth_desc.Width, depth_desc.Height, logger);
+            if (resolved_ok) {
+                D3D11_VIEWPORT full_vp{};
+                full_vp.TopLeftX = 0.0f;
+                full_vp.TopLeftY = 0.0f;
+                full_vp.Width = static_cast<float>(depth_desc.Width);
+                full_vp.Height = static_cast<float>(depth_desc.Height);
+                full_vp.MinDepth = 0.0f;
+                full_vp.MaxDepth = 1.0f;
+                req.ctx->RSSetViewports(1, &full_vp);
+                req.ctx->OMSetBlendState(nullptr, nullptr, 0xFFFFFFFFU);
+                req.ctx->OMSetRenderTargets(1, &g_st.depth_resolve_rtv, nullptr);
+                req.ctx->PSSetShader(g_st.ps_resolve_depth_msaa, nullptr, 0);
+                ID3D11ShaderResourceView* resolve_srvs[2] = {g_st.depth_copy_srv, nullptr};
+                req.ctx->PSSetShaderResources(0, 2, resolve_srvs);
+                req.ctx->Draw(3, 0);
+                req.ctx->OMSetRenderTargets(0, nullptr, nullptr);
+                req.ctx->PSSetShaderResources(0, 2, null_srvs);
+            }
+        }
+        if (resolved_ok) {
+            g_st.particle_depth_valid = true;
+            g_st.particle_proj_22 = P[10];
+            g_st.particle_proj_23 = P[11];
+            g_st.particle_clamp[0] = min_x;
+            g_st.particle_clamp[1] = min_y;
+            g_st.particle_clamp[2] = max_x;
+            g_st.particle_clamp[3] = max_y;
+        }
+    }
+    SafeRelease(dev);
+
+    g_last_tex_w.store(depth_desc.Width, std::memory_order_relaxed);
+    g_last_tex_h.store(depth_desc.Height, std::memory_order_relaxed);
+    g_last_rtv_fmt.store(static_cast<uint32_t>(rtv_desc.Format), std::memory_order_relaxed);
+    g_last_dsv_tex_fmt.store(static_cast<uint32_t>(depth_desc.Format), std::memory_order_relaxed);
+    g_last_sample_count.store(depth_desc.SampleDesc.Count, std::memory_order_relaxed);
+
+    if (!req.ao_enabled) {
+        return g_st.particle_depth_valid;
+    }
+
     D3D11_VIEWPORT ao_vp{};
     ao_vp.TopLeftX = static_cast<float>(req.vp_left);
     ao_vp.TopLeftY = static_cast<float>(req.vp_top);
@@ -1816,15 +1968,6 @@ bool ExecuteRouteCAoPass(const RouteCAoRenderRequest& req, RouteCD3DLogFn logger
     ao_vp_half.Height = static_cast<float>(half_h);
     ao_vp_half.MinDepth = 0.0f;
     ao_vp_half.MaxDepth = 1.0f;
-
-    req.ctx->OMSetDepthStencilState(g_st.dss_disabled, 0);
-    req.ctx->RSSetState(g_st.rs_fullscreen);
-    req.ctx->RSSetScissorRects(0, nullptr);
-    req.ctx->IASetInputLayout(nullptr);
-    req.ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-    req.ctx->VSSetShader(g_st.vs_fullscreen, nullptr, 0);
-    req.ctx->GSSetShader(nullptr, nullptr, 0);
-    req.ctx->PSSetConstantBuffers(0, 1, &g_st.cb_params);
 
     if (req.debug_mode == 3) {
         req.ctx->RSSetViewports(1, &ao_vp);
@@ -2339,6 +2482,7 @@ bool VerifyRouteCShadersCompile(RouteCD3DLogFn logger) {
         {"PS_BlurH", "ps_4_1", macro_msaa},
         {"PS_BlurV", "ps_4_0", macro_single},
         {"PS_BlurV", "ps_4_1", macro_msaa},
+        {"PS_ResolveDepthMsaa", "ps_4_1", macro_msaa},
     };
     for (const Spec& sp : specs) {
         ID3DBlob* blob = nullptr;
@@ -2410,6 +2554,97 @@ RouteCD3DStats GetRouteCD3DStats() {
     }
     ::LeaveCriticalSection(&g_d3d_lock);
     return s;
+}
+
+bool GetRouteCParticleDepthSnapshot(RouteCParticleDepthSnapshot* out) {
+    if (!out) {
+        return false;
+    }
+    *out = {};
+    EnsureLockInit();
+    ::EnterCriticalSection(&g_d3d_lock);
+    const bool valid = g_st.particle_depth_valid && g_st.cb_particle != nullptr &&
+                       ((g_st.depth_sample_count > 1) ? (g_st.depth_resolve_srv != nullptr)
+                                                      : (g_st.depth_copy_srv != nullptr));
+    if (valid) {
+        out->proj_22 = g_st.particle_proj_22;
+        out->proj_23 = g_st.particle_proj_23;
+        out->clamp_rect[0] = g_st.particle_clamp[0];
+        out->clamp_rect[1] = g_st.particle_clamp[1];
+        out->clamp_rect[2] = g_st.particle_clamp[2];
+        out->clamp_rect[3] = g_st.particle_clamp[3];
+        out->valid = true;
+    }
+    ::LeaveCriticalSection(&g_d3d_lock);
+    return valid;
+}
+
+bool BindRouteCParticleState(
+    ID3D11DeviceContext* ctx,
+    int soft_mode,
+    float inv_soft_range,
+    const RouteCParticleDepthSnapshot* snap) {
+    if (!ctx) {
+        return false;
+    }
+    EnsureLockInit();
+    ::EnterCriticalSection(&g_d3d_lock);
+    struct LockGuard {
+        ~LockGuard() { ::LeaveCriticalSection(&g_d3d_lock); }
+    } lock_guard;
+
+    if (!g_st.cb_particle) {
+        return false;
+    }
+
+    const bool activate = (soft_mode > 0 && snap && snap->valid && g_st.particle_depth_valid);
+    ID3D11ShaderResourceView* depth_srv =
+        (g_st.depth_sample_count > 1) ? g_st.depth_resolve_srv : g_st.depth_copy_srv;
+    if (activate && !depth_srv) {
+        return false;
+    }
+
+    CbParticleParams cb{};
+    if (activate) {
+        cb.soft_params[0] = static_cast<float>(soft_mode);
+        cb.soft_params[1] = inv_soft_range;
+        cb.soft_params[2] = snap->proj_22;
+        cb.soft_params[3] = snap->proj_23;
+        cb.clamp_rect[0] = snap->clamp_rect[0];
+        cb.clamp_rect[1] = snap->clamp_rect[1];
+        cb.clamp_rect[2] = snap->clamp_rect[2];
+        cb.clamp_rect[3] = snap->clamp_rect[3];
+    }
+
+    const bool changed = !g_st.last_cb_particle_valid ||
+                         std::memcmp(&g_st.last_cb_particle, &cb, sizeof(cb)) != 0;
+    if (changed) {
+        D3D11_MAPPED_SUBRESOURCE mapped{};
+        if (SUCCEEDED(ctx->Map(g_st.cb_particle, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped)) && mapped.pData) {
+            std::memcpy(mapped.pData, &cb, sizeof(cb));
+            ctx->Unmap(g_st.cb_particle, 0);
+            g_st.last_cb_particle = cb;
+            g_st.last_cb_particle_valid = true;
+        }
+    }
+
+    if (activate) {
+        ctx->PSSetConstantBuffers(6, 1, &g_st.cb_particle);
+        ctx->PSSetShaderResources(7, 1, &depth_srv);
+        return true;
+    } else {
+        ID3D11ShaderResourceView* null_srv = nullptr;
+        ctx->PSSetConstantBuffers(6, 1, &g_st.cb_particle);
+        ctx->PSSetShaderResources(7, 1, &null_srv);
+        return false;
+    }
+}
+
+void ResetRouteCParticleDepthSnapshot() {
+    EnsureLockInit();
+    ::EnterCriticalSection(&g_d3d_lock);
+    g_st.particle_depth_valid = false;
+    ::LeaveCriticalSection(&g_d3d_lock);
 }
 
 }  // namespace routeb

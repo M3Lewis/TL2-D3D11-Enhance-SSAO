@@ -29,6 +29,10 @@ bool ToggleRouteCAoRuntimeEnabled();
 void SetRouteCSscsRuntimeEnabled(bool enabled);
 bool IsRouteCSscsRuntimeEnabled();
 bool ToggleRouteCSscsRuntimeEnabled();
+void SetP1SoftParticlesEnabled(bool enabled);
+bool IsP1SoftParticlesEnabled();
+bool ToggleP1SoftParticlesEnabled();
+bool IsRouteCWorldDepthReadyForParticles();
 void TriggerRouteCToastForTest();
 
 void OnRouteCScenePassObserved(

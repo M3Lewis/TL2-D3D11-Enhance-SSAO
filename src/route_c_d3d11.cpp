@@ -475,9 +475,13 @@ float3 ComputeAoCompositeRgb(int2 pix, float rawC)
             float3 n = ReconstructNormalVS(pix, P);
             float ign = frac(52.9829189f * frac(dot(float2(pix), float2(0.06711056f, 0.00583715f))));
 
-            // P0-2A: Full-res directional micro contact shadows (synced with DirectionalLight0)
+            // P0-2A: Full-res directional contact shadows (synced with DirectionalLight0).
+            // Require meaningful perpendicular height (hPlane >= 3.2cm) and steeper horizon
+            // angle (cosN > 0.28) with multi-step weighting, and avoid raw +/-2px depth probes
+            // that outline modular terrain tile seams / chunk overlaps.
             float2 keyDir = gSscsKeyAndRange.xy;
-            float contactOcc = 0.0f;
+            float contactMax = 0.0f;
+            float contactSum = 0.0f;
             [unroll]
             for (int s = 1; s <= 5; ++s)
             {
@@ -490,40 +494,23 @@ float3 ComputeAoCompositeRgb(int2 pix, float rawC)
                     float3 V = S - P;
                     float distSq = dot(V, V);
                     float invDist = rsqrt(max(distSq, 1e-8f));
-                    float cosN = dot(n, V) * invDist;
+                    float hPlane = dot(n, V);
+                    float cosN = hPlane * invDist;
                     float dz = dC - (-S.z);
-                    float rangeW = saturate(1.0f - distSq * 3.2f);
-                    float thickW = smoothstep(0.012f, 0.045f, dz) * (1.0f - smoothstep(0.22f, 0.45f, dz));
-                    float angW = saturate((cosN - 0.12f) * 2.2f);
-                    contactOcc = max(contactOcc, angW * rangeW * thickW * (1.10f - 0.14f * float(s)));
+                    float rangeW = saturate(1.0f - distSq * 2.4f);
+                    float thickW = smoothstep(0.032f, 0.085f, hPlane) *
+                                   (1.0f - smoothstep(0.28f, 0.55f, hPlane)) *
+                                   smoothstep(0.020f, 0.055f, dz) *
+                                   (1.0f - smoothstep(0.32f, 0.60f, dz));
+                    float angW = saturate((cosN - 0.28f) * 2.4f);
+                    float sampleOcc = angW * rangeW * thickW * (1.10f - 0.14f * float(s));
+                    contactMax = max(contactMax, sampleOcc);
+                    contactSum += sampleOcc;
                 }
             }
 
-            // P0-2B: 2-pixel full-res micro-crevice detail sharpening for stone cracks & reliefs
-            float microOcc = 0.0f;
-            int2 microOffsets[4] = {
-                int2(2, 0),
-                int2(-2, 0),
-                int2(0, 2),
-                int2(0, -2)
-            };
-            [unroll]
-            for (int m = 0; m < 4; ++m)
-            {
-                float mRaw = 1.0f;
-                float3 M = ReconstructPosVS(pix + microOffsets[m], mRaw);
-                if (mRaw < 0.99998f)
-                {
-                    float3 Vm = M - P;
-                    float distSq = dot(Vm, Vm);
-                    float invDist = rsqrt(max(distSq, 1e-8f));
-                    float cosM = dot(n, Vm) * invDist;
-                    float rangeM = saturate(1.0f - distSq * 22.0f);
-                    microOcc += saturate((cosM - 0.18f) * 2.6f) * rangeM * 0.25f;
-                }
-            }
-
-            float microAtten = 1.0f - saturate(contactOcc * gSscsParams.y + microOcc * (gSscsParams.y * 0.65f)) * 0.40f * fade;
+            float contactOcc = lerp(contactSum * 0.20f, contactMax, 0.45f);
+            float microAtten = 1.0f - saturate(contactOcc * gSscsParams.y) * 0.36f * fade;
             float floorMin = max(gAoParams.w * 0.78f, 0.36f);
             ao = max(min(ao, ao * microAtten), floorMin);
         }

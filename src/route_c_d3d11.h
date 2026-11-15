@@ -57,6 +57,13 @@ struct RouteCD3DStats {
 };
 
 bool ExecuteRouteCAoPass(const RouteCAoRenderRequest& req, RouteCD3DLogFn logger);
+bool ExecuteRouteCToastOverlay(
+    ID3D11DeviceContext* ctx,
+    ID3D11RenderTargetView* target_rtv,
+    bool dll_enhance_on,
+    bool ao_on,
+    float fade_alpha,
+    RouteCD3DLogFn logger);
 bool VerifyRouteCShadersCompile(RouteCD3DLogFn logger);
 void ShutdownRouteCD3D11Resources();
 RouteCD3DStats GetRouteCD3DStats();

@@ -29,6 +29,8 @@ constexpr uint8_t kExpectedRenderScene[15] = {
     0x48, 0x89, 0x5C, 0x24, 0x08, 0x48, 0x89, 0x6C, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24, 0x18};
 constexpr uint8_t kExpectedFireQueue[15] = {
     0x48, 0x89, 0x5C, 0x24, 0x10, 0x48, 0x89, 0x6C, 0x24, 0x18, 0x48, 0x89, 0x74, 0x24, 0x20};
+constexpr uint8_t kExpectedFireFrameQueued[16] = {
+    0x48, 0x89, 0x5C, 0x24, 0x18, 0x48, 0x89, 0x7C, 0x24, 0x20, 0x41, 0x56, 0x48, 0x83, 0xEC, 0x30};
 
 constexpr size_t kRenderTargetVtblGetCustomAttr = 216 / sizeof(uintptr_t);  // slot 27
 constexpr int kMaxSceneStack = 8;
@@ -42,6 +44,8 @@ static_assert(sizeof(OgreMatrix4Raw) == 64, "Ogre::Matrix4 must be 64 bytes");
 
 using RenderSceneFn = void(__fastcall*)(void* sm, void* cam, void* vp, uint8_t show_overlays);
 using FireQueueFn = uint8_t(__fastcall*)(void* sm, uint8_t queue_group_id, const std::string& invocation);
+using FireFrameQueuedFn = uint8_t(__fastcall*)(void* root, void* frame_event);
+using RootGetAutoWindowFn = void*(__fastcall*)(void* root);
 
 using VpGetCameraFn = void*(__fastcall*)(const void* vp);
 using VpGetTargetFn = void*(__fastcall*)(const void* vp);
@@ -65,6 +69,7 @@ struct OgreC0Api {
     ObjGetNameFn rt_get_name = nullptr;
     ObjGetNameFn sm_get_name = nullptr;
     ObjGetNameFn cam_get_name = nullptr;
+    RootGetAutoWindowFn root_get_auto_window = nullptr;
 };
 
 struct D3DResourceInfo {
@@ -156,14 +161,17 @@ RouteCLogFn g_log = nullptr;
 Detour64 g_detour_render_scene;
 Detour64 g_detour_queue_started;
 Detour64 g_detour_queue_ended;
+Detour64 g_detour_frame_queued;
 
 RenderSceneFn g_orig_render_scene = nullptr;
 FireQueueFn g_orig_queue_started = nullptr;
 FireQueueFn g_orig_queue_ended = nullptr;
+FireFrameQueuedFn g_orig_frame_queued = nullptr;
 
 std::atomic<bool> g_hooked{false};
 std::atomic<bool> g_c0_survey_active{false};
 std::atomic<bool> g_ao_runtime_enabled{true};
+std::atomic<uint64_t> g_toast_expire_tick_ms{0};
 std::atomic<int> g_ao_debug_mode{0};  // Phase C2 default: DebugMode=0 (Live AO Composite)
 std::atomic<uint64_t> g_render_scene_calls{0};
 std::atomic<uint64_t> g_world_candidates{0};
@@ -301,6 +309,7 @@ bool InitOgreC0Api(HMODULE ogre_mod) {
     ok &= ResolveOgreProc(ogre_mod, "?getName@RenderTarget@Ogre@@UEBAAEBV?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@XZ", &g_api.rt_get_name);
     ok &= ResolveOgreProc(ogre_mod, "?getName@SceneManager@Ogre@@QEBAAEBV?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@XZ", &g_api.sm_get_name);
     ok &= ResolveOgreProc(ogre_mod, "?getName@Camera@Ogre@@UEBAAEBV?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@XZ", &g_api.cam_get_name);
+    ok &= ResolveOgreProc(ogre_mod, "?getAutoCreatedWindow@Root@Ogre@@QEAAPEAVRenderWindow@2@XZ", &g_api.root_get_auto_window);
     return ok;
 }
 
@@ -702,6 +711,7 @@ void PollRuntimeToggleHotkeys() {
     const bool down_f8 = (::GetAsyncKeyState(VK_F8) & 0x8000) != 0;
     if (down_f8 && !prev_f8) {
         const bool now_on = TogglePhase3RuntimeEnhance();
+        g_toast_expire_tick_ms.store(::GetTickCount64() + 2000ULL, std::memory_order_relaxed);
         if (g_log) {
             g_log("[RouteB][Hotkey] F8 -> DLL Phase3 scene enhance: %s", now_on ? "ON" : "OFF");
         }
@@ -711,11 +721,38 @@ void PollRuntimeToggleHotkeys() {
     const bool down_f9 = (::GetAsyncKeyState(VK_F9) & 0x8000) != 0;
     if (down_f9 && !prev_f9) {
         const bool now_on = ToggleRouteCAoRuntimeEnabled();
+        g_toast_expire_tick_ms.store(::GetTickCount64() + 2000ULL, std::memory_order_relaxed);
         if (g_log) {
             g_log("[RouteC][Hotkey] F9 -> Screen-space AO: %s", now_on ? "ON" : "OFF");
         }
     }
     prev_f9 = down_f9;
+}
+
+uint8_t __fastcall HookFireFrameRenderingQueued(void* root, void* frame_event) {
+    const uint8_t cont = g_orig_frame_queued ? g_orig_frame_queued(root, frame_event) : 1;
+    const uint64_t expire_ms = g_toast_expire_tick_ms.load(std::memory_order_relaxed);
+    if (expire_ms != 0 && root && g_api.root_get_auto_window) {
+        const uint64_t now_ms = ::GetTickCount64();
+        if (now_ms >= expire_ms) {
+            g_toast_expire_tick_ms.store(0, std::memory_order_relaxed);
+        } else {
+            const uint64_t rem_ms = expire_ms - now_ms;
+            const float fade = (rem_ms < 350ULL) ? (static_cast<float>(rem_ms) / 350.0f) : 1.0f;
+            void* rw = g_api.root_get_auto_window(root);
+            if (rw) {
+                ID3D11DeviceContext* ctx = nullptr;
+                ID3D11RenderTargetView* rtv = nullptr;
+                ID3D11DepthStencilView* dsv = nullptr;
+                if (TryGetContextFromRenderTarget(rw, &ctx, &rtv, &dsv) && ctx && rtv) {
+                    (void)ExecuteRouteCToastOverlay(
+                        ctx, rtv, IsPhase3RuntimeEnhanceEnabled(), IsRouteCAoRuntimeEnabled(), fade, g_log);
+                }
+                SafeRelease(ctx);
+            }
+        }
+    }
+    return cont;
 }
 
 void __fastcall HookRenderScene(void* sm, void* cam, void* vp, uint8_t show_overlays) {
@@ -982,7 +1019,8 @@ bool InstallRouteCAoPipeline(void* ogre_main_base, RouteCLogFn logger) {
     FARPROC p_render_scene = ::GetProcAddress(ogre_mod, "?_renderScene@SceneManager@Ogre@@UEAAXPEAVCamera@2@PEAVViewport@2@_N@Z");
     FARPROC p_q_start = ::GetProcAddress(ogre_mod, "?fireRenderQueueStarted@SceneManager@Ogre@@MEAA_NEAEBV?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@@Z");
     FARPROC p_q_end = ::GetProcAddress(ogre_mod, "?fireRenderQueueEnded@SceneManager@Ogre@@MEAA_NEAEBV?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@@Z");
-    if (!p_render_scene || !p_q_start || !p_q_end) {
+    FARPROC p_frame_queued = ::GetProcAddress(ogre_mod, "?_fireFrameRenderingQueued@Root@Ogre@@QEAA_NAEAUFrameEvent@2@@Z");
+    if (!p_render_scene || !p_q_start || !p_q_end || !p_frame_queued) {
         if (g_log) {
             g_log("[RouteC][C0] Missing hook target exports in OgreMain.dll.");
         }
@@ -1037,6 +1075,26 @@ bool InstallRouteCAoPipeline(void* ogre_main_base, RouteCLogFn logger) {
     }
     g_orig_queue_ended = reinterpret_cast<FireQueueFn>(orig_qe);
 
+    void* orig_fq = nullptr;
+    if (!g_detour_frame_queued.Install(
+            reinterpret_cast<void*>(p_frame_queued),
+            kExpectedFireFrameQueued,
+            sizeof(kExpectedFireFrameQueued),
+            reinterpret_cast<void*>(&HookFireFrameRenderingQueued),
+            &orig_fq)) {
+        if (g_log) {
+            g_log("[RouteC][C0] FAILED detour on Ogre::Root::_fireFrameRenderingQueued.");
+        }
+        g_detour_queue_ended.Remove();
+        g_detour_queue_started.Remove();
+        g_detour_render_scene.Remove();
+        g_orig_queue_ended = nullptr;
+        g_orig_queue_started = nullptr;
+        g_orig_render_scene = nullptr;
+        return false;
+    }
+    g_orig_frame_queued = reinterpret_cast<FireFrameQueuedFn>(orig_fq);
+
     const bool survey_on = EnvFlagIsOne("TL2_C_C0_SURVEY");
     const bool ao_init_on = !EnvFlagIsOne("TL2_C_DISABLE_AO");
     const int dbg_mode = ResolveAoDebugMode(0);  // C2 default: DebugMode=0 (Live AO)
@@ -1058,11 +1116,14 @@ void RemoveRouteCAoPipeline() {
     g_hooked.store(false, std::memory_order_relaxed);
     g_c0_survey_active.store(false, std::memory_order_relaxed);
 
+    g_toast_expire_tick_ms.store(0, std::memory_order_relaxed);
+    g_detour_frame_queued.Remove();
     g_detour_queue_ended.Remove();
     g_detour_queue_started.Remove();
     g_detour_render_scene.Remove();
     ShutdownRouteCD3D11Resources();
 
+    g_orig_frame_queued = nullptr;
     g_orig_queue_ended = nullptr;
     g_orig_queue_started = nullptr;
     g_orig_render_scene = nullptr;

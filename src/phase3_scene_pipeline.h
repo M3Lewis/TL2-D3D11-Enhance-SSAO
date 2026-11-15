@@ -54,8 +54,13 @@ inline bool PatchFixedFuncMissingVertexColour(std::string& hlsl_src) {
 // Screen-space soft particles (P1): smoothly softens intersections between unlit
 // FixedFunc transparent particles/glows and opaque world depth while protecting
 // floor-parallel decals via pixel gradient comparison.
+// Uses Texture2D<float4> (t6) instead of a second cbuffer because Ogre 1.7's
+// D3D11HLSLProgram::loadFromSource rejects shaders with >1 constant buffer
+// ("Use one global constant buffer for Ogre HLSL programs").
 inline bool PatchFixedFuncSoftParticles(std::string& hlsl_src) {
     if (hlsl_src.find("gP1SceneDepthTex") != std::string::npos ||
+        hlsl_src.find("gP1SoftParamsTex") != std::string::npos ||
+        hlsl_src.find("register(t6)") != std::string::npos ||
         hlsl_src.find("register(t7)") != std::string::npos ||
         hlsl_src.find("register(b6)") != std::string::npos) {
         return false;
@@ -70,6 +75,10 @@ inline bool PatchFixedFuncSoftParticles(std::string& hlsl_src) {
     if (ps_pos == std::string::npos) {
         return false;
     }
+    if (hlsl_src.find("AlphaRejectValue", ps_pos) != std::string::npos ||
+        hlsl_src.find("discard", ps_pos) != std::string::npos) {
+        return false;
+    }
     static constexpr const char kReturnHdr[] =
         "HdrOverlayOutput output; output.colour=result; output.coverage=1; return output; }";
     static constexpr const char kReturnStd[] = "return result; }";
@@ -82,30 +91,32 @@ inline bool PatchFixedFuncSoftParticles(std::string& hlsl_src) {
     }
 
     static constexpr const char kGlobalDecl[] =
-        "cbuffer P1SoftParticleCb : register(b6) { float4 gP1SoftParams; int4 gP1DepthClamp; };\n"
+        "Texture2D<float4> gP1SoftParamsTex : register(t6);\n"
         "Texture2D<float> gP1SceneDepthTex : register(t7);\n";
     static constexpr const char kPsSoftBody[] =
-        "\n{ float p1PartDist = gP1SoftParams.w / min(input.Pos.z + gP1SoftParams.z, -1e-6f);\n"
+        "\n{ float4 p1SoftParams = gP1SoftParamsTex.Load(int3(0, 0, 0));\n"
+        "  float p1PartDist = p1SoftParams.w / min(input.Pos.z + p1SoftParams.z, -1e-6f);\n"
         "  float2 p1GradP = float2(ddx(p1PartDist), ddy(p1PartDist));\n"
-        "  [branch] if (gP1SoftParams.x > 0.5f) {\n"
-        "    int2 p1Pix = clamp(int2(input.Pos.xy), gP1DepthClamp.xy, gP1DepthClamp.zw);\n"
+        "  [branch] if (p1SoftParams.x > 0.5f) {\n"
+        "    int4 p1DepthClamp = int4(gP1SoftParamsTex.Load(int3(1, 0, 0)));\n"
+        "    int2 p1Pix = clamp(int2(input.Pos.xy), p1DepthClamp.xy, p1DepthClamp.zw);\n"
         "    float p1SceneRaw = gP1SceneDepthTex.Load(int3(p1Pix, 0));\n"
         "    if (p1SceneRaw < 0.99998f) {\n"
-        "      float p1SceneDist = gP1SoftParams.w / min(p1SceneRaw + gP1SoftParams.z, -1e-6f);\n"
+        "      float p1SceneDist = p1SoftParams.w / min(p1SceneRaw + p1SoftParams.z, -1e-6f);\n"
         "      float p1Diff = p1SceneDist - p1PartDist;\n"
-        "      int2 p1PixR = clamp(p1Pix + int2(1, 0), gP1DepthClamp.xy, gP1DepthClamp.zw);\n"
-        "      int2 p1PixD = clamp(p1Pix + int2(0, 1), gP1DepthClamp.xy, gP1DepthClamp.zw);\n"
+        "      int2 p1PixR = clamp(p1Pix + int2(1, 0), p1DepthClamp.xy, p1DepthClamp.zw);\n"
+        "      int2 p1PixD = clamp(p1Pix + int2(0, 1), p1DepthClamp.xy, p1DepthClamp.zw);\n"
         "      float p1RawR = gP1SceneDepthTex.Load(int3(p1PixR, 0));\n"
         "      float p1RawD = gP1SceneDepthTex.Load(int3(p1PixD, 0));\n"
-        "      float p1DistR = (p1RawR < 0.99998f) ? (gP1SoftParams.w / min(p1RawR + gP1SoftParams.z, -1e-6f)) : p1SceneDist;\n"
-        "      float p1DistD = (p1RawD < 0.99998f) ? (gP1SoftParams.w / min(p1RawD + gP1SoftParams.z, -1e-6f)) : p1SceneDist;\n"
+        "      float p1DistR = (p1RawR < 0.99998f) ? (p1SoftParams.w / min(p1RawR + p1SoftParams.z, -1e-6f)) : p1SceneDist;\n"
+        "      float p1DistD = (p1RawD < 0.99998f) ? (p1SoftParams.w / min(p1RawD + p1SoftParams.z, -1e-6f)) : p1SceneDist;\n"
         "      float2 p1GradS = float2(p1DistR - p1SceneDist, p1DistD - p1SceneDist);\n"
         "      float p1GradLen = length(p1GradP);\n"
         "      bool p1ParallelFloor = (p1GradLen > 0.004f && length(p1GradS - p1GradP) < p1GradLen * 0.35f && p1Diff > 0.008f);\n"
         "      if (!p1ParallelFloor) {\n"
-        "        float p1T = saturate(p1Diff * gP1SoftParams.y);\n"
+        "        float p1T = saturate(p1Diff * p1SoftParams.y);\n"
         "        float p1Soft = p1T * p1T * (3.0f - 2.0f * p1T);\n"
-        "        if (gP1SoftParams.x < 1.5f) { result.a *= p1Soft; } else { result.rgb *= p1Soft; }\n"
+        "        if (p1SoftParams.x < 1.5f) { result.a *= p1Soft; } else { result.rgb *= p1Soft; }\n"
         "      }\n"
         "    }\n"
         "  }\n"

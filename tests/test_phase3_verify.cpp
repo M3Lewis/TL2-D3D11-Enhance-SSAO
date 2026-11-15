@@ -1,6 +1,7 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <d3dcommon.h>
+#include <d3d11shader.h>
 
 #include <cstdint>
 #include <cstdio>
@@ -178,8 +179,10 @@ bool TestMissingVertexColourFallback() {
 bool TestSoftParticleShaderPatching() {
     using D3DCompileFn = HRESULT(WINAPI*)(
         LPCVOID, SIZE_T, LPCSTR, const void*, void*, LPCSTR, LPCSTR, UINT, UINT, ID3DBlob**, ID3DBlob**);
+    using D3DReflectFn = HRESULT(WINAPI*)(LPCVOID, SIZE_T, REFIID, void**);
     HMODULE d3dcomp = ::LoadLibraryW(L"d3dcompiler_47.dll");
     D3DCompileFn compile_fn = d3dcomp ? reinterpret_cast<D3DCompileFn>(::GetProcAddress(d3dcomp, "D3DCompile")) : nullptr;
+    D3DReflectFn reflect_fn = d3dcomp ? reinterpret_cast<D3DReflectFn>(::GetProcAddress(d3dcomp, "D3DReflect")) : nullptr;
 
     std::string std_src =
         "struct VS_OUTPUT { float4 Pos:SV_POSITION; float4 Color:COLOR0; };\n"
@@ -187,8 +190,10 @@ bool TestSoftParticleShaderPatching() {
         "return result; }\n";
     if (!routeb::PatchFixedFuncSoftParticles(std_src) ||
         std_src.find("gP1SceneDepthTex") == std::string::npos ||
-        std_src.find("register(b6)") == std::string::npos ||
+        std_src.find("gP1SoftParamsTex") == std::string::npos ||
+        std_src.find("register(t6)") == std::string::npos ||
         std_src.find("register(t7)") == std::string::npos ||
+        std_src.find("cbuffer P1SoftParticleCb") != std::string::npos ||
         std_src.find("p1ParallelFloor") == std::string::npos) {
         std::printf("FAILED: PatchFixedFuncSoftParticles failed on standard FixedFunc PS\n");
         return false;
@@ -196,6 +201,35 @@ bool TestSoftParticleShaderPatching() {
     const std::string std_patched = std_src;
     if (routeb::PatchFixedFuncSoftParticles(std_src) || std_src != std_patched) {
         std::printf("FAILED: PatchFixedFuncSoftParticles must be idempotent\n");
+        return false;
+    }
+
+    // Fogged / $Globals FixedFunc PS must compile cleanly with at most ONE cbuffer ($Globals)
+    // because Ogre 1.7 D3D11HLSLProgram throws when ConstantBuffers > 1.
+    std::string fog_src =
+        "float FogStart;\n"
+        "float FogEnd;\n"
+        "float4 FogColor;\n"
+        "float AlphaRejectValue;\n"
+        "struct VS_OUTPUT { float4 Pos:SV_POSITION; float4 Color:COLOR0; float FogDist:FOGDISTANCE0; };\n"
+        "float4 ps_main(VS_OUTPUT input):SV_Target { float4 result=input.Color;\n"
+        "result.rgb=lerp(FogColor.rgb, result.rgb, saturate((FogEnd-abs(input.FogDist))/max(FogEnd-FogStart,1e-5f)));\n"
+        "return result; }\n";
+    if (!routeb::PatchFixedFuncSoftParticles(fog_src)) {
+        std::printf("FAILED: PatchFixedFuncSoftParticles failed on fogged FixedFunc PS\n");
+        return false;
+    }
+
+    // Alpha-rejected FixedFunc shaders (UI / foliage cutout) must be skipped cleanly.
+    std::string alpha_reject_src =
+        "float AlphaRejectValue;\n"
+        "struct VS_OUTPUT { float4 Pos:SV_POSITION; float4 Color:COLOR0; };\n"
+        "float4 ps_main(VS_OUTPUT input):SV_Target { float4 result=input.Color;\n"
+        "if (result.a <= AlphaRejectValue) discard;\n"
+        "return result; }\n";
+    const std::string alpha_reject_orig = alpha_reject_src;
+    if (routeb::PatchFixedFuncSoftParticles(alpha_reject_src) || alpha_reject_src != alpha_reject_orig) {
+        std::printf("FAILED: shader using AlphaRejectValue must not be patched\n");
         return false;
     }
 
@@ -222,7 +256,7 @@ bool TestSoftParticleShaderPatching() {
 
     if (compile_fn) {
         constexpr UINT kWarnAsErr = 1U << 15;  // D3DCOMPILE_WARNINGS_ARE_ERRORS
-        for (const std::string* s : {&std_src, &hdr_src}) {
+        for (const std::string* s : {&std_src, &fog_src, &hdr_src}) {
             ID3DBlob* code = nullptr;
             ID3DBlob* err = nullptr;
             const HRESULT hr = compile_fn(
@@ -237,6 +271,23 @@ bool TestSoftParticleShaderPatching() {
                 return false;
             }
             if (err) err->Release();
+            if (reflect_fn) {
+                ID3D11ShaderReflection* refl = nullptr;
+                if (FAILED(reflect_fn(code->GetBufferPointer(), code->GetBufferSize(), __uuidof(ID3D11ShaderReflection), reinterpret_cast<void**>(&refl))) || !refl) {
+                    std::printf("FAILED: D3DReflect failed on patched shader\n");
+                    code->Release();
+                    return false;
+                }
+                D3D11_SHADER_DESC sh_desc{};
+                refl->GetDesc(&sh_desc);
+                refl->Release();
+                if (sh_desc.ConstantBuffers > 1) {
+                    std::printf("FAILED: patched shader uses %u cbuffers (>1 breaks Ogre 1.7 D3D11HLSLProgram)\n",
+                                sh_desc.ConstantBuffers);
+                    code->Release();
+                    return false;
+                }
+            }
             code->Release();
         }
     }

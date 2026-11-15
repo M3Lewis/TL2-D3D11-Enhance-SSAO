@@ -864,11 +864,11 @@ struct alignas(16) CbP2FilterParams {
 };
 static_assert(sizeof(CbP2FilterParams) == 16, "CbP2FilterParams must be 16 bytes");
 
-struct alignas(16) CbParticleParams {
+struct ParticleParamsTexData {
     float soft_params[4];   // mode (0=off, 1=alpha, 2=rgb), invSoftRange, proj22, proj23
-    int32_t clamp_rect[4];  // minX, minY, maxX, maxY
+    float clamp_rect[4];    // minX, minY, maxX, maxY
 };
-static_assert(sizeof(CbParticleParams) == 32, "CbParticleParams must be 32 bytes");
+static_assert(sizeof(ParticleParamsTexData) == 32, "ParticleParamsTexData must be 32 bytes");
 
 struct DepthCopyFormats {
     bool supported = false;
@@ -1068,9 +1068,10 @@ struct RouteCD3DState {
     ID3D11ShaderResourceView* depth_resolve_srv = nullptr;
     uint32_t depth_resolve_w = 0;
     uint32_t depth_resolve_h = 0;
-    ID3D11Buffer* cb_particle = nullptr;
+    ID3D11Texture2D* particle_params_tex = nullptr;
+    ID3D11ShaderResourceView* particle_params_srv = nullptr;
     ID3D11PixelShader* ps_resolve_depth_msaa = nullptr;
-    CbParticleParams last_cb_particle{};
+    ParticleParamsTexData last_cb_particle{};
     bool last_cb_particle_valid = false;
     bool particle_depth_valid = false;
     float particle_proj_22 = 0.0f;
@@ -1200,7 +1201,8 @@ void ReleaseAllDeviceObjects() {
     SafeRelease(g_st.ps_toast);
     SafeRelease(g_st.cb_p2_filter);
     SafeRelease(g_st.ps_p2_filter);
-    SafeRelease(g_st.cb_particle);
+    SafeRelease(g_st.particle_params_srv);
+    SafeRelease(g_st.particle_params_tex);
     SafeRelease(g_st.ps_resolve_depth_msaa);
     SafeRelease(g_st.cb_params);
     ReleaseDepthVariantShaders(g_st.shaders_msaa);
@@ -1442,11 +1444,21 @@ bool EnsurePipelineObjects(ID3D11Device* dev, RouteCD3DLogFn logger) {
     cb_panel_desc.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
     cb_panel_desc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
 
-    D3D11_BUFFER_DESC cb_particle_desc{};
-    cb_particle_desc.ByteWidth = sizeof(CbParticleParams);
-    cb_particle_desc.Usage = D3D11_USAGE_DYNAMIC;
-    cb_particle_desc.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
-    cb_particle_desc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+    D3D11_TEXTURE2D_DESC particle_tex_desc{};
+    particle_tex_desc.Width = 2;
+    particle_tex_desc.Height = 1;
+    particle_tex_desc.MipLevels = 1;
+    particle_tex_desc.ArraySize = 1;
+    particle_tex_desc.Format = DXGI_FORMAT_R32G32B32A32_FLOAT;
+    particle_tex_desc.SampleDesc.Count = 1;
+    particle_tex_desc.Usage = D3D11_USAGE_DYNAMIC;
+    particle_tex_desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+    particle_tex_desc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+
+    D3D11_SHADER_RESOURCE_VIEW_DESC particle_srv_desc{};
+    particle_srv_desc.Format = DXGI_FORMAT_R32G32B32A32_FLOAT;
+    particle_srv_desc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
+    particle_srv_desc.Texture2D.MipLevels = 1;
 
     D3D11_SAMPLER_DESC samp_desc{};
     samp_desc.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
@@ -1459,7 +1471,8 @@ bool EnsurePipelineObjects(ID3D11Device* dev, RouteCD3DLogFn logger) {
          SUCCEEDED(dev->CreateBuffer(&cb_toast_desc, nullptr, &g_st.cb_toast)) &&
          SUCCEEDED(dev->CreateBuffer(&cb_p2_desc, nullptr, &g_st.cb_p2_filter)) &&
          SUCCEEDED(dev->CreateBuffer(&cb_panel_desc, nullptr, &g_st.cb_panel)) &&
-         SUCCEEDED(dev->CreateBuffer(&cb_particle_desc, nullptr, &g_st.cb_particle)) &&
+         SUCCEEDED(dev->CreateTexture2D(&particle_tex_desc, nullptr, &g_st.particle_params_tex)) &&
+         SUCCEEDED(dev->CreateShaderResourceView(g_st.particle_params_tex, &particle_srv_desc, &g_st.particle_params_srv)) &&
          SUCCEEDED(dev->CreateSamplerState(&samp_desc, &g_st.samp_linear)) &&
          SUCCEEDED(dev->CreateBlendState(&bd_dbg, &g_st.blend_debug_rgb)) &&
          SUCCEEDED(dev->CreateBlendState(&bd_mul, &g_st.blend_mul_rgb)) &&
@@ -2563,7 +2576,7 @@ bool GetRouteCParticleDepthSnapshot(RouteCParticleDepthSnapshot* out) {
     *out = {};
     EnsureLockInit();
     ::EnterCriticalSection(&g_d3d_lock);
-    const bool valid = g_st.particle_depth_valid && g_st.cb_particle != nullptr &&
+    const bool valid = g_st.particle_depth_valid && g_st.particle_params_srv != nullptr &&
                        ((g_st.depth_sample_count > 1) ? (g_st.depth_resolve_srv != nullptr)
                                                       : (g_st.depth_copy_srv != nullptr));
     if (valid) {
@@ -2593,7 +2606,7 @@ bool BindRouteCParticleState(
         ~LockGuard() { ::LeaveCriticalSection(&g_d3d_lock); }
     } lock_guard;
 
-    if (!g_st.cb_particle) {
+    if (!g_st.particle_params_tex || !g_st.particle_params_srv) {
         return false;
     }
 
@@ -2604,38 +2617,35 @@ bool BindRouteCParticleState(
         return false;
     }
 
-    CbParticleParams cb{};
     if (activate) {
-        cb.soft_params[0] = static_cast<float>(soft_mode);
-        cb.soft_params[1] = inv_soft_range;
-        cb.soft_params[2] = snap->proj_22;
-        cb.soft_params[3] = snap->proj_23;
-        cb.clamp_rect[0] = snap->clamp_rect[0];
-        cb.clamp_rect[1] = snap->clamp_rect[1];
-        cb.clamp_rect[2] = snap->clamp_rect[2];
-        cb.clamp_rect[3] = snap->clamp_rect[3];
-    }
+        ParticleParamsTexData tex_data{};
+        tex_data.soft_params[0] = static_cast<float>(soft_mode);
+        tex_data.soft_params[1] = inv_soft_range;
+        tex_data.soft_params[2] = snap->proj_22;
+        tex_data.soft_params[3] = snap->proj_23;
+        tex_data.clamp_rect[0] = static_cast<float>(snap->clamp_rect[0]);
+        tex_data.clamp_rect[1] = static_cast<float>(snap->clamp_rect[1]);
+        tex_data.clamp_rect[2] = static_cast<float>(snap->clamp_rect[2]);
+        tex_data.clamp_rect[3] = static_cast<float>(snap->clamp_rect[3]);
 
-    const bool changed = !g_st.last_cb_particle_valid ||
-                         std::memcmp(&g_st.last_cb_particle, &cb, sizeof(cb)) != 0;
-    if (changed) {
-        D3D11_MAPPED_SUBRESOURCE mapped{};
-        if (SUCCEEDED(ctx->Map(g_st.cb_particle, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped)) && mapped.pData) {
-            std::memcpy(mapped.pData, &cb, sizeof(cb));
-            ctx->Unmap(g_st.cb_particle, 0);
-            g_st.last_cb_particle = cb;
-            g_st.last_cb_particle_valid = true;
+        const bool changed = !g_st.last_cb_particle_valid ||
+                             std::memcmp(&g_st.last_cb_particle, &tex_data, sizeof(tex_data)) != 0;
+        if (changed) {
+            D3D11_MAPPED_SUBRESOURCE mapped{};
+            if (SUCCEEDED(ctx->Map(g_st.particle_params_tex, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped)) && mapped.pData) {
+                std::memcpy(mapped.pData, &tex_data, sizeof(tex_data));
+                ctx->Unmap(g_st.particle_params_tex, 0);
+                g_st.last_cb_particle = tex_data;
+                g_st.last_cb_particle_valid = true;
+            }
         }
-    }
 
-    if (activate) {
-        ctx->PSSetConstantBuffers(6, 1, &g_st.cb_particle);
-        ctx->PSSetShaderResources(7, 1, &depth_srv);
+        ID3D11ShaderResourceView* srvs[2] = {g_st.particle_params_srv, depth_srv};
+        ctx->PSSetShaderResources(6, 2, srvs);
         return true;
     } else {
-        ID3D11ShaderResourceView* null_srv = nullptr;
-        ctx->PSSetConstantBuffers(6, 1, &g_st.cb_particle);
-        ctx->PSSetShaderResources(7, 1, &null_srv);
+        ID3D11ShaderResourceView* null_srvs[2] = {nullptr, nullptr};
+        ctx->PSSetShaderResources(6, 2, null_srvs);
         return false;
     }
 }

@@ -1575,7 +1575,7 @@ int ClassifySoftParticleMode(const void* pass) {
         }
     }
     const uint16_t num_tus = g_api.pass_get_num_tus ? g_api.pass_get_num_tus(pass) : 0;
-    if (num_tus == 0) {
+    if (num_tus == 0 || num_tus > 6) {
         return 0;
     }
     for (uint16_t i = 0; i < num_tus; ++i) {

@@ -49,6 +49,18 @@ using MatGetTechFn = void*(__fastcall*)(void* mat, uint16_t idx);
 using TechGetPassFn = void*(__fastcall*)(void* tech, uint16_t idx);
 using PassSetNameFn = void(__fastcall*)(void* pass, const std::string& name);
 using PassSetAlphaRejectFn = void(__fastcall*)(void* pass, int func, uint8_t val, bool alpha_to_cov);
+struct OgreColourValueRaw {
+    float r = 0.0f;
+    float g = 0.0f;
+    float b = 0.0f;
+    float a = 1.0f;
+};
+
+using PassSetLightingFn = void(__fastcall*)(void* pass, bool enabled);
+using PassSetDepthWriteFn = void(__fastcall*)(void* pass, bool enabled);
+using PassSetSceneBlendFn = void(__fastcall*)(void* pass, int src_factor, int dst_factor);
+using PassSetFogFn = void(__fastcall*)(
+    void* pass, bool override_scene, int mode, const OgreColourValueRaw& colour, float exp_density, float linear_start, float linear_end);
 using PassSetVpFn = void(__fastcall*)(void* pass, const std::string& name, bool reset_params);
 using PassCreateTusFn = void*(__fastcall*)(void* pass);
 using TusSetTexNameFn = void(__fastcall*)(void* tus, const std::string& name, int tex_type);
@@ -74,6 +86,10 @@ bool ExercisePhase3PassLifecycle(HMODULE ogre, void* root, void* win) {
     TechGetPassFn tech_get_pass = nullptr;
     PassSetNameFn pass_set_name = nullptr;
     PassSetAlphaRejectFn pass_set_alpha = nullptr;
+    PassSetLightingFn pass_set_lighting = nullptr;
+    PassSetDepthWriteFn pass_set_depth_write = nullptr;
+    PassSetSceneBlendFn pass_set_scene_blend = nullptr;
+    PassSetFogFn pass_set_fog = nullptr;
     PassSetVpFn pass_set_vp = nullptr;
     PassCreateTusFn pass_create_tus = nullptr;
     TusSetTexNameFn tus_set_tex_name = nullptr;
@@ -100,6 +116,10 @@ bool ExercisePhase3PassLifecycle(HMODULE ogre, void* root, void* win) {
     ok &= Resolve(ogre, "?getPass@Technique@Ogre@@QEAAPEAVPass@2@G@Z", tech_get_pass);
     ok &= Resolve(ogre, "?setName@Pass@Ogre@@QEAAXAEBV?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@@Z", pass_set_name);
     ok &= Resolve(ogre, "?setAlphaRejectSettings@Pass@Ogre@@QEAAXW4CompareFunction@2@E_N@Z", pass_set_alpha);
+    ok &= Resolve(ogre, "?setLightingEnabled@Pass@Ogre@@QEAAX_N@Z", pass_set_lighting);
+    ok &= Resolve(ogre, "?setDepthWriteEnabled@Pass@Ogre@@QEAAX_N@Z", pass_set_depth_write);
+    ok &= Resolve(ogre, "?setSceneBlending@Pass@Ogre@@QEAAXW4SceneBlendFactor@2@0@Z", pass_set_scene_blend);
+    ok &= Resolve(ogre, "?setFog@Pass@Ogre@@QEAAX_NW4FogMode@2@AEBVColourValue@2@MMM@Z", pass_set_fog);
     ok &= Resolve(ogre, "?setVertexProgram@Pass@Ogre@@QEAAXAEBV?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@_N@Z", pass_set_vp);
     ok &= Resolve(ogre, "?createTextureUnitState@Pass@Ogre@@QEAAPEAVTextureUnitState@2@XZ", pass_create_tus);
     ok &= Resolve(ogre, "?setTextureName@TextureUnitState@Ogre@@QEAAXAEBV?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@W4TextureType@2@@Z", tus_set_tex_name);
@@ -137,6 +157,8 @@ bool ExercisePhase3PassLifecycle(HMODULE ogre, void* root, void* win) {
         {"Verify/LightPass", "LIGHTPASS", false, false, 1},
         {"Verify/RimLit2D", "RIMLIT", false, false, 2},
         {"Verify/RimLit3Cube", "RIMLIT", false, true, 3},
+        {"Verify/FfUiAlphaReject", "0", true, false, 1},
+        {"Verify/FfFoggedParticle", "0", false, false, 1},
     };
 
     std::vector<void*> passes;
@@ -152,6 +174,17 @@ bool ExercisePhase3PassLifecycle(HMODULE ogre, void* root, void* win) {
         }
         if (spec.skinned) {
             pass_set_vp(pass, "Ogre/HardwareSkinningOne", true);
+        }
+        if (std::string(spec.mat_name) == "Verify/FfUiAlphaReject") {
+            pass_set_lighting(pass, false);
+            pass_set_depth_write(pass, false);
+            pass_set_scene_blend(pass, 7 /*SBF_SOURCE_ALPHA*/, 9 /*SBF_ONE_MINUS_SOURCE_ALPHA*/);
+        } else if (std::string(spec.mat_name) == "Verify/FfFoggedParticle") {
+            pass_set_lighting(pass, false);
+            pass_set_depth_write(pass, false);
+            pass_set_scene_blend(pass, 7 /*SBF_SOURCE_ALPHA*/, 9 /*SBF_ONE_MINUS_SOURCE_ALPHA*/);
+            const OgreColourValueRaw fog_col{0.2f, 0.3f, 0.4f, 1.0f};
+            pass_set_fog(pass, true, 3 /*FOG_LINEAR*/, fog_col, 0.0f, 10.0f, 100.0f);
         }
         for (int t = 0; t < spec.tus_count; ++t) {
             void* tus = pass_create_tus(pass);
@@ -208,6 +241,16 @@ bool ExercisePhase3PassLifecycle(HMODULE ogre, void* root, void* win) {
     mo_norm(mo, 0.0f, 0.0f, 1.0f);
     mo_tc2(mo, 0.5f, 0.0f);
     mo_end(mo);
+    for (const char* ff_mat : {"Verify/FfUiAlphaReject", "Verify/FfFoggedParticle"}) {
+        mo_begin(mo, ff_mat, 4 /*OT_TRIANGLE_LIST*/, "Shaders");
+        mo_pos(mo, -1.0f, -1.0f, -3.5f);
+        mo_tc2(mo, 0.0f, 1.0f);
+        mo_pos(mo, 1.0f, -1.0f, -3.5f);
+        mo_tc2(mo, 1.0f, 1.0f);
+        mo_pos(mo, 0.0f, 1.0f, -3.5f);
+        mo_tc2(mo, 0.5f, 0.0f);
+        mo_end(mo);
+    }
     sn_attach_obj(sm_get_root_node(sm), mo);
 
     // Bind every Phase 3 explicit PS archetype repeatedly across frames to catch any

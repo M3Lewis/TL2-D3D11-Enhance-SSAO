@@ -79,12 +79,8 @@ float3 ApplyP2HobFilter(float3 rgb, float mode)
 float4 postprocess_impl(float2 texCoord)
 {
     float4 sharp = RT.Sample(RTSampler, texCoord);
-    float4 combined = sharp;
-    if (p2FilterParams.w < 0.5)
-    {
-        float4 blur = Blur1.Sample(Blur1Sampler, texCoord);
-        combined = blur * BlurWeight + sharp * OriginalImageWeight;
-    }
+    float4 blur = Blur1.Sample(Blur1Sampler, texCoord);
+    float4 combined = blur * BlurWeight + sharp * OriginalImageWeight;
 
     if (p2FilterParams.x > 0.5 && p2FilterParams.y > 0.5)
     {

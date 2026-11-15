@@ -778,7 +778,6 @@ cbuffer CbBloomLutParams : register(b0)
 };
 
 Texture2D<float4> gTex0 : register(t0);
-Texture2D<float4> gTex1 : register(t1);
 Texture3D<float4> gLutTex : register(t1);
 SamplerState gSamp : register(s0);
 
@@ -797,117 +796,6 @@ float2 ClampSrcUv(float2 uv)
 {
     float2 pad = gTexelAndBias.xy * 0.5f;
     return clamp(uv, gSrcUvRect.xy + pad, gSrcUvRect.xy + gSrcUvRect.zw - pad);
-}
-
-float3 KarisSampleAvg(float3 a, float3 b, float3 c, float3 d)
-{
-    float wa = rcp(1.0f + max(a.r, max(a.g, a.b)));
-    float wb = rcp(1.0f + max(b.r, max(b.g, b.b)));
-    float wc = rcp(1.0f + max(c.r, max(c.g, c.b)));
-    float wd = rcp(1.0f + max(d.r, max(d.g, d.b)));
-    return (a * wa + b * wb + c * wc + d * wd) / max(wa + wb + wc + wd, 1e-4f);
-}
-
-float4 PS_BloomPrefilter(VS_OUT input) : SV_Target0
-{
-    float2 uv = ComputeSrcUv(input.pos.xy);
-    float2 e = gTexelAndBias.xy;
-
-    float3 A = gTex0.SampleLevel(gSamp, ClampSrcUv(uv + float2(-2.0f, -2.0f) * e), 0).rgb;
-    float3 B = gTex0.SampleLevel(gSamp, ClampSrcUv(uv + float2( 0.0f, -2.0f) * e), 0).rgb;
-    float3 C = gTex0.SampleLevel(gSamp, ClampSrcUv(uv + float2( 2.0f, -2.0f) * e), 0).rgb;
-    float3 D = gTex0.SampleLevel(gSamp, ClampSrcUv(uv + float2(-1.0f, -1.0f) * e), 0).rgb;
-    float3 E = gTex0.SampleLevel(gSamp, ClampSrcUv(uv + float2( 1.0f, -1.0f) * e), 0).rgb;
-    float3 F = gTex0.SampleLevel(gSamp, ClampSrcUv(uv + float2(-2.0f,  0.0f) * e), 0).rgb;
-    float3 G = gTex0.SampleLevel(gSamp, ClampSrcUv(uv), 0).rgb;
-    float3 H = gTex0.SampleLevel(gSamp, ClampSrcUv(uv + float2( 2.0f,  0.0f) * e), 0).rgb;
-    float3 I = gTex0.SampleLevel(gSamp, ClampSrcUv(uv + float2(-1.0f,  1.0f) * e), 0).rgb;
-    float3 J = gTex0.SampleLevel(gSamp, ClampSrcUv(uv + float2( 1.0f,  1.0f) * e), 0).rgb;
-    float3 K = gTex0.SampleLevel(gSamp, ClampSrcUv(uv + float2(-2.0f,  2.0f) * e), 0).rgb;
-    float3 L = gTex0.SampleLevel(gSamp, ClampSrcUv(uv + float2( 0.0f,  2.0f) * e), 0).rgb;
-    float3 M = gTex0.SampleLevel(gSamp, ClampSrcUv(uv + float2( 2.0f,  2.0f) * e), 0).rgb;
-
-    float3 col =
-        KarisSampleAvg(D, E, I, J) * 0.500f +
-        KarisSampleAvg(A, B, G, F) * 0.125f +
-        KarisSampleAvg(B, C, H, G) * 0.125f +
-        KarisSampleAvg(F, G, L, K) * 0.125f +
-        KarisSampleAvg(G, H, M, L) * 0.125f;
-
-    col = clamp(col, 0.0f, 4.0f);
-    float peak = max(col.r, max(col.g, col.b));
-    float minC = min(col.r, min(col.g, col.b));
-    float chroma = peak - minC;
-    float luma = dot(col, float3(0.2126f, 0.7152f, 0.0722f));
-    float energy = lerp(luma, peak, 0.68f);
-
-    // Reject neutral midtone stone walls and portal dark swirls; bloom only true emissive peaks cleanly.
-    float effThr = gTexelAndBias.z - chroma * 0.06f;
-    float knee = gTexelAndBias.w;
-    float soft = clamp(energy - effThr + knee, 0.0f, 2.0f * knee);
-    soft = (soft * soft) / max(4.0f * knee, 1e-5f);
-    float contrib = max(soft, energy - effThr) / max(energy, 1e-4f);
-    float3 vivid = lerp(float3(luma, luma, luma), col, 1.12f);
-    float scale = saturate(contrib) * 0.95f;
-    return float4(min(saturate(vivid) * scale, 4.0f), 1.0f);
-}
-
-float4 PS_BloomDownsample(VS_OUT input) : SV_Target0
-{
-    float2 uv = ComputeSrcUv(input.pos.xy);
-    float2 e = gTexelAndBias.xy;
-
-    float3 A = gTex0.SampleLevel(gSamp, ClampSrcUv(uv + float2(-2.0f, -2.0f) * e), 0).rgb;
-    float3 B = gTex0.SampleLevel(gSamp, ClampSrcUv(uv + float2( 0.0f, -2.0f) * e), 0).rgb;
-    float3 C = gTex0.SampleLevel(gSamp, ClampSrcUv(uv + float2( 2.0f, -2.0f) * e), 0).rgb;
-    float3 D = gTex0.SampleLevel(gSamp, ClampSrcUv(uv + float2(-1.0f, -1.0f) * e), 0).rgb;
-    float3 E = gTex0.SampleLevel(gSamp, ClampSrcUv(uv + float2( 1.0f, -1.0f) * e), 0).rgb;
-    float3 F = gTex0.SampleLevel(gSamp, ClampSrcUv(uv + float2(-2.0f,  0.0f) * e), 0).rgb;
-    float3 G = gTex0.SampleLevel(gSamp, ClampSrcUv(uv), 0).rgb;
-    float3 H = gTex0.SampleLevel(gSamp, ClampSrcUv(uv + float2( 2.0f,  0.0f) * e), 0).rgb;
-    float3 I = gTex0.SampleLevel(gSamp, ClampSrcUv(uv + float2(-1.0f,  1.0f) * e), 0).rgb;
-    float3 J = gTex0.SampleLevel(gSamp, ClampSrcUv(uv + float2( 1.0f,  1.0f) * e), 0).rgb;
-    float3 K = gTex0.SampleLevel(gSamp, ClampSrcUv(uv + float2(-2.0f,  2.0f) * e), 0).rgb;
-    float3 L = gTex0.SampleLevel(gSamp, ClampSrcUv(uv + float2( 0.0f,  2.0f) * e), 0).rgb;
-    float3 M = gTex0.SampleLevel(gSamp, ClampSrcUv(uv + float2( 2.0f,  2.0f) * e), 0).rgb;
-
-    float3 outRgb =
-        (D + E + I + J) * (0.500f * 0.25f) +
-        (A + B + G + F) * (0.125f * 0.25f) +
-        (B + C + H + G) * (0.125f * 0.25f) +
-        (F + G + L + K) * (0.125f * 0.25f) +
-        (G + H + M + L) * (0.125f * 0.25f);
-    return float4(outRgb, 1.0f);
-}
-
-float4 PS_BloomUpsample(VS_OUT input) : SV_Target0
-{
-    float2 uv = ComputeSrcUv(input.pos.xy);
-    float2 e = gTexelAndBias.xy * 1.15f;
-
-    float3 s =
-        gTex0.SampleLevel(gSamp, ClampSrcUv(uv + float2(-e.x, -e.y)), 0).rgb * 1.0f +
-        gTex0.SampleLevel(gSamp, ClampSrcUv(uv + float2( 0.0f, -e.y)), 0).rgb * 2.0f +
-        gTex0.SampleLevel(gSamp, ClampSrcUv(uv + float2( e.x, -e.y)), 0).rgb * 1.0f +
-        gTex0.SampleLevel(gSamp, ClampSrcUv(uv + float2(-e.x,  0.0f)), 0).rgb * 2.0f +
-        gTex0.SampleLevel(gSamp, ClampSrcUv(uv), 0).rgb * 4.0f +
-        gTex0.SampleLevel(gSamp, ClampSrcUv(uv + float2( e.x,  0.0f)), 0).rgb * 2.0f +
-        gTex0.SampleLevel(gSamp, ClampSrcUv(uv + float2(-e.x,  e.y)), 0).rgb * 1.0f +
-        gTex0.SampleLevel(gSamp, ClampSrcUv(uv + float2( 0.0f,  e.y)), 0).rgb * 2.0f +
-        gTex0.SampleLevel(gSamp, ClampSrcUv(uv + float2( e.x,  e.y)), 0).rgb * 1.0f;
-    s *= (1.0f / 16.0f);
-
-    float3 base = gTex1.SampleLevel(gSamp, ClampSrcUv(uv), 0).rgb;
-    return float4(base + s * gMixAndLut.x, 1.0f);
-}
-
-float4 PS_BloomComposite(VS_OUT input) : SV_Target0
-{
-    float2 uv = ComputeSrcUv(input.pos.xy);
-    float3 hdrGlow = max(gTex0.SampleLevel(gSamp, ClampSrcUv(uv), 0).rgb - 0.002f, 0.0f);
-    float3 scaled = hdrGlow * gMixAndLut.x;
-    float3 glow = saturate(scaled / (1.0f + scaled * 0.28f));
-    return float4(glow, 1.0f);
 }
 
 float4 PS_LutGrade3D(VS_OUT input) : SV_Target0
@@ -1455,10 +1343,6 @@ struct RouteCD3DState {
     ID3D11Buffer* cb_p2_filter = nullptr;
     ID3D11PixelShader* ps_p2_filter = nullptr;
     ID3D11Buffer* cb_bloom_lut = nullptr;
-    ID3D11PixelShader* ps_bloom_prefilter = nullptr;
-    ID3D11PixelShader* ps_bloom_downsample = nullptr;
-    ID3D11PixelShader* ps_bloom_upsample = nullptr;
-    ID3D11PixelShader* ps_bloom_composite = nullptr;
     ID3D11PixelShader* ps_lut_grade = nullptr;
     ID3D11Buffer* cb_panel = nullptr;
     ID3D11PixelShader* ps_panel = nullptr;
@@ -1472,7 +1356,6 @@ struct RouteCD3DState {
     ID3D11BlendState* blend_mul_rgb = nullptr;
     ID3D11BlendState* blend_dual_ao = nullptr;
     ID3D11BlendState* blend_toast_alpha = nullptr;
-    ID3D11BlendState* blend_screen_rgb = nullptr;
     ID3D11DepthStencilState* dss_disabled = nullptr;
     ID3D11RasterizerState* rs_fullscreen = nullptr;
 
@@ -1481,17 +1364,6 @@ struct RouteCD3DState {
     uint32_t p2_copy_w = 0;
     uint32_t p2_copy_h = 0;
     DXGI_FORMAT p2_copy_fmt = DXGI_FORMAT_UNKNOWN;
-
-    ID3D11Texture2D* bloom_down_tex[3]{};
-    ID3D11RenderTargetView* bloom_down_rtv[3]{};
-    ID3D11ShaderResourceView* bloom_down_srv[3]{};
-    ID3D11Texture2D* bloom_up_tex[2]{};
-    ID3D11RenderTargetView* bloom_up_rtv[2]{};
-    ID3D11ShaderResourceView* bloom_up_srv[2]{};
-    uint32_t bloom_vp_w = 0;
-    uint32_t bloom_vp_h = 0;
-    uint32_t bloom_w[3]{};
-    uint32_t bloom_h[3]{};
 
     ID3D11Texture3D* lut_tex[4]{};
     ID3D11ShaderResourceView* lut_srv[4]{};
@@ -1587,23 +1459,6 @@ void ReleaseDepthVariantShaders(DepthVariantShaders& s) {
     SafeRelease(s.ps_c1_debug);
 }
 
-void ReleaseBloomTargets() {
-    for (int i = 0; i < 3; ++i) {
-        SafeRelease(g_st.bloom_down_srv[i]);
-        SafeRelease(g_st.bloom_down_rtv[i]);
-        SafeRelease(g_st.bloom_down_tex[i]);
-        g_st.bloom_w[i] = 0;
-        g_st.bloom_h[i] = 0;
-    }
-    for (int i = 0; i < 2; ++i) {
-        SafeRelease(g_st.bloom_up_srv[i]);
-        SafeRelease(g_st.bloom_up_rtv[i]);
-        SafeRelease(g_st.bloom_up_tex[i]);
-    }
-    g_st.bloom_vp_w = 0;
-    g_st.bloom_vp_h = 0;
-}
-
 void ReleaseLutResources() {
     for (int i = 0; i < 4; ++i) {
         SafeRelease(g_st.lut_srv[i]);
@@ -1617,7 +1472,6 @@ void ReleaseLutResources() {
 }
 
 void ReleaseTargets() {
-    ReleaseBloomTargets();
     SafeRelease(g_st.panel_srv);
     SafeRelease(g_st.panel_tex);
     g_st.panel_tex_w = 0;
@@ -1670,7 +1524,6 @@ void ReleaseAllDeviceObjects() {
     ReleaseLutResources();
     SafeRelease(g_st.rs_fullscreen);
     SafeRelease(g_st.dss_disabled);
-    SafeRelease(g_st.blend_screen_rgb);
     SafeRelease(g_st.blend_toast_alpha);
     SafeRelease(g_st.blend_dual_ao);
     SafeRelease(g_st.blend_mul_rgb);
@@ -1680,10 +1533,6 @@ void ReleaseAllDeviceObjects() {
     SafeRelease(g_st.ps_panel);
     SafeRelease(g_st.cb_panel);
     SafeRelease(g_st.ps_lut_grade);
-    SafeRelease(g_st.ps_bloom_composite);
-    SafeRelease(g_st.ps_bloom_upsample);
-    SafeRelease(g_st.ps_bloom_downsample);
-    SafeRelease(g_st.ps_bloom_prefilter);
     SafeRelease(g_st.cb_bloom_lut);
     SafeRelease(g_st.cb_toast);
     SafeRelease(g_st.ps_toast);
@@ -1823,8 +1672,7 @@ bool EnsurePipelineObjects(ID3D11Device* dev, RouteCD3DLogFn logger) {
     }
     if (g_st.vs_fullscreen && g_st.shaders_single.ps_ao_raw && g_st.shaders_single.ps_composite &&
         g_st.shaders_single.ps_comp_dual && g_st.shaders_single.ps_aerial && g_st.shaders_single.ps_ssr &&
-        g_st.ps_bloom_prefilter && g_st.ps_bloom_downsample && g_st.ps_bloom_upsample &&
-        g_st.ps_bloom_composite && g_st.ps_lut_grade && g_st.cb_bloom_lut && g_st.blend_screen_rgb &&
+        g_st.ps_lut_grade && g_st.cb_bloom_lut &&
         g_st.ps_toast && g_st.cb_toast && g_st.blend_toast_alpha &&
         g_st.ps_panel && g_st.ps_cursor && g_st.cb_panel && g_st.samp_linear &&
         g_st.cb_params && g_st.blend_debug_rgb && g_st.blend_mul_rgb && g_st.blend_dual_ao &&
@@ -1863,18 +1711,6 @@ bool EnsurePipelineObjects(ID3D11Device* dev, RouteCD3DLogFn logger) {
               CompileAndCreatePixelShaderFromSource(
                   dev, compile_fn, kPanelShaderSource, sizeof(kPanelShaderSource) - 1, "route_c_panel.hlsl",
                   "PS_CursorOverlay", "ps_4_0", macro_single, &g_st.ps_cursor, logger) &&
-              CompileAndCreatePixelShaderFromSource(
-                  dev, compile_fn, kBloomLutShaderSource, bloom_src_bytes, "route_c_bloom_lut.hlsl",
-                  "PS_BloomPrefilter", "ps_4_0", macro_single, &g_st.ps_bloom_prefilter, logger) &&
-              CompileAndCreatePixelShaderFromSource(
-                  dev, compile_fn, kBloomLutShaderSource, bloom_src_bytes, "route_c_bloom_lut.hlsl",
-                  "PS_BloomDownsample", "ps_4_0", macro_single, &g_st.ps_bloom_downsample, logger) &&
-              CompileAndCreatePixelShaderFromSource(
-                  dev, compile_fn, kBloomLutShaderSource, bloom_src_bytes, "route_c_bloom_lut.hlsl",
-                  "PS_BloomUpsample", "ps_4_0", macro_single, &g_st.ps_bloom_upsample, logger) &&
-              CompileAndCreatePixelShaderFromSource(
-                  dev, compile_fn, kBloomLutShaderSource, bloom_src_bytes, "route_c_bloom_lut.hlsl",
-                  "PS_BloomComposite", "ps_4_0", macro_single, &g_st.ps_bloom_composite, logger) &&
               CompileAndCreatePixelShaderFromSource(
                   dev, compile_fn, kBloomLutShaderSource, bloom_src_bytes, "route_c_bloom_lut.hlsl",
                   "PS_LutGrade3D", "ps_4_0", macro_single, &g_st.ps_lut_grade, logger);
@@ -1951,17 +1787,6 @@ bool EnsurePipelineObjects(ID3D11Device* dev, RouteCD3DLogFn logger) {
     cb_bloom_desc.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
     cb_bloom_desc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
 
-    D3D11_BLEND_DESC bd_screen{};
-    bd_screen.RenderTarget[0].BlendEnable = TRUE;
-    bd_screen.RenderTarget[0].SrcBlend = D3D11_BLEND_INV_DEST_COLOR;
-    bd_screen.RenderTarget[0].DestBlend = D3D11_BLEND_ONE;
-    bd_screen.RenderTarget[0].BlendOp = D3D11_BLEND_OP_ADD;
-    bd_screen.RenderTarget[0].SrcBlendAlpha = D3D11_BLEND_ZERO;
-    bd_screen.RenderTarget[0].DestBlendAlpha = D3D11_BLEND_ONE;
-    bd_screen.RenderTarget[0].BlendOpAlpha = D3D11_BLEND_OP_ADD;
-    bd_screen.RenderTarget[0].RenderTargetWriteMask =
-        D3D11_COLOR_WRITE_ENABLE_RED | D3D11_COLOR_WRITE_ENABLE_GREEN | D3D11_COLOR_WRITE_ENABLE_BLUE;
-
     D3D11_BLEND_DESC bd_toast{};
     bd_toast.RenderTarget[0].BlendEnable = TRUE;
     bd_toast.RenderTarget[0].SrcBlend = D3D11_BLEND_SRC_ALPHA;
@@ -2026,7 +1851,6 @@ bool EnsurePipelineObjects(ID3D11Device* dev, RouteCD3DLogFn logger) {
          SUCCEEDED(dev->CreateBlendState(&bd_mul, &g_st.blend_mul_rgb)) &&
          SUCCEEDED(dev->CreateBlendState(&bd_dual, &g_st.blend_dual_ao)) &&
          SUCCEEDED(dev->CreateBlendState(&bd_toast, &g_st.blend_toast_alpha)) &&
-         SUCCEEDED(dev->CreateBlendState(&bd_screen, &g_st.blend_screen_rgb)) &&
          SUCCEEDED(dev->CreateDepthStencilState(&dss_desc, &g_st.dss_disabled)) &&
          SUCCEEDED(dev->CreateRasterizerState(&rs_desc, &g_st.rs_fullscreen));
 
@@ -2468,81 +2292,6 @@ bool CopyRtvTextureToP2Copy(
     } else {
         ctx->CopySubresourceRegion(g_st.p2_copy_tex, 0, 0, 0, 0, src_tex, 0, nullptr);
     }
-    return true;
-}
-
-bool CreateFp16Target(
-    ID3D11Device* dev,
-    uint32_t width,
-    uint32_t height,
-    ID3D11Texture2D** out_tex,
-    ID3D11RenderTargetView** out_rtv,
-    ID3D11ShaderResourceView** out_srv) {
-    D3D11_TEXTURE2D_DESC td{};
-    td.Width = width;
-    td.Height = height;
-    td.MipLevels = 1;
-    td.ArraySize = 1;
-    td.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
-    td.SampleDesc.Count = 1;
-    td.Usage = D3D11_USAGE_DEFAULT;
-    td.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
-    if (FAILED(dev->CreateTexture2D(&td, nullptr, out_tex)) || !*out_tex) {
-        return false;
-    }
-    if (FAILED(dev->CreateRenderTargetView(*out_tex, nullptr, out_rtv)) || !*out_rtv) {
-        return false;
-    }
-    if (FAILED(dev->CreateShaderResourceView(*out_tex, nullptr, out_srv)) || !*out_srv) {
-        return false;
-    }
-    return true;
-}
-
-bool EnsureBloomTargets(ID3D11Device* dev, uint32_t vp_w, uint32_t vp_h, RouteCD3DLogFn logger) {
-    if (vp_w == 0 || vp_h == 0) {
-        return false;
-    }
-    if (g_st.bloom_down_srv[0] && g_st.bloom_up_srv[0] &&
-        g_st.bloom_vp_w == vp_w && g_st.bloom_vp_h == vp_h) {
-        return true;
-    }
-    ReleaseBloomTargets();
-    uint32_t w0 = (std::max)(1U, (vp_w + 1U) / 2U);
-    uint32_t h0 = (std::max)(1U, (vp_h + 1U) / 2U);
-    uint32_t w1 = (std::max)(1U, (w0 + 1U) / 2U);
-    uint32_t h1 = (std::max)(1U, (h0 + 1U) / 2U);
-    uint32_t w2 = (std::max)(1U, (w1 + 1U) / 2U);
-    uint32_t h2 = (std::max)(1U, (h1 + 1U) / 2U);
-    g_st.bloom_w[0] = w0;
-    g_st.bloom_h[0] = h0;
-    g_st.bloom_w[1] = w1;
-    g_st.bloom_h[1] = h1;
-    g_st.bloom_w[2] = w2;
-    g_st.bloom_h[2] = h2;
-
-    for (int i = 0; i < 3; ++i) {
-        if (!CreateFp16Target(dev, g_st.bloom_w[i], g_st.bloom_h[i],
-                              &g_st.bloom_down_tex[i], &g_st.bloom_down_rtv[i], &g_st.bloom_down_srv[i])) {
-            ReleaseBloomTargets();
-            if (logger) {
-                logger("[RouteC][Bloom] FAILED creating down mip %d (%ux%u).", i, g_st.bloom_w[i], g_st.bloom_h[i]);
-            }
-            return false;
-        }
-    }
-    for (int i = 0; i < 2; ++i) {
-        if (!CreateFp16Target(dev, g_st.bloom_w[i], g_st.bloom_h[i],
-                              &g_st.bloom_up_tex[i], &g_st.bloom_up_rtv[i], &g_st.bloom_up_srv[i])) {
-            ReleaseBloomTargets();
-            if (logger) {
-                logger("[RouteC][Bloom] FAILED creating up mip %d (%ux%u).", i, g_st.bloom_w[i], g_st.bloom_h[i]);
-            }
-            return false;
-        }
-    }
-    g_st.bloom_vp_w = vp_w;
-    g_st.bloom_vp_h = vp_h;
     return true;
 }
 
@@ -3311,7 +3060,7 @@ void ResetRouteCPostWorldDepthSnapshot() {
 
 bool ExecuteRouteCPostWorldPass(const RouteCPostWorldRequest& req, RouteCD3DLogFn logger) {
     if (!req.ctx || req.vp_width <= 0 || req.vp_height <= 0 || req.debug_mode > 0 ||
-        (!req.ssr_enabled && !req.bloom_pyramid_enabled && req.lut_preset <= 0)) {
+        (!req.ssr_enabled && req.lut_preset <= 0)) {
         return false;
     }
 
@@ -3421,99 +3170,7 @@ bool ExecuteRouteCPostWorldPass(const RouteCPostWorldRequest& req, RouteCD3DLogF
         did_any = true;
     }
 
-    // Item 6: Multi-Stage HDR FP16 Bloom Pyramid AFTER all spells/particles/water (0..94) and BEFORE UI.
-    if (req.bloom_pyramid_enabled &&
-        g_st.ps_bloom_prefilter && g_st.ps_bloom_downsample &&
-        g_st.ps_bloom_upsample && g_st.ps_bloom_composite &&
-        g_st.cb_bloom_lut && g_st.blend_screen_rgb &&
-        EnsureBloomTargets(dev, static_cast<uint32_t>(req.vp_width), static_cast<uint32_t>(req.vp_height), logger) &&
-        CopyRtvTextureToP2Copy(dev, req.ctx, src_rt_tex, rt_desc, rtv_desc)) {
-        const float rt_w = static_cast<float>(rt_desc.Width);
-        const float rt_h = static_cast<float>(rt_desc.Height);
-        const float src_u0 = static_cast<float>(req.vp_left) / rt_w;
-        const float src_v0 = static_cast<float>(req.vp_top) / rt_h;
-        const float src_uw = static_cast<float>(req.vp_width) / rt_w;
-        const float src_vh = static_cast<float>(req.vp_height) / rt_h;
-        const bool is_dark = (req.filter_preset == 2);
-        const float threshold = is_dark ? 0.86f : 0.82f;
-        const float knee = 0.12f;
-        const float composite_strength = is_dark ? 0.18f : 0.22f;
-        req.ctx->PSSetConstantBuffers(0, 1, &g_st.cb_bloom_lut);
-        req.ctx->OMSetBlendState(nullptr, nullptr, 0xFFFFFFFFU);
-
-        auto set_mip_vp = [&](uint32_t w, uint32_t h) {
-            D3D11_VIEWPORT vp{};
-            vp.Width = static_cast<float>(w);
-            vp.Height = static_cast<float>(h);
-            vp.MaxDepth = 1.0f;
-            req.ctx->RSSetViewports(1, &vp);
-        };
-
-        if (UploadBloomLutCb(req.ctx, 0.0f, 0.0f,
-                             static_cast<float>(g_st.bloom_w[0]), static_cast<float>(g_st.bloom_h[0]),
-                             src_u0, src_v0, src_uw, src_vh,
-                             1.0f / rt_w, 1.0f / rt_h, threshold, knee, 0.0f, 32.0f, 0.0f)) {
-            set_mip_vp(g_st.bloom_w[0], g_st.bloom_h[0]);
-            req.ctx->OMSetRenderTargets(1, &g_st.bloom_down_rtv[0], nullptr);
-            req.ctx->PSSetShader(g_st.ps_bloom_prefilter, nullptr, 0);
-            ID3D11ShaderResourceView* s0[2] = {g_st.p2_copy_srv, nullptr};
-            req.ctx->PSSetShaderResources(0, 2, s0);
-            req.ctx->Draw(3, 0);
-        }
-        for (int m = 0; m < 2; ++m) {
-            req.ctx->PSSetShaderResources(0, 2, null_srvs);
-            if (UploadBloomLutCb(req.ctx, 0.0f, 0.0f,
-                                 static_cast<float>(g_st.bloom_w[m + 1]), static_cast<float>(g_st.bloom_h[m + 1]),
-                                 0.0f, 0.0f, 1.0f, 1.0f,
-                                 1.0f / static_cast<float>(g_st.bloom_w[m]),
-                                 1.0f / static_cast<float>(g_st.bloom_h[m]),
-                                 0.0f, 0.0f, 0.0f, 32.0f, 0.0f)) {
-                set_mip_vp(g_st.bloom_w[m + 1], g_st.bloom_h[m + 1]);
-                req.ctx->OMSetRenderTargets(1, &g_st.bloom_down_rtv[m + 1], nullptr);
-                req.ctx->PSSetShader(g_st.ps_bloom_downsample, nullptr, 0);
-                ID3D11ShaderResourceView* s[2] = {g_st.bloom_down_srv[m], nullptr};
-                req.ctx->PSSetShaderResources(0, 2, s);
-                req.ctx->Draw(3, 0);
-            }
-        }
-        for (int m = 1; m >= 0; --m) {
-            req.ctx->PSSetShaderResources(0, 2, null_srvs);
-            ID3D11ShaderResourceView* coarse_srv = (m == 1) ? g_st.bloom_down_srv[2] : g_st.bloom_up_srv[1];
-            if (UploadBloomLutCb(req.ctx, 0.0f, 0.0f,
-                                 static_cast<float>(g_st.bloom_w[m]), static_cast<float>(g_st.bloom_h[m]),
-                                 0.0f, 0.0f, 1.0f, 1.0f,
-                                 1.0f / static_cast<float>(g_st.bloom_w[m + 1]),
-                                 1.0f / static_cast<float>(g_st.bloom_h[m + 1]),
-                                 0.0f, 0.0f, 0.52f, 32.0f, 0.0f)) {
-                set_mip_vp(g_st.bloom_w[m], g_st.bloom_h[m]);
-                req.ctx->OMSetRenderTargets(1, &g_st.bloom_up_rtv[m], nullptr);
-                req.ctx->PSSetShader(g_st.ps_bloom_upsample, nullptr, 0);
-                ID3D11ShaderResourceView* s[2] = {coarse_srv, g_st.bloom_down_srv[m]};
-                req.ctx->PSSetShaderResources(0, 2, s);
-                req.ctx->Draw(3, 0);
-            }
-        }
-        req.ctx->PSSetShaderResources(0, 2, null_srvs);
-        if (UploadBloomLutCb(req.ctx,
-                             static_cast<float>(req.vp_left), static_cast<float>(req.vp_top),
-                             static_cast<float>(req.vp_width), static_cast<float>(req.vp_height),
-                             0.0f, 0.0f, 1.0f, 1.0f,
-                             1.0f / static_cast<float>(g_st.bloom_w[0]),
-                             1.0f / static_cast<float>(g_st.bloom_h[0]),
-                             0.0f, 0.0f, composite_strength, 32.0f, 0.0f)) {
-            req.ctx->RSSetViewports(1, &ao_vp);
-            req.ctx->OMSetRenderTargets(1, &target_rtv, nullptr);
-            req.ctx->OMSetBlendState(g_st.blend_screen_rgb, nullptr, 0xFFFFFFFFU);
-            req.ctx->PSSetShader(g_st.ps_bloom_composite, nullptr, 0);
-            ID3D11ShaderResourceView* s[2] = {g_st.bloom_up_srv[0], nullptr};
-            req.ctx->PSSetShaderResources(0, 2, s);
-            req.ctx->Draw(3, 0);
-            req.ctx->PSSetShaderResources(0, 2, null_srvs);
-            did_any = true;
-        }
-    }
-
-    // Item 7: 3D LUT Color Grading (post-world + post-Bloom, strictly pre-UI)
+    // Item 7: 3D LUT Color Grading (post-world + post-SSR, strictly pre-UI)
     if (req.lut_preset > 0 &&
         g_st.ps_lut_grade && g_st.cb_bloom_lut && g_st.blend_debug_rgb &&
         EnsureLutReady(dev, req.lut_preset, logger) &&
@@ -3982,10 +3639,6 @@ bool VerifyRouteCShadersCompile(RouteCD3DLogFn logger) {
     SafeRelease(cursor_blob);
 
     const char* bloom_lut_entries[] = {
-        "PS_BloomPrefilter",
-        "PS_BloomDownsample",
-        "PS_BloomUpsample",
-        "PS_BloomComposite",
         "PS_LutGrade3D",
     };
     bool bloom_lut_ok = true;

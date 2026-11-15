@@ -44,7 +44,6 @@ struct RouteCAoRenderRequest {
     bool capture_particle_depth = false;
     bool aerial_enabled = false;
     bool ssr_enabled = false;
-    bool bloom_pyramid_enabled = false;
     int lut_preset = 0;     // 0=OFF, 1=CinemaTealOrange, 2=ColdNordic, 3=Custom(.cube)
     bool water_hint = false;
     int filter_preset = 1;  // 0=OFF, 1=HOB, 2=DRK
@@ -88,7 +87,6 @@ struct RouteCPostWorldRequest {
     int vp_height = 0;
     int debug_mode = 0;
     bool ssr_enabled = false;
-    bool bloom_pyramid_enabled = false;
     int lut_preset = 0;     // 0=OFF, 1=CinemaTealOrange, 2=ColdNordic, 3=Custom(.cube)
     bool water_hint = false;
     int filter_preset = 1;  // 0=OFF, 1=HOB, 2=DRK

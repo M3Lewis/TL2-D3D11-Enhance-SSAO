@@ -608,12 +608,11 @@ void MaybeApplyP2FilterUniformsToPass(const void* pass) {
     const bool bloom_recent = (bloom_ms != 0 && (now_ms - bloom_ms) < 250ULL);
     const float apply_tonemap = (is_bright_bloom || is_bloom_blend || !bloom_recent) ? 1.0f : 0.0f;
     const float apply_vignette = (is_fxaa && IsP2AerialVignetteEnabled()) ? 1.0f : 0.0f;
-    const float bloom_pyramid_active = IsP2BloomPyramidEnabled() ? 1.0f : 0.0f;
     const float params[4] = {
         static_cast<float>(g_p2_filter_preset.load(std::memory_order_relaxed)),
         apply_tonemap,
         apply_vignette,
-        bloom_pyramid_active,
+        0.0f,
     };
 
     OgreSharedPtr fp_params_sp{};

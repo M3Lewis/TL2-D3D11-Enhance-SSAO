@@ -24,14 +24,13 @@ struct VisualConfig {
     bool p1_soft_particles = true;
     bool p2_aerial_vignette = true;
     bool p2_ssr_enabled = true;
-    bool p2_bloom_pyramid = true;
     int p2_filter_preset = 1;  // 0=Off, 1=Hob, 2=Dark Film
     int p2_lut_preset = 0;     // 0=Off, 1=CinemaTealOrange, 2=ColdNordic, 3=CustomCube
 
     bool operator==(const VisualConfig& other) const = default;
 };
 
-constexpr int kCustomPresetCount = 4;
+constexpr int kCustomPresetCount = 10;
 
 struct PresetSlot {
     bool used = false;
@@ -47,9 +46,10 @@ std::wstring ResolveDefaultConfigIniPath();
 bool LoadVisualConfigAndPresets(const wchar_t* ini_path_override = nullptr);
 bool SaveVisualConfigAndPresets(const wchar_t* ini_path_override = nullptr);
 
-// Preset helpers (builtin: 0=全开高清, 1=暗黑地牢, 2=纯原版; custom: 0..3).
+// Preset helpers (builtin: 0=全开高清, 1=暗黑地牢, 2=纯原版; custom: 0..9).
 VisualConfig MakeBuiltinPreset(int builtin_index);
 bool ApplyBuiltinPreset(int builtin_index);
+bool SetAllRenderTogglesEnabled(bool enabled);
 bool SaveCustomPreset(int slot_index);
 bool ApplyCustomPreset(int slot_index);
 PresetSlot GetCustomPresetSlot(int slot_index);

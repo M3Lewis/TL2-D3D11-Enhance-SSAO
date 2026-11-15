@@ -560,7 +560,7 @@ extern "C" __declspec(dllexport) int RouteB_RunConfigPanelSelfTest() {
         return 1;
     }
 
-    // Mutate all toggles + filter + LUT, save into custom preset 1 (index 0).
+    // Mutate all toggles + filter + LUT, save into custom preset 10 (index 9).
     routeb::SetPhase3RuntimeEnhanceEnabled(true);
     routeb::SetF11VisualEnhanceEnabled(false);
     routeb::SetP0RimLitEnhanceEnabled(true);
@@ -569,11 +569,32 @@ extern "C" __declspec(dllexport) int RouteB_RunConfigPanelSelfTest() {
     routeb::SetP1SoftParticlesEnabled(true);
     routeb::SetP2AerialVignetteEnabled(false);
     routeb::SetP2SsrEnabled(false);
-    routeb::SetP2BloomPyramidEnabled(true);
     routeb::SetP2FilterPreset(2);
     routeb::SetP2LutPreset(1);
-    if (!routeb::SaveCustomPreset(0)) {
+    if (!routeb::SaveCustomPreset(9)) {
         return 2;
+    }
+
+    // Exercise Select All / Clear All helpers while keeping filter & LUT intact.
+    if (!routeb::SetAllRenderTogglesEnabled(true)) {
+        return 11;
+    }
+    const routeb::VisualConfig all_on = routeb::CaptureVisualConfigFromEngine();
+    if (!all_on.phase3_enhance || !all_on.af_point_enhance || !all_on.p0_rimlit_enhance ||
+        !all_on.ao_enabled || !all_on.p0_sscs_enabled || !all_on.p1_soft_particles ||
+        !all_on.p2_aerial_vignette || !all_on.p2_ssr_enabled ||
+        all_on.p2_filter_preset != 2 || all_on.p2_lut_preset != 1) {
+        return 12;
+    }
+    if (!routeb::SetAllRenderTogglesEnabled(false)) {
+        return 13;
+    }
+    const routeb::VisualConfig all_off = routeb::CaptureVisualConfigFromEngine();
+    if (all_off.phase3_enhance || all_off.af_point_enhance || all_off.p0_rimlit_enhance ||
+        all_off.ao_enabled || all_off.p0_sscs_enabled || all_off.p1_soft_particles ||
+        all_off.p2_aerial_vignette || all_off.p2_ssr_enabled ||
+        all_off.p2_filter_preset != 2 || all_off.p2_lut_preset != 1) {
+        return 14;
     }
 
     // Switch to built-in "纯原版" (index 2).
@@ -583,31 +604,31 @@ extern "C" __declspec(dllexport) int RouteB_RunConfigPanelSelfTest() {
     const routeb::VisualConfig vanilla = routeb::CaptureVisualConfigFromEngine();
     if (vanilla.phase3_enhance || vanilla.af_point_enhance || vanilla.p0_rimlit_enhance ||
         vanilla.ao_enabled || vanilla.p0_sscs_enabled || vanilla.p1_soft_particles ||
-        vanilla.p2_aerial_vignette || vanilla.p2_ssr_enabled || vanilla.p2_bloom_pyramid ||
+        vanilla.p2_aerial_vignette || vanilla.p2_ssr_enabled ||
         vanilla.p2_filter_preset != 0 || vanilla.p2_lut_preset != 0) {
         return 4;
     }
 
-    // Apply saved preset 1 and verify exact state restored.
-    if (!routeb::ApplyCustomPreset(0)) {
+    // Apply saved preset 10 and verify exact state restored.
+    if (!routeb::ApplyCustomPreset(9)) {
         return 5;
     }
     const routeb::VisualConfig applied = routeb::CaptureVisualConfigFromEngine();
     if (!applied.phase3_enhance || applied.af_point_enhance || !applied.p0_rimlit_enhance ||
         applied.ao_enabled || applied.p0_sscs_enabled || !applied.p1_soft_particles ||
-        applied.p2_aerial_vignette || applied.p2_ssr_enabled || !applied.p2_bloom_pyramid ||
+        applied.p2_aerial_vignette || applied.p2_ssr_enabled ||
         applied.p2_filter_preset != 2 || applied.p2_lut_preset != 1) {
         return 6;
     }
 
-    // Re-load from disk into a reset state and verify persistence.
+    // Re-load from disk into a reset state and verify persistence of slot 10.
     routeb::ResetConfigPanelStateForTest();
     if (!routeb::LoadVisualConfigAndPresets(ini_path)) {
         return 7;
     }
     const routeb::VisualConfig reloaded = routeb::CaptureVisualConfigFromEngine();
-    const routeb::PresetSlot slot0 = routeb::GetCustomPresetSlot(0);
-    if (!(reloaded == applied) || !slot0.used || !(slot0.cfg == applied)) {
+    const routeb::PresetSlot slot9 = routeb::GetCustomPresetSlot(9);
+    if (!(reloaded == applied) || !slot9.used || !(slot9.cfg == applied)) {
         return 8;
     }
 

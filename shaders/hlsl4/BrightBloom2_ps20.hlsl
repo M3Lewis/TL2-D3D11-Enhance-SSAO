@@ -18,14 +18,10 @@ Texture2D    RT        : register(t0);
 SamplerState RTSampler : register(s0);
 
 float  Bloom;
-float4 p2FilterParams;  // x=preset (0=OFF, 1=HOB, 2=DRK), y=tonemap, z=vignette, w=bloomPyramidOverride
+float4 p2FilterParams;  // x=preset (0=OFF, 1=HOB, 2=DRK), y=tonemap, z=vignette, w=reserved
 
 float4 postprocess_impl(float2 texCoord)
 {
-    if (p2FilterParams.w > 0.5)
-    {
-        return float4(0.0, 0.0, 0.0, 1.0);
-    }
     float4 tex = RT.Sample(RTSampler, texCoord);
     if (p2FilterParams.x > 0.5)
     {

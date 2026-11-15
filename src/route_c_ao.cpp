@@ -204,7 +204,6 @@ std::atomic<bool> g_sscs_runtime_enabled{true};
 std::atomic<bool> g_p1_soft_particles_enabled{true};
 std::atomic<bool> g_p2_aerial_vignette_enabled{true};
 std::atomic<bool> g_p2_ssr_enabled{true};
-std::atomic<bool> g_p2_bloom_pyramid_enabled{true};
 std::atomic<int> g_p2_lut_preset{0};  // 0=OFF, 1=CinemaTealOrange, 2=ColdNordic, 3=CustomCube
 std::atomic<bool> g_world_depth_ready_for_particles{false};
 std::atomic<uint64_t> g_toast_expire_tick_ms{0};
@@ -705,7 +704,6 @@ void TryDispatchAoForFrame(ActiveSceneFrame& frame, const char* trigger_src, uin
     req.capture_particle_depth = sp_on;
     req.aerial_enabled = (dbg_mode <= 0) && aerial_on;
     req.ssr_enabled = (dbg_mode <= 0) && ssr_on;
-    req.bloom_pyramid_enabled = false;
     req.lut_preset = 0;
     req.water_hint = water_hint;
     req.filter_preset = GetP2FilterPreset();
@@ -785,9 +783,8 @@ void TryDispatchPostWorldForFrame(ActiveSceneFrame& frame) {
     const bool ao_on = g_ao_runtime_enabled.load(std::memory_order_relaxed);
     const int dbg_mode = ao_on ? g_ao_debug_mode.load(std::memory_order_relaxed) : -1;
     const bool ssr_on = (dbg_mode <= 0) && g_p2_ssr_enabled.load(std::memory_order_relaxed);
-    const bool bloom_on = (dbg_mode <= 0) && g_p2_bloom_pyramid_enabled.load(std::memory_order_relaxed);
     const int lut_preset = (dbg_mode <= 0) ? g_p2_lut_preset.load(std::memory_order_relaxed) : 0;
-    if (!ssr_on && !bloom_on && lut_preset <= 0) {
+    if (!ssr_on && lut_preset <= 0) {
         return;
     }
     frame.post_world_injected = true;
@@ -810,7 +807,6 @@ void TryDispatchPostWorldForFrame(ActiveSceneFrame& frame) {
     req.vp_height = frame.vp_h;
     req.debug_mode = (dbg_mode >= 0) ? dbg_mode : 0;
     req.ssr_enabled = ssr_on;
-    req.bloom_pyramid_enabled = bloom_on;
     req.lut_preset = lut_preset;
     req.water_hint = water_hint;
     req.filter_preset = GetP2FilterPreset();
@@ -1034,9 +1030,8 @@ void __fastcall HookRenderScene(void* sm, void* cam, void* vp, uint8_t show_over
     const bool sp_on = g_p1_soft_particles_enabled.load(std::memory_order_relaxed);
     const bool aerial_on = g_p2_aerial_vignette_enabled.load(std::memory_order_relaxed);
     const bool ssr_on = g_p2_ssr_enabled.load(std::memory_order_relaxed);
-    const bool bloom_on = g_p2_bloom_pyramid_enabled.load(std::memory_order_relaxed);
     const int lut_preset = g_p2_lut_preset.load(std::memory_order_relaxed);
-    const bool need_depth_pipeline = (dbg_mode >= 0) || sp_on || aerial_on || ssr_on || bloom_on || (lut_preset > 0);
+    const bool need_depth_pipeline = (dbg_mode >= 0) || sp_on || aerial_on || ssr_on || (lut_preset > 0);
     const bool need_filter_fallback = ((GetP2FilterPreset() > 0) || aerial_on) && !WasP2PostShaderSeenRecently();
     if ((!survey_on && !need_depth_pipeline && !need_filter_fallback) || g_scene_depth >= kMaxSceneStack || !sm || !vp) {
         const bool prev_ready = g_world_depth_ready_for_particles.exchange(false, std::memory_order_acq_rel);
@@ -1417,7 +1412,6 @@ bool InstallRouteCAoPipeline(void* ogre_main_base, RouteCLogFn logger) {
     g_p1_soft_particles_enabled.store(!EnvFlagIsZero("TL2_P1_SOFT_PARTICLES"), std::memory_order_relaxed);
     g_p2_aerial_vignette_enabled.store(!EnvFlagIsZero("TL2_P2_AERIAL_VIGNETTE"), std::memory_order_relaxed);
     g_p2_ssr_enabled.store(!EnvFlagIsZero("TL2_P2_SSR"), std::memory_order_relaxed);
-    g_p2_bloom_pyramid_enabled.store(!EnvFlagIsZero("TL2_P2_BLOOM"), std::memory_order_relaxed);
     g_p2_lut_preset.store(0, std::memory_order_relaxed);
     g_world_depth_ready_for_particles.store(false, std::memory_order_relaxed);
     g_ao_debug_mode.store(dbg_mode, std::memory_order_relaxed);
@@ -1427,13 +1421,12 @@ bool InstallRouteCAoPipeline(void* ogre_main_base, RouteCLogFn logger) {
 
     if (g_log) {
         const int p2_preset = GetP2FilterPreset();
-        g_log("[RouteC][C2] Hooks installed (ao=%s, sscs=%s, p1SoftPart=%s, p2Atmos=%s, ssr=%s, bloom=%s, lut=%s, debugMode=%d, p2Filter=%s, f11=%s, p0rim=%s, c0_survey=%s, injectQueue=86, hotkey=F8:ConfigPanel).",
+        g_log("[RouteC][C2] Hooks installed (ao=%s, sscs=%s, p1SoftPart=%s, p2Atmos=%s, ssr=%s, lut=%s, debugMode=%d, p2Filter=%s, f11=%s, p0rim=%s, c0_survey=%s, injectQueue=86, hotkey=F8:ConfigPanel).",
               IsRouteCAoRuntimeEnabled() ? "ON" : "OFF",
               IsRouteCSscsRuntimeEnabled() ? "ON" : "OFF",
               IsP1SoftParticlesEnabled() ? "ON" : "OFF",
               IsP2AerialVignetteEnabled() ? "ON" : "OFF",
               IsP2SsrEnabled() ? "ON" : "OFF",
-              IsP2BloomPyramidEnabled() ? "ON" : "OFF",
               P2LutPresetName(GetP2LutPreset()),
               dbg_mode,
               P2FilterPresetName(p2_preset),
@@ -1536,21 +1529,6 @@ bool IsP2SsrEnabled() {
 bool ToggleP2SsrEnabled() {
     bool expected = g_p2_ssr_enabled.load(std::memory_order_relaxed);
     while (!g_p2_ssr_enabled.compare_exchange_weak(expected, !expected, std::memory_order_relaxed)) {
-    }
-    return !expected;
-}
-
-void SetP2BloomPyramidEnabled(bool enabled) {
-    g_p2_bloom_pyramid_enabled.store(enabled, std::memory_order_relaxed);
-}
-
-bool IsP2BloomPyramidEnabled() {
-    return g_p2_bloom_pyramid_enabled.load(std::memory_order_relaxed);
-}
-
-bool ToggleP2BloomPyramidEnabled() {
-    bool expected = g_p2_bloom_pyramid_enabled.load(std::memory_order_relaxed);
-    while (!g_p2_bloom_pyramid_enabled.compare_exchange_weak(expected, !expected, std::memory_order_relaxed)) {
     }
     return !expected;
 }

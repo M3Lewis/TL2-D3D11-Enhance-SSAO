@@ -8,6 +8,7 @@ $SrcFiles = @(
     (Join-Path $RootDir "src\cegui_explicit_shader.cpp"),
     (Join-Path $RootDir "src\fixed_func_manual_uniforms.cpp"),
     (Join-Path $RootDir "src\phase3_scene_pipeline.cpp"),
+    (Join-Path $RootDir "src\route_c_ao.cpp"),
     (Join-Path $RootDir "src\plugin_main.cpp")
 )
 $OutDir = Join-Path $RootDir "bin"

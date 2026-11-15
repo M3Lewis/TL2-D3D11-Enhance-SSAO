@@ -245,6 +245,7 @@ std::atomic<uint64_t> g_vs_texcoord_injections{0};
 std::atomic<uint64_t> g_vs_missing_vcol_fixes{0};
 std::atomic<uint64_t> g_ff_explicit_syncs{0};
 std::atomic<bool> g_hooked{false};
+std::atomic<Phase3PassObserverFn> g_pass_observer{nullptr};
 
 enum class SkipReason : uint8_t {
     Matched = 0,
@@ -1138,6 +1139,16 @@ const void* __fastcall HookSceneManagerSetPass(
     SkipReason skip_reason = SkipReason::Matched;
     const PassArchetype arch = ClassifyPass(used_pass, flags, flags2, &is_ff_vs, &skip_reason);
     RecordPassDiag(used_pass, arch, skip_reason);
+    if (Phase3PassObserverFn observer = g_pass_observer.load(std::memory_order_acquire)) {
+        const char* pass_name = g_api.pass_get_name ? g_api.pass_get_name(used_pass).c_str() : "";
+        const bool lit = g_api.pass_get_lighting_enabled ? g_api.pass_get_lighting_enabled(used_pass) : false;
+        const bool dw = g_api.pass_get_depth_write_enabled ? g_api.pass_get_depth_write_enabled(used_pass) : false;
+        const bool trans = g_api.pass_is_transparent ? g_api.pass_is_transparent(used_pass) : false;
+        const bool ar = g_api.pass_get_alpha_reject_func ? (g_api.pass_get_alpha_reject_func(used_pass) != kCmpAlwaysPass) : false;
+        const bool has_vp = g_api.pass_has_vp ? g_api.pass_has_vp(used_pass) : false;
+        const bool has_fp = g_api.pass_has_fp ? g_api.pass_has_fp(used_pass) : false;
+        observer(pass_name, lit, dw, trans, ar, has_vp, has_fp);
+    }
     if (arch == PassArchetype::None) {
         return used_pass;
     }
@@ -1372,6 +1383,7 @@ bool InstallPhase3ScenePipeline(void* d3d11_base, void* ogre_main_base, Phase3Lo
 }
 
 void RemovePhase3ScenePipeline() {
+    g_pass_observer.store(nullptr, std::memory_order_release);
     g_hooked.store(false, std::memory_order_relaxed);
     SetActiveExplicitPsForwardTarget(0);
     g_active_binding = {};
@@ -1484,6 +1496,10 @@ void LogPhase3PassDiagnostics(Phase3LogFn logger) {
         }
     }
     ::ReleaseSRWLockShared(&g_diag_lock);
+}
+
+void SetPhase3PassObserver(Phase3PassObserverFn observer) {
+    g_pass_observer.store(observer, std::memory_order_release);
 }
 
 }  // namespace routeb

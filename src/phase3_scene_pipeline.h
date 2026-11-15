@@ -50,4 +50,14 @@ void RemovePhase3ScenePipeline();
 Phase3Stats GetPhase3Stats();
 void LogPhase3PassDiagnostics(Phase3LogFn logger);
 
+using Phase3PassObserverFn = void (*)(
+    const char* pass_name,
+    bool lighting,
+    bool depth_write,
+    bool transparent,
+    bool alpha_reject,
+    bool has_vp,
+    bool has_fp);
+void SetPhase3PassObserver(Phase3PassObserverFn observer);
+
 }  // namespace routeb

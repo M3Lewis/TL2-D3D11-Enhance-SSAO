@@ -13,6 +13,7 @@
 #include "hlsl_cbuffer_fastpath.h"
 #include "hook_utils.h"
 #include "phase3_scene_pipeline.h"
+#include "route_c_ao.h"
 
 namespace {
 
@@ -206,6 +207,7 @@ void LogAllStats() {
         static_cast<unsigned long long>(p3.vs_missing_vcol_fixes),
         static_cast<unsigned long long>(p3.ff_explicit_syncs));
     routeb::LogPhase3PassDiagnostics(LogLine);
+    routeb::LogRouteCSurveySummary(LogLine);
     LogLine(
         "[RouteB][OgreFix] MemoryDataStream readHook=%d seekHook=%d skipHook=%d boundsClamps=%llu",
         g_detour_mem_read.IsInstalled() ? 1 : 0,
@@ -394,6 +396,8 @@ void CleanupHooksAndResources() {
     if (!g_stats_logged.exchange(true, std::memory_order_acq_rel)) {
         LogAllStats();
     }
+    routeb::SetPhase3PassObserver(nullptr);
+    routeb::RemoveRouteCAoPipeline();
     routeb::RemovePhase3ScenePipeline();
     routeb::RemoveCeguiExplicitShaderHook();
     routeb::RemovePhase1FastPaths();
@@ -496,12 +500,17 @@ extern "C" __declspec(dllexport) void dllStartPlugin() {
         const bool fp_ok = routeb::InstallPhase1FastPaths(d3d_base, ogre_base, &LogLine);
         const bool p2_ok = routeb::InstallCeguiExplicitShaderHook(d3d_base, ogre_base, &LogLine);
         const bool p3_ok = routeb::InstallPhase3ScenePipeline(d3d_base, ogre_base, &LogLine);
+        const bool rc_ok = routeb::InstallRouteCAoPipeline(ogre_base, &LogLine);
+        if (rc_ok) {
+            routeb::SetPhase3PassObserver(&routeb::OnRouteCScenePassObserved);
+        }
         g_phase1_installed = dxbc_ok && fp_ok;
-        LogLine("[RouteB][Phase1+2+3] Active status: dxbc_cache=%s fastpaths=%s cegui_shader=%s scene_p3=%s mem_guard=%s",
+        LogLine("[RouteB][Phase1+2+3] Active status: dxbc_cache=%s fastpaths=%s cegui_shader=%s scene_p3=%s route_c=%s mem_guard=%s",
                 dxbc_ok ? "ON" : "OFF",
                 fp_ok ? "ON" : "OFF",
                 p2_ok ? "ON" : "OFF",
                 p3_ok ? "ON" : "OFF",
+                rc_ok ? "ON" : "OFF",
                 mem_guard_ok ? "ON" : "OFF");
     } else {
         LogLine("[RouteB][Phase1] PE mismatch or RenderSystem_Direct3D11 not loaded; Phase 1+2+3 disabled cleanly.");

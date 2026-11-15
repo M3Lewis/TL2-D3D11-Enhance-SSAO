@@ -635,19 +635,20 @@ float4 PS_WetFloorSsr(VsOut input) : SV_Target0
     }
 
     float3 baseCol = gAoInputTex.Load(int3(pix, 0)).rgb;
-    float maxCh = max(baseCol.r, max(baseCol.g, baseCol.b));
-    float luma = dot(baseCol, float3(0.2126f, 0.7152f, 0.0722f));
     float waterColorBand = max(baseCol.b, baseCol.g * 0.55f + baseCol.b * 0.45f) - baseCol.r;
-    float isBlueOrTeal = (baseCol.b > baseCol.r + 0.015f && baseCol.b >= baseCol.g * 0.72f)
-        ? saturate((waterColorBand + 0.02f) * 4.5f) : 0.0f;
+    float isBlueOrTeal = (baseCol.b > baseCol.r + 0.020f && baseCol.b >= baseCol.g * 0.74f)
+        ? saturate((waterColorBand + 0.01f) * 4.2f) : 0.0f;
+    float waterMask = smoothstep(0.18f, 0.56f, isBlueOrTeal);
+    if (waterMask <= 0.02f)
+    {
+        return float4(0.0f, 0.0f, 0.0f, 0.0f);
+    }
     float hasWaterHint = (gViewUpAndWater.w > 0.5f) ? 1.0f : 0.0f;
 
     float3 N = ReconstructNormalVS(pix, P);
     float3 upVS = normalize(gViewUpAndWater.xyz);
     float upDot = dot(N, upVS);
-    float horizLo = (isBlueOrTeal > 0.25f) ? 0.74f : 0.85f;
-    float horizHi = (isBlueOrTeal > 0.25f) ? 0.90f : 0.94f;
-    float horizMask = smoothstep(horizLo, horizHi, upDot);
+    float horizMask = smoothstep(0.72f, 0.88f, upDot);
     if (horizMask <= 0.02f)
     {
         return float4(0.0f, 0.0f, 0.0f, 0.0f);
@@ -659,33 +660,16 @@ float4 PS_WetFloorSsr(VsOut input) : SV_Target0
     float3 pU = ReconstructPosVS(pix + int2( 0, -2), dU);
     float3 pD = ReconstructPosVS(pix + int2( 0,  2), dD);
     float curv = length((pL + pR) * 0.5f - P) + length((pU + pD) * 0.5f - P);
-    float flatLo = (isBlueOrTeal > 0.25f) ? 0.10f : 0.032f;
-    float flatHi = (isBlueOrTeal > 0.25f) ? 0.36f : 0.155f;
-    float flatMask = 1.0f - smoothstep(flatLo, flatHi, curv);
+    float flatMask = 1.0f - smoothstep(0.12f, 0.36f, curv);
     if (flatMask <= 0.02f)
     {
         return float4(0.0f, 0.0f, 0.0f, 0.0f);
     }
 
-    float isGreenGrass = smoothstep(0.025f, 0.095f, baseCol.g - max(baseCol.r, baseCol.b * 1.05f));
-    float warmDry = smoothstep(0.09f, 0.23f, baseCol.r - baseCol.b) * smoothstep(0.24f, 0.52f, luma);
-
     float wx = dot(P, gInvViewRow0.xyz) + gInvViewRow0.w;
     float wz = dot(P, gInvViewRow2.xyz) + gInvViewRow2.w;
-    float puddleNoise = SsrFbm(float2(wx, wz) * 0.20f);
-    float puddlePatch = smoothstep(0.49f, 0.61f, puddleNoise);
-
-    float waterBody = isBlueOrTeal * (0.72f + 0.28f * puddleNoise) * (hasWaterHint > 0.5f ? 1.15f : 0.92f);
-    waterBody = saturate(waterBody);
-    float stoneFloorMask = (1.0f - isGreenGrass) * (1.0f - warmDry * 0.85f) * (1.0f - smoothstep(0.68f, 0.88f, maxCh));
-    float stonePuddle = puddlePatch * stoneFloorMask * (hasWaterHint > 0.5f ? 0.85f : 0.72f);
-
-    float wetMask = max(waterBody, stonePuddle);
-    float maxOpacity = (waterBody > stonePuddle) ? 0.72f : 0.44f;
-    wetMask *= horizMask * flatMask * (1.0f - warmDry * 0.82f);
-
     float distFade = saturate((gProjZAndFade.z - dC) * gProjZAndFade.w);
-    wetMask *= distFade;
+    float wetMask = saturate(waterMask * (hasWaterHint > 0.5f ? 1.0f : 0.85f)) * horizMask * flatMask * distFade;
     if (wetMask <= 0.025f)
     {
         return float4(0.0f, 0.0f, 0.0f, 0.0f);
@@ -695,22 +679,22 @@ float4 PS_WetFloorSsr(VsOut input) : SV_Target0
     gAoInputTex.GetDimensions(texW, texH);
     float2 invTex = rcp(float2(max(texW, 1u), max(texH, 1u)));
 
-    float ripAmp = (waterBody > stonePuddle) ? 0.020f : 0.010f;
-    float ripScale = ripAmp * (1.0f - smoothstep(12.0f, 38.0f, dC));
-    float2 rip = float2(sin(wx * 2.5f + wz * 1.3f), cos(wz * 2.7f - wx * 1.1f)) * ripScale;
-    float3 Nrefl = normalize(N + float3(rip.x, 0.0f, rip.y));
+    // Use planar worldUp normal so bumpy underwater riverbeds never fracture reflections into double ghosts.
+    float ripScale = 0.0045f * (1.0f - smoothstep(10.0f, 34.0f, dC));
+    float2 rip = float2(sin(wx * 2.4f + wz * 1.3f), cos(wz * 2.6f - wx * 1.1f)) * ripScale;
+    float3 Nrefl = normalize(upVS + float3(rip.x, 0.0f, rip.y));
     float3 V = normalize(P);
     float3 R = reflect(V, Nrefl);
 
-    float jitter = SsrHash21(float2(pix)) * 0.25f;
-    float t = 0.18f + jitter * 0.20f;
+    float jitter = SsrHash21(float2(pix)) * 0.15f;
+    float t = 0.32f + jitter * 0.18f;
     bool hit = false;
     float2 hitTexUv = float2(0.0f, 0.0f);
     float2 hitVpUv = float2(0.5f, 0.5f);
-    float prevT = 0.06f;
+    float prevT = 0.12f;
 
     [loop]
-    for (int i = 0; i < 18; ++i)
+    for (int i = 0; i < 20; ++i)
     {
         float3 sampleVS = P + R * t;
         if (sampleVS.z >= -0.25f)
@@ -729,8 +713,8 @@ float4 PS_WetFloorSsr(VsOut input) : SV_Target0
             float sceneD = RawToLinearDist(zRaw);
             float rayD = -sampleVS.z;
             float diff = rayD - sceneD;
-            float thickLimit = 1.25f + sceneD * 0.08f;
-            if (diff > 0.03f && diff < thickLimit)
+            float thickLimit = 0.78f + sceneD * 0.035f;
+            if (diff > 0.06f && diff < thickLimit)
             {
                 float lo = prevT;
                 float hi = t;
@@ -744,7 +728,7 @@ float4 PS_WetFloorSsr(VsOut input) : SV_Target0
                     int2 mpix = clamp(int2(gVpRect.xy + midVpUv * gVpRect.zw), gVpClamp.xy, gVpClamp.zw);
                     float mSceneD = RawToLinearDist(LoadRawDepth(mpix));
                     float midDiff = (-midVS.z) - mSceneD;
-                    if (midDiff > 0.015f && midDiff < thickLimit)
+                    if (midDiff > 0.04f && midDiff < thickLimit)
                     {
                         hi = midT;
                         bestVpUv = midVpUv;
@@ -761,7 +745,7 @@ float4 PS_WetFloorSsr(VsOut input) : SV_Target0
             }
         }
         prevT = t;
-        t += 0.20f + float(i) * 0.09f;
+        t += 0.22f + float(i) * 0.08f;
     }
 
     if (!hit)
@@ -770,14 +754,17 @@ float4 PS_WetFloorSsr(VsOut input) : SV_Target0
     }
 
     float2 edgeDist = min(hitVpUv, 1.0f - hitVpUv);
-    float edgeFade = smoothstep(0.0f, 0.08f, min(edgeDist.x, edgeDist.y));
+    float edgeFade = smoothstep(0.0f, 0.10f, min(edgeDist.x, edgeDist.y));
     float viewGraze = 1.0f - saturate(dot(-V, Nrefl));
-    float fresnel = 0.44f + 0.56f * pow(viewGraze, 1.8f);
-    float3 reflCol = gAoInputTex.SampleLevel(gAoSamp, hitTexUv, 0).rgb;
-    float reflPeak = max(reflCol.r, max(reflCol.g, reflCol.b));
-    float glowLift = lerp(1.0f, 1.32f, smoothstep(0.55f, 0.95f, reflPeak));
-    float alpha = saturate(wetMask * fresnel * edgeFade) * maxOpacity;
-    return float4(saturate(reflCol * glowLift * float3(0.94f, 0.98f, 1.04f)), alpha);
+    float fresnel = 0.34f + 0.56f * pow(viewGraze, 1.9f);
+    float2 bOfs = invTex * 1.25f;
+    float3 reflCol =
+        gAoInputTex.SampleLevel(gAoSamp, hitTexUv + float2(-bOfs.x, -bOfs.y), 0).rgb * 0.25f +
+        gAoInputTex.SampleLevel(gAoSamp, hitTexUv + float2( bOfs.x, -bOfs.y), 0).rgb * 0.25f +
+        gAoInputTex.SampleLevel(gAoSamp, hitTexUv + float2(-bOfs.x,  bOfs.y), 0).rgb * 0.25f +
+        gAoInputTex.SampleLevel(gAoSamp, hitTexUv + float2( bOfs.x,  bOfs.y), 0).rgb * 0.25f;
+    float alpha = saturate(wetMask * fresnel * edgeFade) * 0.44f;
+    return float4(saturate(reflCol * float3(0.92f, 0.97f, 1.03f)), alpha);
 }
 )HLSL";
 
@@ -854,14 +841,14 @@ float4 PS_BloomPrefilter(VS_OUT input) : SV_Target0
     float luma = dot(col, float3(0.2126f, 0.7152f, 0.0722f));
     float energy = lerp(luma, peak, 0.68f);
 
-    // Reject neutral midtone stone walls while allowing vivid saturated VFX & emissive highlights to bloom cleanly.
-    float effThr = gTexelAndBias.z - chroma * 0.16f;
+    // Reject neutral midtone stone walls and portal dark swirls; bloom only true emissive peaks cleanly.
+    float effThr = gTexelAndBias.z - chroma * 0.06f;
     float knee = gTexelAndBias.w;
     float soft = clamp(energy - effThr + knee, 0.0f, 2.0f * knee);
     soft = (soft * soft) / max(4.0f * knee, 1e-5f);
     float contrib = max(soft, energy - effThr) / max(energy, 1e-4f);
-    float3 vivid = lerp(float3(luma, luma, luma), col, 1.18f);
-    float scale = saturate(contrib) * (1.35f + peak * 0.95f);
+    float3 vivid = lerp(float3(luma, luma, luma), col, 1.12f);
+    float scale = saturate(contrib) * 0.95f;
     return float4(min(saturate(vivid) * scale, 4.0f), 1.0f);
 }
 
@@ -3448,9 +3435,9 @@ bool ExecuteRouteCPostWorldPass(const RouteCPostWorldRequest& req, RouteCD3DLogF
         const float src_uw = static_cast<float>(req.vp_width) / rt_w;
         const float src_vh = static_cast<float>(req.vp_height) / rt_h;
         const bool is_dark = (req.filter_preset == 2);
-        const float threshold = is_dark ? 0.78f : 0.72f;
-        const float knee = 0.14f;
-        const float composite_strength = is_dark ? 0.56f : 0.68f;
+        const float threshold = is_dark ? 0.86f : 0.82f;
+        const float knee = 0.12f;
+        const float composite_strength = is_dark ? 0.18f : 0.22f;
         req.ctx->PSSetConstantBuffers(0, 1, &g_st.cb_bloom_lut);
         req.ctx->OMSetBlendState(nullptr, nullptr, 0xFFFFFFFFU);
 
@@ -3497,7 +3484,7 @@ bool ExecuteRouteCPostWorldPass(const RouteCPostWorldRequest& req, RouteCD3DLogF
                                  0.0f, 0.0f, 1.0f, 1.0f,
                                  1.0f / static_cast<float>(g_st.bloom_w[m + 1]),
                                  1.0f / static_cast<float>(g_st.bloom_h[m + 1]),
-                                 0.0f, 0.0f, 0.74f, 32.0f, 0.0f)) {
+                                 0.0f, 0.0f, 0.52f, 32.0f, 0.0f)) {
                 set_mip_vp(g_st.bloom_w[m], g_st.bloom_h[m]);
                 req.ctx->OMSetRenderTargets(1, &g_st.bloom_up_rtv[m], nullptr);
                 req.ctx->PSSetShader(g_st.ps_bloom_upsample, nullptr, 0);

@@ -132,7 +132,7 @@ bool ExercisePhase3PassLifecycle(HMODULE ogre, void* root, void* win) {
             sm_set_pass(sm, pass, true, false);
         }
         if (iter == 11) {
-            if (HMODULE route_b = ::GetModuleHandleW(L"Plugin_TL2_RouteB.dll")) {
+            if (HMODULE route_b = ::GetModuleHandleW(L"Plugin_TL2_DX11_Enhance_SSAO.dll")) {
                 using TriggerFn = void (*)();
                 if (auto fn = reinterpret_cast<TriggerFn>(::GetProcAddress(route_b, "RouteB_TriggerToastForTest"))) {
                     fn();
@@ -214,7 +214,7 @@ int main(int argc, char** argv) {
         root_ctor(root, empty, empty, log_path);
         if (is_d3d11) {
             load_plugin(root, ".\\RenderSystem_Direct3D11");
-            load_plugin(root, ".\\Plugin_TL2_RouteB");
+            load_plugin(root, ".\\Plugin_TL2_DX11_Enhance_SSAO");
         } else {
             load_plugin(root, ".\\RenderSystem_Direct3D9");
             load_plugin(root, ".\\Plugin_CgProgramManager");

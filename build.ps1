@@ -33,9 +33,9 @@ if (-not (Test-Path $vcvars)) {
     throw "vcvars64.bat not found at $vcvars"
 }
 
-$OutDll = Join-Path $OutDir "Plugin_TL2_RouteB.dll"
-$OutPdb = Join-Path $OutDir "Plugin_TL2_RouteB.pdb"
-$OutImplib = Join-Path $ObjDir "Plugin_TL2_RouteB.lib"
+$OutDll = Join-Path $OutDir "Plugin_TL2_DX11_Enhance_SSAO.dll"
+$OutPdb = Join-Path $OutDir "Plugin_TL2_DX11_Enhance_SSAO.pdb"
+$OutImplib = Join-Path $ObjDir "Plugin_TL2_DX11_Enhance_SSAO.lib"
 $JoinedSrc = ($SrcFiles | ForEach-Object { "`"$_`"" }) -join " "
 
 $cmdLine = "call `"$vcvars`" >nul && cl.exe /nologo /utf-8 /O2 /EHsc /std:c++20 /W4 /WX /MD /Zi /FS /Fo`"$ObjDir\\`" /Fd`"$OutPdb`" $JoinedSrc /link /INCREMENTAL:NO /DLL /OUT:`"$OutDll`" /IMPLIB:`"$OutImplib`" /DEBUG"

@@ -191,9 +191,9 @@ int main() {
     }
 
     HMODULE plugin = ::LoadLibraryW(
-        LR"(J:\Software\TL2-RE\自制2x高清mod 20260705\源文件\mods\tl2_d3d11_route_b\bin\Plugin_TL2_RouteB.dll)");
+        LR"(J:\Software\TL2-RE\自制2x高清mod 20260705\源文件\mods\tl2_d3d11_route_b\bin\Plugin_TL2_DX11_Enhance_SSAO.dll)");
     if (!plugin) {
-        std::printf("FAILED LoadLibrary Plugin_TL2_RouteB.dll err=%lu\n", ::GetLastError());
+        std::printf("FAILED LoadLibrary Plugin_TL2_DX11_Enhance_SSAO.dll err=%lu\n", ::GetLastError());
         return 1;
     }
 

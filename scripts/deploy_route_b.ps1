@@ -28,13 +28,13 @@ foreach ($rel in $VanillaBackups) {
     }
 }
 
-# 2. Deploy built Plugin_TL2_RouteB.dll
-$BuiltDll = Join-Path $RootDir "bin\Plugin_TL2_RouteB.dll"
+# 2. Deploy built Plugin_TL2_DX11_Enhance_SSAO.dll
+$BuiltDll = Join-Path $RootDir "bin\Plugin_TL2_DX11_Enhance_SSAO.dll"
 if (-not (Test-Path $BuiltDll)) {
     throw "Missing $BuiltDll; run build.ps1 first."
 }
-Copy-Item -LiteralPath $BuiltDll -Destination (Join-Path $GameDir "Plugin_TL2_RouteB.dll") -Force
-Write-Host "[DEPLOY] Plugin_TL2_RouteB.dll -> $GameDir" -ForegroundColor Green
+Copy-Item -LiteralPath $BuiltDll -Destination (Join-Path $GameDir "Plugin_TL2_DX11_Enhance_SSAO.dll") -Force
+Write-Host "[DEPLOY] Plugin_TL2_DX11_Enhance_SSAO.dll -> $GameDir" -ForegroundColor Green
 
 # 3. Deploy Phase 2+ shader assets & materials
 $DeployList = @(

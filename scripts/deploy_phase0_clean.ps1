@@ -13,12 +13,12 @@ if ($proc) {
 Write-Host "[Phase 0] Step 1: Reverting programs/ to vanilla reference..." -ForegroundColor Cyan
 & (Join-Path $ModsDir "revert_shaders.ps1")
 
-$SrcDll = Join-Path $ProjectDir "bin\Plugin_TL2_RouteB.dll"
+$SrcDll = Join-Path $ProjectDir "bin\Plugin_TL2_DX11_Enhance_SSAO.dll"
 if (-not (Test-Path $SrcDll)) {
     throw "Built DLL not found at $SrcDll. Run build.ps1 first."
 }
 
-$DstDll = Join-Path $GameDir "Plugin_TL2_RouteB.dll"
+$DstDll = Join-Path $GameDir "Plugin_TL2_DX11_Enhance_SSAO.dll"
 Copy-Item -LiteralPath $SrcDll -Destination $DstDll -Force
 Write-Host "[Phase 0] Step 2: Deployed $DstDll" -ForegroundColor Green
 
@@ -30,10 +30,10 @@ if (-not (Test-Path $CfgBak)) {
 }
 
 $lines = Get-Content -LiteralPath $CfgPath
-if ($lines -notcontains "Plugin=Plugin_TL2_RouteB") {
-    $lines += "Plugin=Plugin_TL2_RouteB"
+if ($lines -notcontains "Plugin=Plugin_TL2_DX11_Enhance_SSAO") {
+    $lines += "Plugin=Plugin_TL2_DX11_Enhance_SSAO"
     Set-Content -LiteralPath $CfgPath -Value $lines -Encoding ASCII
-    Write-Host "[Phase 0] Step 3: Added Plugin=Plugin_TL2_RouteB to $CfgPath" -ForegroundColor Green
+    Write-Host "[Phase 0] Step 3: Added Plugin=Plugin_TL2_DX11_Enhance_SSAO to $CfgPath" -ForegroundColor Green
 } else {
-    Write-Host "[Phase 0] Step 3: Plugin=Plugin_TL2_RouteB already present in $CfgPath" -ForegroundColor Yellow
+    Write-Host "[Phase 0] Step 3: Plugin=Plugin_TL2_DX11_Enhance_SSAO already present in $CfgPath" -ForegroundColor Yellow
 }

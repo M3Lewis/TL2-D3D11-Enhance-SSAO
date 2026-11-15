@@ -634,9 +634,20 @@ float4 PS_WetFloorSsr(VsOut input) : SV_Target0
         return float4(0.0f, 0.0f, 0.0f, 0.0f);
     }
 
+    float3 baseCol = gAoInputTex.Load(int3(pix, 0)).rgb;
+    float maxCh = max(baseCol.r, max(baseCol.g, baseCol.b));
+    float luma = dot(baseCol, float3(0.2126f, 0.7152f, 0.0722f));
+    float waterColorBand = max(baseCol.b, baseCol.g * 0.55f + baseCol.b * 0.45f) - baseCol.r;
+    float isBlueOrTeal = (baseCol.b > baseCol.r + 0.015f && baseCol.b >= baseCol.g * 0.72f)
+        ? saturate((waterColorBand + 0.02f) * 4.5f) : 0.0f;
+    float hasWaterHint = (gViewUpAndWater.w > 0.5f) ? 1.0f : 0.0f;
+
     float3 N = ReconstructNormalVS(pix, P);
     float3 upVS = normalize(gViewUpAndWater.xyz);
-    float horizMask = smoothstep(0.91f, 0.965f, dot(N, upVS));
+    float upDot = dot(N, upVS);
+    float horizLo = (isBlueOrTeal > 0.25f) ? 0.74f : 0.85f;
+    float horizHi = (isBlueOrTeal > 0.25f) ? 0.90f : 0.94f;
+    float horizMask = smoothstep(horizLo, horizHi, upDot);
     if (horizMask <= 0.02f)
     {
         return float4(0.0f, 0.0f, 0.0f, 0.0f);
@@ -648,38 +659,30 @@ float4 PS_WetFloorSsr(VsOut input) : SV_Target0
     float3 pU = ReconstructPosVS(pix + int2( 0, -2), dU);
     float3 pD = ReconstructPosVS(pix + int2( 0,  2), dD);
     float curv = length((pL + pR) * 0.5f - P) + length((pU + pD) * 0.5f - P);
-    float flatMask = 1.0f - smoothstep(0.028f, 0.135f, curv);
+    float flatLo = (isBlueOrTeal > 0.25f) ? 0.10f : 0.032f;
+    float flatHi = (isBlueOrTeal > 0.25f) ? 0.36f : 0.155f;
+    float flatMask = 1.0f - smoothstep(flatLo, flatHi, curv);
     if (flatMask <= 0.02f)
     {
         return float4(0.0f, 0.0f, 0.0f, 0.0f);
     }
 
-    float3 baseCol = gAoInputTex.Load(int3(pix, 0)).rgb;
-    float luma = dot(baseCol, float3(0.2126f, 0.7152f, 0.0722f));
-    float coolWater = saturate((baseCol.b - baseCol.r + 0.055f) * 3.4f);
-    float darkFloor = 1.0f - smoothstep(0.16f, 0.44f, luma);
-    float warmDry = smoothstep(0.09f, 0.24f, baseCol.r - baseCol.b) * smoothstep(0.20f, 0.46f, luma);
+    float isGreenGrass = smoothstep(0.025f, 0.095f, baseCol.g - max(baseCol.r, baseCol.b * 1.05f));
+    float warmDry = smoothstep(0.09f, 0.23f, baseCol.r - baseCol.b) * smoothstep(0.24f, 0.52f, luma);
 
     float wx = dot(P, gInvViewRow0.xyz) + gInvViewRow0.w;
     float wz = dot(P, gInvViewRow2.xyz) + gInvViewRow2.w;
-    float puddleNoise = SsrFbm(float2(wx, wz) * 0.16f);
-    float puddlePatch = smoothstep(0.57f, 0.70f, puddleNoise);
+    float puddleNoise = SsrFbm(float2(wx, wz) * 0.20f);
+    float puddlePatch = smoothstep(0.49f, 0.61f, puddleNoise);
 
-    float wetMask = 0.0f;
-    float maxOpacity = 0.30f;
-    if (gViewUpAndWater.w > 0.5f)
-    {
-        float waterBody = saturate(coolWater * 0.85f + darkFloor * 0.35f) * (0.55f + 0.45f * puddleNoise);
-        float stonePuddle = puddlePatch * darkFloor * 0.55f;
-        wetMask = max(waterBody, stonePuddle);
-        maxOpacity = (waterBody > stonePuddle) ? 0.52f : 0.28f;
-    }
-    else
-    {
-        wetMask = puddlePatch * darkFloor * 0.65f;
-        maxOpacity = 0.24f;
-    }
-    wetMask *= horizMask * flatMask * (1.0f - warmDry * 0.78f);
+    float waterBody = isBlueOrTeal * (0.72f + 0.28f * puddleNoise) * (hasWaterHint > 0.5f ? 1.15f : 0.92f);
+    waterBody = saturate(waterBody);
+    float stoneFloorMask = (1.0f - isGreenGrass) * (1.0f - warmDry * 0.85f) * (1.0f - smoothstep(0.68f, 0.88f, maxCh));
+    float stonePuddle = puddlePatch * stoneFloorMask * (hasWaterHint > 0.5f ? 0.85f : 0.72f);
+
+    float wetMask = max(waterBody, stonePuddle);
+    float maxOpacity = (waterBody > stonePuddle) ? 0.72f : 0.44f;
+    wetMask *= horizMask * flatMask * (1.0f - warmDry * 0.82f);
 
     float distFade = saturate((gProjZAndFade.z - dC) * gProjZAndFade.w);
     wetMask *= distFade;
@@ -692,21 +695,22 @@ float4 PS_WetFloorSsr(VsOut input) : SV_Target0
     gAoInputTex.GetDimensions(texW, texH);
     float2 invTex = rcp(float2(max(texW, 1u), max(texH, 1u)));
 
-    float ripScale = 0.016f * (1.0f - smoothstep(10.0f, 36.0f, dC));
-    float2 rip = float2(sin(wx * 2.6f + wz * 1.4f), cos(wz * 2.8f - wx * 1.2f)) * ripScale;
+    float ripAmp = (waterBody > stonePuddle) ? 0.020f : 0.010f;
+    float ripScale = ripAmp * (1.0f - smoothstep(12.0f, 38.0f, dC));
+    float2 rip = float2(sin(wx * 2.5f + wz * 1.3f), cos(wz * 2.7f - wx * 1.1f)) * ripScale;
     float3 Nrefl = normalize(N + float3(rip.x, 0.0f, rip.y));
     float3 V = normalize(P);
     float3 R = reflect(V, Nrefl);
 
-    float jitter = SsrHash21(float2(pix)) * 0.35f;
-    float t = 0.32f + jitter * 0.28f;
+    float jitter = SsrHash21(float2(pix)) * 0.25f;
+    float t = 0.18f + jitter * 0.20f;
     bool hit = false;
     float2 hitTexUv = float2(0.0f, 0.0f);
     float2 hitVpUv = float2(0.5f, 0.5f);
-    float prevT = 0.10f;
+    float prevT = 0.06f;
 
     [loop]
-    for (int i = 0; i < 12; ++i)
+    for (int i = 0; i < 18; ++i)
     {
         float3 sampleVS = P + R * t;
         if (sampleVS.z >= -0.25f)
@@ -725,14 +729,31 @@ float4 PS_WetFloorSsr(VsOut input) : SV_Target0
             float sceneD = RawToLinearDist(zRaw);
             float rayD = -sampleVS.z;
             float diff = rayD - sceneD;
-            if (diff > 0.045f && diff < 1.45f)
+            float thickLimit = 1.25f + sceneD * 0.08f;
+            if (diff > 0.03f && diff < thickLimit)
             {
-                float midT = 0.5f * (prevT + t);
-                float3 midVS = P + R * midT;
-                float2 midVpUv = ProjectViewToVpUv(midVS);
-                int2 mpix = clamp(int2(gVpRect.xy + midVpUv * gVpRect.zw), gVpClamp.xy, gVpClamp.zw);
-                float midDiff = (-midVS.z) - RawToLinearDist(LoadRawDepth(mpix));
-                float2 bestVpUv = (midDiff > 0.02f && midDiff < 1.45f) ? midVpUv : vpUv;
+                float lo = prevT;
+                float hi = t;
+                float2 bestVpUv = vpUv;
+                [unroll]
+                for (int rStep = 0; rStep < 2; ++rStep)
+                {
+                    float midT = 0.5f * (lo + hi);
+                    float3 midVS = P + R * midT;
+                    float2 midVpUv = ProjectViewToVpUv(midVS);
+                    int2 mpix = clamp(int2(gVpRect.xy + midVpUv * gVpRect.zw), gVpClamp.xy, gVpClamp.zw);
+                    float mSceneD = RawToLinearDist(LoadRawDepth(mpix));
+                    float midDiff = (-midVS.z) - mSceneD;
+                    if (midDiff > 0.015f && midDiff < thickLimit)
+                    {
+                        hi = midT;
+                        bestVpUv = midVpUv;
+                    }
+                    else
+                    {
+                        lo = midT;
+                    }
+                }
                 hitVpUv = bestVpUv;
                 hitTexUv = (gVpRect.xy + bestVpUv * gVpRect.zw) * invTex;
                 hit = true;
@@ -740,7 +761,7 @@ float4 PS_WetFloorSsr(VsOut input) : SV_Target0
             }
         }
         prevT = t;
-        t += 0.28f + float(i) * 0.14f;
+        t += 0.20f + float(i) * 0.09f;
     }
 
     if (!hit)
@@ -750,10 +771,13 @@ float4 PS_WetFloorSsr(VsOut input) : SV_Target0
 
     float2 edgeDist = min(hitVpUv, 1.0f - hitVpUv);
     float edgeFade = smoothstep(0.0f, 0.08f, min(edgeDist.x, edgeDist.y));
-    float fresnel = 0.18f + 0.82f * pow(1.0f - saturate(dot(-V, Nrefl)), 3.2f);
+    float viewGraze = 1.0f - saturate(dot(-V, Nrefl));
+    float fresnel = 0.44f + 0.56f * pow(viewGraze, 1.8f);
     float3 reflCol = gAoInputTex.SampleLevel(gAoSamp, hitTexUv, 0).rgb;
+    float reflPeak = max(reflCol.r, max(reflCol.g, reflCol.b));
+    float glowLift = lerp(1.0f, 1.32f, smoothstep(0.55f, 0.95f, reflPeak));
     float alpha = saturate(wetMask * fresnel * edgeFade) * maxOpacity;
-    return float4(reflCol * float3(0.92f, 0.97f, 1.04f), alpha);
+    return float4(saturate(reflCol * glowLift * float3(0.94f, 0.98f, 1.04f)), alpha);
 }
 )HLSL";
 
@@ -823,17 +847,22 @@ float4 PS_BloomPrefilter(VS_OUT input) : SV_Target0
         KarisSampleAvg(F, G, L, K) * 0.125f +
         KarisSampleAvg(G, H, M, L) * 0.125f;
 
-    col = pow(clamp(col, 0.0f, 4.0f), 2.2f);
+    col = clamp(col, 0.0f, 4.0f);
     float peak = max(col.r, max(col.g, col.b));
+    float minC = min(col.r, min(col.g, col.b));
+    float chroma = peak - minC;
     float luma = dot(col, float3(0.2126f, 0.7152f, 0.0722f));
-    float energy = lerp(luma, peak, 0.50f);
+    float energy = lerp(luma, peak, 0.68f);
 
-    float thr = gTexelAndBias.z;
+    // Reject neutral midtone stone walls while allowing vivid saturated VFX & emissive highlights to bloom cleanly.
+    float effThr = gTexelAndBias.z - chroma * 0.16f;
     float knee = gTexelAndBias.w;
-    float soft = clamp(energy - thr + knee, 0.0f, 2.0f * knee);
+    float soft = clamp(energy - effThr + knee, 0.0f, 2.0f * knee);
     soft = (soft * soft) / max(4.0f * knee, 1e-5f);
-    float contrib = max(soft, energy - thr) / max(energy, 1e-4f);
-    return float4(min(col * saturate(contrib), 4.0f), 1.0f);
+    float contrib = max(soft, energy - effThr) / max(energy, 1e-4f);
+    float3 vivid = lerp(float3(luma, luma, luma), col, 1.18f);
+    float scale = saturate(contrib) * (1.35f + peak * 0.95f);
+    return float4(min(saturate(vivid) * scale, 4.0f), 1.0f);
 }
 
 float4 PS_BloomDownsample(VS_OUT input) : SV_Target0
@@ -888,8 +917,9 @@ float4 PS_BloomUpsample(VS_OUT input) : SV_Target0
 float4 PS_BloomComposite(VS_OUT input) : SV_Target0
 {
     float2 uv = ComputeSrcUv(input.pos.xy);
-    float3 hdrGlow = max(gTex0.SampleLevel(gSamp, ClampSrcUv(uv), 0).rgb, 0.0f);
-    float3 glow = pow(saturate(hdrGlow * gMixAndLut.x), 1.0f / 2.2f);
+    float3 hdrGlow = max(gTex0.SampleLevel(gSamp, ClampSrcUv(uv), 0).rgb - 0.002f, 0.0f);
+    float3 scaled = hdrGlow * gMixAndLut.x;
+    float3 glow = saturate(scaled / (1.0f + scaled * 0.28f));
     return float4(glow, 1.0f);
 }
 
@@ -1497,6 +1527,9 @@ struct RouteCD3DState {
     ParticleParamsTexData last_cb_particle{};
     bool last_cb_particle_valid = false;
     bool particle_depth_valid = false;
+    bool post_world_depth_valid = false;
+    bool post_world_msaa = false;
+    uint8_t post_world_cb_bytes[sizeof(CbAoParams)]{};
     float particle_proj_22 = 0.0f;
     float particle_proj_23 = 0.0f;
     int32_t particle_clamp[4]{};
@@ -1629,6 +1662,8 @@ void ReleaseTargets() {
     g_st.depth_sample_count = 0;
     g_st.depth_sample_quality = 0;
     g_st.particle_depth_valid = false;
+    g_st.post_world_depth_valid = false;
+    g_st.post_world_msaa = false;
 }
 
 void ReleaseBenchQueries() {
@@ -2905,8 +2940,7 @@ bool EnsureLutReady(ID3D11Device* dev, int preset, RouteCD3DLogFn logger) {
 
 bool ExecuteRouteCAoPass(const RouteCAoRenderRequest& req, RouteCD3DLogFn logger) {
     const bool need_depth = req.ao_enabled || req.capture_particle_depth || req.aerial_enabled || req.ssr_enabled;
-    const bool any_work = need_depth || req.bloom_pyramid_enabled || (req.lut_preset > 0);
-    if (!req.ctx || !req.proj_4x4 || req.vp_width <= 0 || req.vp_height <= 0 || !any_work) {
+    if (!req.ctx || !req.proj_4x4 || req.vp_width <= 0 || req.vp_height <= 0 || !need_depth) {
         return false;
     }
 
@@ -2917,6 +2951,8 @@ bool ExecuteRouteCAoPass(const RouteCAoRenderRequest& req, RouteCD3DLogFn logger
     } lock_guard;
 
     g_st.particle_depth_valid = false;
+    g_st.post_world_depth_valid = false;
+    g_st.post_world_msaa = false;
     D3D11StateGuard state_guard(req.ctx);
 
     ID3D11RenderTargetView* target_rtv = state_guard.om_rtv0() ? state_guard.om_rtv0() : req.fallback_rtv;
@@ -3097,6 +3133,9 @@ bool ExecuteRouteCAoPass(const RouteCAoRenderRequest& req, RouteCD3DLogFn logger
         PopulateDynamicAoAerialParams(req, cb);
         std::memcpy(mapped.pData, &cb, sizeof(cb));
         req.ctx->Unmap(g_st.cb_params, 0);
+        std::memcpy(g_st.post_world_cb_bytes, &cb, sizeof(cb));
+        g_st.post_world_depth_valid = true;
+        g_st.post_world_msaa = use_msaa;
 
         g_last_tex_w.store(depth_desc.Width, std::memory_order_relaxed);
         g_last_tex_h.store(depth_desc.Height, std::memory_order_relaxed);
@@ -3168,21 +3207,6 @@ bool ExecuteRouteCAoPass(const RouteCAoRenderRequest& req, RouteCD3DLogFn logger
     ao_vp.Height = static_cast<float>(req.vp_height);
     ao_vp.MinDepth = 0.0f;
     ao_vp.MaxDepth = 1.0f;
-
-    // Item 5: Water / Wet-Floor Screen-Space Reflections BEFORE AO + Aerial so crevices & fog shade reflections
-    if (need_depth && req.ssr_enabled && req.debug_mode == 0 &&
-        ds->ps_ssr && g_st.blend_toast_alpha &&
-        CopyRtvTextureToP2Copy(dev, req.ctx, src_rt_tex, rt_desc, rtv_desc)) {
-        req.ctx->PSSetConstantBuffers(0, 1, &g_st.cb_params);
-        req.ctx->RSSetViewports(1, &ao_vp);
-        req.ctx->OMSetRenderTargets(1, &target_rtv, nullptr);
-        req.ctx->OMSetBlendState(g_st.blend_toast_alpha, nullptr, 0xFFFFFFFFU);
-        req.ctx->PSSetShader(ds->ps_ssr, nullptr, 0);
-        ID3D11ShaderResourceView* srvs_ssr[2] = {g_st.depth_copy_srv, g_st.p2_copy_srv};
-        req.ctx->PSSetShaderResources(0, 2, srvs_ssr);
-        req.ctx->Draw(3, 0);
-        req.ctx->PSSetShaderResources(0, 2, null_srvs);
-    }
 
     if (need_depth) {
         req.ctx->PSSetConstantBuffers(0, 1, &g_st.cb_params);
@@ -3282,8 +3306,136 @@ bool ExecuteRouteCAoPass(const RouteCAoRenderRequest& req, RouteCD3DLogFn logger
         req.ctx->End(bench_slot->disjoint);
     }
 
-    // Item 6: Multi-Stage HDR FP16 Bloom Pyramid (1/2 -> 1/4 -> 1/8 downsample + tent upsample + soft Screen blend)
-    if (req.bloom_pyramid_enabled && req.debug_mode == 0 &&
+    if (!req.ao_enabled) {
+        return g_st.particle_depth_valid || req.aerial_enabled || g_st.post_world_depth_valid;
+    }
+
+    g_inject_ok.fetch_add(1, std::memory_order_relaxed);
+    return true;
+}
+
+void ResetRouteCPostWorldDepthSnapshot() {
+    EnsureLockInit();
+    ::EnterCriticalSection(&g_d3d_lock);
+    g_st.post_world_depth_valid = false;
+    g_st.post_world_msaa = false;
+    ::LeaveCriticalSection(&g_d3d_lock);
+}
+
+bool ExecuteRouteCPostWorldPass(const RouteCPostWorldRequest& req, RouteCD3DLogFn logger) {
+    if (!req.ctx || req.vp_width <= 0 || req.vp_height <= 0 || req.debug_mode > 0 ||
+        (!req.ssr_enabled && !req.bloom_pyramid_enabled && req.lut_preset <= 0)) {
+        return false;
+    }
+
+    EnsureLockInit();
+    ::EnterCriticalSection(&g_d3d_lock);
+    struct LockGuard {
+        ~LockGuard() {
+            g_st.post_world_depth_valid = false;
+            ::LeaveCriticalSection(&g_d3d_lock);
+        }
+    } lock_guard;
+
+    D3D11StateGuard state_guard(req.ctx);
+    ID3D11RenderTargetView* target_rtv = req.fallback_rtv ? req.fallback_rtv : state_guard.om_rtv0();
+    if (!target_rtv) {
+        return false;
+    }
+
+    ID3D11Resource* rtv_res = nullptr;
+    target_rtv->GetResource(&rtv_res);
+    ID3D11Texture2D* src_rt_tex = nullptr;
+    if (!rtv_res ||
+        FAILED(rtv_res->QueryInterface(__uuidof(ID3D11Texture2D), reinterpret_cast<void**>(&src_rt_tex))) ||
+        !src_rt_tex) {
+        SafeRelease(src_rt_tex);
+        SafeRelease(rtv_res);
+        return false;
+    }
+    SafeRelease(rtv_res);
+    D3D11_TEXTURE2D_DESC rt_desc{};
+    src_rt_tex->GetDesc(&rt_desc);
+    D3D11_RENDER_TARGET_VIEW_DESC rtv_desc{};
+    target_rtv->GetDesc(&rtv_desc);
+
+    ID3D11Device* dev = nullptr;
+    req.ctx->GetDevice(&dev);
+    if (!dev) {
+        SafeRelease(src_rt_tex);
+        return false;
+    }
+    struct DevRtGuard {
+        ID3D11Device* d = nullptr;
+        ID3D11Texture2D* rt = nullptr;
+        ~DevRtGuard() {
+            SafeRelease(rt);
+            SafeRelease(d);
+        }
+    } res_guard{dev, src_rt_tex};
+
+    if (!EnsurePipelineObjects(dev, logger)) {
+        return false;
+    }
+
+    const int min_x = (std::max)(0, req.vp_left);
+    const int min_y = (std::max)(0, req.vp_top);
+    const int max_x = (std::min)(static_cast<int>(rt_desc.Width) - 1, req.vp_left + req.vp_width - 1);
+    const int max_y = (std::min)(static_cast<int>(rt_desc.Height) - 1, req.vp_top + req.vp_height - 1);
+    if (min_x > max_x || min_y > max_y) {
+        return false;
+    }
+
+    req.ctx->OMSetDepthStencilState(g_st.dss_disabled, 0);
+    req.ctx->RSSetState(g_st.rs_fullscreen);
+    req.ctx->RSSetScissorRects(0, nullptr);
+    req.ctx->IASetInputLayout(nullptr);
+    req.ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    req.ctx->VSSetShader(g_st.vs_fullscreen, nullptr, 0);
+    req.ctx->GSSetShader(nullptr, nullptr, 0);
+    req.ctx->PSSetSamplers(0, 1, &g_st.samp_linear);
+
+    D3D11_VIEWPORT ao_vp{};
+    ao_vp.TopLeftX = static_cast<float>(req.vp_left);
+    ao_vp.TopLeftY = static_cast<float>(req.vp_top);
+    ao_vp.Width = static_cast<float>(req.vp_width);
+    ao_vp.Height = static_cast<float>(req.vp_height);
+    ao_vp.MinDepth = 0.0f;
+    ao_vp.MaxDepth = 1.0f;
+    ID3D11ShaderResourceView* null_srvs[2] = {nullptr, nullptr};
+    bool did_any = false;
+
+    // Item 5: Post-water SSR using depth snapshot from Ended86 and post-translucent color buffer (queues 0..94).
+    const DepthVariantShaders* ds = g_st.post_world_msaa ? &g_st.shaders_msaa : &g_st.shaders_single;
+    if (req.ssr_enabled && g_st.post_world_depth_valid && g_st.depth_copy_srv &&
+        ds->ps_ssr && g_st.cb_params && g_st.blend_toast_alpha &&
+        CopyRtvTextureToP2Copy(dev, req.ctx, src_rt_tex, rt_desc, rtv_desc)) {
+        CbAoParams cb_ssr{};
+        std::memcpy(&cb_ssr, g_st.post_world_cb_bytes, sizeof(cb_ssr));
+        const float want_hint = req.water_hint ? 1.0f : 0.0f;
+        if (std::fabs(cb_ssr.view_up_and_water[3] - want_hint) > 0.25f) {
+            cb_ssr.view_up_and_water[3] = want_hint;
+            std::memcpy(g_st.post_world_cb_bytes, &cb_ssr, sizeof(cb_ssr));
+        }
+        D3D11_MAPPED_SUBRESOURCE mapped_ao{};
+        if (SUCCEEDED(req.ctx->Map(g_st.cb_params, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped_ao)) && mapped_ao.pData) {
+            std::memcpy(mapped_ao.pData, &cb_ssr, sizeof(cb_ssr));
+            req.ctx->Unmap(g_st.cb_params, 0);
+        }
+        req.ctx->PSSetConstantBuffers(0, 1, &g_st.cb_params);
+        req.ctx->RSSetViewports(1, &ao_vp);
+        req.ctx->OMSetRenderTargets(1, &target_rtv, nullptr);
+        req.ctx->OMSetBlendState(g_st.blend_toast_alpha, nullptr, 0xFFFFFFFFU);
+        req.ctx->PSSetShader(ds->ps_ssr, nullptr, 0);
+        ID3D11ShaderResourceView* srvs_ssr[2] = {g_st.depth_copy_srv, g_st.p2_copy_srv};
+        req.ctx->PSSetShaderResources(0, 2, srvs_ssr);
+        req.ctx->Draw(3, 0);
+        req.ctx->PSSetShaderResources(0, 2, null_srvs);
+        did_any = true;
+    }
+
+    // Item 6: Multi-Stage HDR FP16 Bloom Pyramid AFTER all spells/particles/water (0..94) and BEFORE UI.
+    if (req.bloom_pyramid_enabled &&
         g_st.ps_bloom_prefilter && g_st.ps_bloom_downsample &&
         g_st.ps_bloom_upsample && g_st.ps_bloom_composite &&
         g_st.cb_bloom_lut && g_st.blend_screen_rgb &&
@@ -3296,9 +3448,9 @@ bool ExecuteRouteCAoPass(const RouteCAoRenderRequest& req, RouteCD3DLogFn logger
         const float src_uw = static_cast<float>(req.vp_width) / rt_w;
         const float src_vh = static_cast<float>(req.vp_height) / rt_h;
         const bool is_dark = (req.filter_preset == 2);
-        const float threshold = is_dark ? 0.56f : 0.48f;
-        const float knee = 0.28f;
-        const float composite_strength = is_dark ? 0.34f : 0.42f;
+        const float threshold = is_dark ? 0.78f : 0.72f;
+        const float knee = 0.14f;
+        const float composite_strength = is_dark ? 0.56f : 0.68f;
         req.ctx->PSSetConstantBuffers(0, 1, &g_st.cb_bloom_lut);
         req.ctx->OMSetBlendState(nullptr, nullptr, 0xFFFFFFFFU);
 
@@ -3345,7 +3497,7 @@ bool ExecuteRouteCAoPass(const RouteCAoRenderRequest& req, RouteCD3DLogFn logger
                                  0.0f, 0.0f, 1.0f, 1.0f,
                                  1.0f / static_cast<float>(g_st.bloom_w[m + 1]),
                                  1.0f / static_cast<float>(g_st.bloom_h[m + 1]),
-                                 0.0f, 0.0f, 0.72f, 32.0f, 0.0f)) {
+                                 0.0f, 0.0f, 0.74f, 32.0f, 0.0f)) {
                 set_mip_vp(g_st.bloom_w[m], g_st.bloom_h[m]);
                 req.ctx->OMSetRenderTargets(1, &g_st.bloom_up_rtv[m], nullptr);
                 req.ctx->PSSetShader(g_st.ps_bloom_upsample, nullptr, 0);
@@ -3370,11 +3522,12 @@ bool ExecuteRouteCAoPass(const RouteCAoRenderRequest& req, RouteCD3DLogFn logger
             req.ctx->PSSetShaderResources(0, 2, s);
             req.ctx->Draw(3, 0);
             req.ctx->PSSetShaderResources(0, 2, null_srvs);
+            did_any = true;
         }
     }
 
-    // Item 7: 3D LUT Color Grading (pre-UI world scene + Bloom)
-    if (req.lut_preset > 0 && req.debug_mode == 0 &&
+    // Item 7: 3D LUT Color Grading (post-world + post-Bloom, strictly pre-UI)
+    if (req.lut_preset > 0 &&
         g_st.ps_lut_grade && g_st.cb_bloom_lut && g_st.blend_debug_rgb &&
         EnsureLutReady(dev, req.lut_preset, logger) &&
         CopyRtvTextureToP2Copy(dev, req.ctx, src_rt_tex, rt_desc, rtv_desc)) {
@@ -3398,16 +3551,11 @@ bool ExecuteRouteCAoPass(const RouteCAoRenderRequest& req, RouteCD3DLogFn logger
             req.ctx->PSSetShaderResources(0, 2, s);
             req.ctx->Draw(3, 0);
             req.ctx->PSSetShaderResources(0, 2, null_srvs);
+            did_any = true;
         }
     }
 
-    if (!req.ao_enabled) {
-        return g_st.particle_depth_valid || req.aerial_enabled || req.ssr_enabled ||
-               req.bloom_pyramid_enabled || (req.lut_preset > 0);
-    }
-
-    g_inject_ok.fetch_add(1, std::memory_order_relaxed);
-    return true;
+    return did_any;
 }
 
 bool ExecuteRouteCP2FilterPass(const RouteCP2FilterRequest& req, RouteCD3DLogFn logger) {

@@ -79,6 +79,22 @@ struct RouteCD3DStats {
 };
 
 bool ExecuteRouteCAoPass(const RouteCAoRenderRequest& req, RouteCD3DLogFn logger);
+struct RouteCPostWorldRequest {
+    ID3D11DeviceContext* ctx = nullptr;
+    ID3D11RenderTargetView* fallback_rtv = nullptr;  // World RT (e.g. c2/rt_output or main backbuffer)
+    int vp_left = 0;
+    int vp_top = 0;
+    int vp_width = 0;
+    int vp_height = 0;
+    int debug_mode = 0;
+    bool ssr_enabled = false;
+    bool bloom_pyramid_enabled = false;
+    int lut_preset = 0;     // 0=OFF, 1=CinemaTealOrange, 2=ColdNordic, 3=Custom(.cube)
+    bool water_hint = false;
+    int filter_preset = 1;  // 0=OFF, 1=HOB, 2=DRK
+};
+bool ExecuteRouteCPostWorldPass(const RouteCPostWorldRequest& req, RouteCD3DLogFn logger);
+void ResetRouteCPostWorldDepthSnapshot();
 struct RouteCP2FilterRequest {
     ID3D11DeviceContext* ctx = nullptr;
     ID3D11RenderTargetView* fallback_rtv = nullptr;

@@ -666,7 +666,15 @@ bool HasWaterKeyword(std::string_view tex_name) {
            ContainsAsciiInsensitive(tex_name, "stream") ||
            ContainsAsciiInsensitive(tex_name, "fountain") ||
            ContainsAsciiInsensitive(tex_name, "marsh") ||
-           ContainsAsciiInsensitive(tex_name, "swamp");
+           ContainsAsciiInsensitive(tex_name, "swamp") ||
+           ContainsAsciiInsensitive(tex_name, "waterfall") ||
+           ContainsAsciiInsensitive(tex_name, "canal") ||
+           ContainsAsciiInsensitive(tex_name, "basin") ||
+           ContainsAsciiInsensitive(tex_name, "brook") ||
+           ContainsAsciiInsensitive(tex_name, "creek") ||
+           ContainsAsciiInsensitive(tex_name, "cascade") ||
+           ContainsAsciiInsensitive(tex_name, "moat") ||
+           ContainsAsciiInsensitive(tex_name, "caustic");
 }
 
 void MaybeDetectWaterPassHint(const void* pass) {

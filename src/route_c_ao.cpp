@@ -124,6 +124,8 @@ struct ActiveSceneFrame {
     bool world_candidate = false;
     bool ao_eligible = false;
     bool ao_injected = false;
+    bool post_world_injected = false;
+    bool water_hint = false;
     bool particle_depth_ready = false;
     bool filter_eligible = false;
     bool filter_injected = false;
@@ -670,13 +672,12 @@ void TryDispatchAoForFrame(ActiveSceneFrame& frame, const char* trigger_src, uin
     const bool sp_on = g_p1_soft_particles_enabled.load(std::memory_order_relaxed);
     const bool aerial_on = g_p2_aerial_vignette_enabled.load(std::memory_order_relaxed);
     const bool ssr_on = g_p2_ssr_enabled.load(std::memory_order_relaxed);
-    const bool bloom_on = g_p2_bloom_pyramid_enabled.load(std::memory_order_relaxed);
-    const int lut_preset = g_p2_lut_preset.load(std::memory_order_relaxed);
-    if (dbg_mode < 0 && !sp_on && !aerial_on && !ssr_on && !bloom_on && lut_preset <= 0) {
+    if (dbg_mode < 0 && !sp_on && !aerial_on && !ssr_on) {
         return;
     }
     frame.ao_injected = true;
     const bool water_hint = ConsumeFrameWaterPassHint();
+    frame.water_hint = frame.water_hint || water_hint;
 
     ID3D11DeviceContext* ctx = nullptr;
     ID3D11RenderTargetView* rt_rtv = nullptr;
@@ -704,8 +705,8 @@ void TryDispatchAoForFrame(ActiveSceneFrame& frame, const char* trigger_src, uin
     req.capture_particle_depth = sp_on;
     req.aerial_enabled = (dbg_mode <= 0) && aerial_on;
     req.ssr_enabled = (dbg_mode <= 0) && ssr_on;
-    req.bloom_pyramid_enabled = (dbg_mode <= 0) && bloom_on;
-    req.lut_preset = (dbg_mode <= 0) ? lut_preset : 0;
+    req.bloom_pyramid_enabled = false;
+    req.lut_preset = 0;
     req.water_hint = water_hint;
     req.filter_preset = GetP2FilterPreset();
     req.sscs_key_dir[0] = 0.42f;
@@ -774,6 +775,46 @@ void TryDispatchAoForFrame(ActiveSceneFrame& frame, const char* trigger_src, uin
             d3d_st.last_dsv_tex_fmt);
     }
 
+    SafeRelease(ctx);
+}
+
+void TryDispatchPostWorldForFrame(ActiveSceneFrame& frame) {
+    if (frame.post_world_injected || !frame.ao_eligible || frame.world_geom_draws == 0) {
+        return;
+    }
+    const bool ao_on = g_ao_runtime_enabled.load(std::memory_order_relaxed);
+    const int dbg_mode = ao_on ? g_ao_debug_mode.load(std::memory_order_relaxed) : -1;
+    const bool ssr_on = (dbg_mode <= 0) && g_p2_ssr_enabled.load(std::memory_order_relaxed);
+    const bool bloom_on = (dbg_mode <= 0) && g_p2_bloom_pyramid_enabled.load(std::memory_order_relaxed);
+    const int lut_preset = (dbg_mode <= 0) ? g_p2_lut_preset.load(std::memory_order_relaxed) : 0;
+    if (!ssr_on && !bloom_on && lut_preset <= 0) {
+        return;
+    }
+    frame.post_world_injected = true;
+    const bool water_hint = frame.water_hint || ConsumeFrameWaterPassHint();
+
+    ID3D11DeviceContext* ctx = nullptr;
+    ID3D11RenderTargetView* rt_rtv = nullptr;
+    ID3D11DepthStencilView* rt_dsv = nullptr;
+    if (!TryGetContextFromRenderTarget(frame.rt, &ctx, &rt_rtv, &rt_dsv) || !ctx) {
+        SafeRelease(ctx);
+        return;
+    }
+
+    RouteCPostWorldRequest req{};
+    req.ctx = ctx;
+    req.fallback_rtv = rt_rtv;
+    req.vp_left = frame.vp_l;
+    req.vp_top = frame.vp_t;
+    req.vp_width = frame.vp_w;
+    req.vp_height = frame.vp_h;
+    req.debug_mode = (dbg_mode >= 0) ? dbg_mode : 0;
+    req.ssr_enabled = ssr_on;
+    req.bloom_pyramid_enabled = bloom_on;
+    req.lut_preset = lut_preset;
+    req.water_hint = water_hint;
+    req.filter_preset = GetP2FilterPreset();
+    (void)ExecuteRouteCPostWorldPass(req, g_log);
     SafeRelease(ctx);
 }
 
@@ -1156,19 +1197,27 @@ void __fastcall HookRenderScene(void* sm, void* cam, void* vp, uint8_t show_over
         explicit SceneStackGuard(bool prev) : prev_particle_ready(prev) {}
         ~SceneStackGuard() {
             bool exited_world_depth = false;
+            bool exited_ao_world = false;
             if (g_scene_depth > 0) {
                 --g_scene_depth;
                 exited_world_depth = g_scene_stack[g_scene_depth].particle_depth_ready;
+                exited_ao_world = g_scene_stack[g_scene_depth].ao_eligible;
                 g_scene_stack[g_scene_depth].particle_depth_ready = false;
             }
             if (exited_world_depth) {
                 ResetRouteCParticleDepthSnapshot();
+            }
+            if (exited_ao_world) {
+                ResetRouteCPostWorldDepthSnapshot();
             }
             g_world_depth_ready_for_particles.store(prev_particle_ready, std::memory_order_release);
         }
     } stack_guard(g_world_depth_ready_for_particles.exchange(false, std::memory_order_acq_rel));
 
     g_orig_render_scene(sm, cam, vp, show_overlays);
+    if (g_scene_depth > 0) {
+        TryDispatchPostWorldForFrame(g_scene_stack[g_scene_depth - 1]);
+    }
 }
 
 uint8_t __fastcall HookFireRenderQueueStarted(void* sm, uint8_t queue_group_id, const std::string& invocation) {
@@ -1186,6 +1235,7 @@ uint8_t __fastcall HookFireRenderQueueStarted(void* sm, uint8_t queue_group_id, 
                     g_world_depth_ready_for_particles.store(false, std::memory_order_release);
                     ResetRouteCParticleDepthSnapshot();
                 }
+                TryDispatchPostWorldForFrame(frame);
                 TryDispatchP2FilterFallbackForFrame(frame, queue_group_id);
             }
             if (g_c0_survey_active.load(std::memory_order_relaxed)) {

@@ -534,6 +534,10 @@ extern "C" __declspec(dllexport) bool RouteB_VerifyRouteCShaders() {
     return routeb::VerifyRouteCShaders();
 }
 
+extern "C" __declspec(dllexport) void RouteB_TriggerToastForTest() {
+    routeb::TriggerRouteCToastForTest();
+}
+
 BOOL APIENTRY DllMain(HMODULE, DWORD reason, LPVOID) {
     if (reason == DLL_PROCESS_DETACH) {
         RemoveCrashLogger();

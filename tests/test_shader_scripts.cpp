@@ -5,6 +5,7 @@
 #include <cstdio>
 #include <cstring>
 #include <exception>
+#include <fstream>
 #include <string>
 #include <vector>
 
@@ -130,6 +131,14 @@ bool ExercisePhase3PassLifecycle(HMODULE ogre, void* root, void* win) {
         for (void* pass : passes) {
             sm_set_pass(sm, pass, true, false);
         }
+        if (iter == 11) {
+            if (HMODULE route_b = ::GetModuleHandleW(L"Plugin_TL2_RouteB.dll")) {
+                using TriggerFn = void (*)();
+                if (auto fn = reinterpret_cast<TriggerFn>(::GetProcAddress(route_b, "RouteB_TriggerToastForTest"))) {
+                    fn();
+                }
+            }
+        }
         render_one(root);
     }
 
@@ -222,7 +231,7 @@ int main(int argc, char** argv) {
         }
         set_rs(root, rs);
         init_root(root, false, "RouteBVerify", empty);
-        void* win = create_win(root, "RouteBVerify", 64, 64, false, nullptr);
+        void* win = create_win(root, "RouteBVerify", is_d3d11 ? 400 : 64, is_d3d11 ? 80 : 64, false, nullptr);
 
         void* rgm = *rgm_singleton_ptr;
         add_res_loc(rgm, "programs/", "FileSystem", "Shaders", true);
@@ -237,5 +246,16 @@ int main(int argc, char** argv) {
     }
 
     root_dtor(root);
+
+    if (is_d3d11 && exit_code == 0) {
+        std::ifstream ifs("TL2_RouteB_D3D11.log", std::ios::binary);
+        const std::string route_log((std::istreambuf_iterator<char>(ifs)), std::istreambuf_iterator<char>());
+        const size_t diag_pos = route_log.find("[RouteC][Toast] Diag first draw");
+        if (diag_pos == std::string::npos || route_log.find("drawn=1", diag_pos) == std::string::npos) {
+            std::printf("[FAIL] d3d11 toast diag log missing drawn=1 in TL2_RouteB_D3D11.log\n");
+            return 6;
+        }
+        std::printf("[PASS] d3d11 toast overlay rendered cleanly (drawn=1) via swapBuffers hook!\n");
+    }
     return exit_code;
 }

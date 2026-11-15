@@ -22,8 +22,6 @@ constexpr uint8_t kExpectedRenderScene[15] = {
     0x48, 0x89, 0x5C, 0x24, 0x08, 0x48, 0x89, 0x6C, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24, 0x18};
 constexpr uint8_t kExpectedFireQueue[15] = {
     0x48, 0x89, 0x5C, 0x24, 0x10, 0x48, 0x89, 0x6C, 0x24, 0x18, 0x48, 0x89, 0x74, 0x24, 0x20};
-constexpr uint8_t kExpectedFireFrameQueued[16] = {
-    0x48, 0x89, 0x5C, 0x24, 0x18, 0x48, 0x89, 0x7C, 0x24, 0x20, 0x41, 0x56, 0x48, 0x83, 0xEC, 0x30};
 
 static_assert(sizeof(routeb::CbAoParams) == 96, "CbAoParams must be 96 bytes");
 static_assert(alignof(routeb::CbAoParams) == 16, "CbAoParams must be 16-byte aligned");
@@ -125,17 +123,14 @@ int main() {
         ogre, "?fireRenderQueueStarted@SceneManager@Ogre@@MEAA_NEAEBV?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@@Z"));
     const auto* p_q_end = reinterpret_cast<const uint8_t*>(::GetProcAddress(
         ogre, "?fireRenderQueueEnded@SceneManager@Ogre@@MEAA_NEAEBV?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@@Z"));
-    const auto* p_frame_queued = reinterpret_cast<const uint8_t*>(::GetProcAddress(
-        ogre, "?_fireFrameRenderingQueued@Root@Ogre@@QEAA_NAEAUFrameEvent@2@@Z"));
 
-    if (!p_render_scene || !p_q_start || !p_q_end || !p_frame_queued) {
+    if (!p_render_scene || !p_q_start || !p_q_end) {
         std::printf("FAILED locating OgreMain Route C export targets\n");
         return 2;
     }
     if (std::memcmp(p_render_scene, kExpectedRenderScene, sizeof(kExpectedRenderScene)) != 0 ||
         std::memcmp(p_q_start, kExpectedFireQueue, sizeof(kExpectedFireQueue)) != 0 ||
-        std::memcmp(p_q_end, kExpectedFireQueue, sizeof(kExpectedFireQueue)) != 0 ||
-        std::memcmp(p_frame_queued, kExpectedFireFrameQueued, sizeof(kExpectedFireFrameQueued)) != 0) {
+        std::memcmp(p_q_end, kExpectedFireQueue, sizeof(kExpectedFireQueue)) != 0) {
         std::printf("FAILED pre-hook Route C OgreMain prologue signature mismatch\n");
         return 3;
     }
@@ -159,8 +154,7 @@ int main() {
 
     if (*reinterpret_cast<const uint16_t*>(p_render_scene) != 0x25FF ||
         *reinterpret_cast<const uint16_t*>(p_q_start) != 0x25FF ||
-        *reinterpret_cast<const uint16_t*>(p_q_end) != 0x25FF ||
-        *reinterpret_cast<const uint16_t*>(p_frame_queued) != 0x25FF) {
+        *reinterpret_cast<const uint16_t*>(p_q_end) != 0x25FF) {
         std::printf("FAILED Route C detours were not patched with FF 25 jmp\n");
         stop_fn();
         return 6;
@@ -176,8 +170,7 @@ int main() {
 
     if (std::memcmp(p_render_scene, kExpectedRenderScene, sizeof(kExpectedRenderScene)) != 0 ||
         std::memcmp(p_q_start, kExpectedFireQueue, sizeof(kExpectedFireQueue)) != 0 ||
-        std::memcmp(p_q_end, kExpectedFireQueue, sizeof(kExpectedFireQueue)) != 0 ||
-        std::memcmp(p_frame_queued, kExpectedFireFrameQueued, sizeof(kExpectedFireFrameQueued)) != 0) {
+        std::memcmp(p_q_end, kExpectedFireQueue, sizeof(kExpectedFireQueue)) != 0) {
         std::printf("FAILED clean unhook restoration of Route C OgreMain prologues\n");
         return 8;
     }

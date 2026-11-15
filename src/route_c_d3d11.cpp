@@ -463,7 +463,6 @@ cbuffer CbToastParams : register(b0) {
 
 struct VS_OUT {
     float4 pos : SV_Position;
-    float2 uv  : TEXCOORD0;
 };
 
 uint GetToastChar(int idx, bool dllOn, bool aoOn) {

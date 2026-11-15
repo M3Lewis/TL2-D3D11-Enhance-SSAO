@@ -26,6 +26,7 @@ void LogRouteCSurveySummary(RouteCLogFn logger);
 void SetRouteCAoRuntimeEnabled(bool enabled);
 bool IsRouteCAoRuntimeEnabled();
 bool ToggleRouteCAoRuntimeEnabled();
+void TriggerRouteCToastForTest();
 
 void OnRouteCScenePassObserved(
     const char* pass_name,

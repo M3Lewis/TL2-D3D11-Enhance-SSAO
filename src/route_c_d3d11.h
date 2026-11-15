@@ -31,7 +31,7 @@ struct RouteCAoRenderRequest {
     int vp_top = 0;
     int vp_width = 0;
     int vp_height = 0;
-    int debug_mode = 3;
+    int debug_mode = 0;
 };
 
 struct RouteCD3DStats {
@@ -46,6 +46,14 @@ struct RouteCD3DStats {
     uint32_t last_dsv_tex_fmt = 0;
     uint32_t last_sample_count = 0;
     bool shaders_ready = false;
+
+    uint64_t bench_samples = 0;
+    double avg_copy_ms = 0.0;
+    double avg_ao_ms = 0.0;
+    double avg_blur_h_ms = 0.0;
+    double avg_blur_v_ms = 0.0;
+    double avg_comp_ms = 0.0;
+    double avg_total_ms = 0.0;
 };
 
 bool ExecuteRouteCAoPass(const RouteCAoRenderRequest& req, RouteCD3DLogFn logger);

@@ -159,7 +159,7 @@ FireQueueFn g_orig_queue_ended = nullptr;
 
 std::atomic<bool> g_hooked{false};
 std::atomic<bool> g_c0_survey_active{false};
-std::atomic<int> g_ao_debug_mode{3};  // Phase C1 default: DebugMode=3 (Left=Depth Contours, Right=Normals)
+std::atomic<int> g_ao_debug_mode{0};  // Phase C2 default: DebugMode=0 (Live AO Composite)
 std::atomic<uint64_t> g_render_scene_calls{0};
 std::atomic<uint64_t> g_world_candidates{0};
 std::atomic<uint64_t> g_queue_started_calls{0};
@@ -991,13 +991,13 @@ bool InstallRouteCAoPipeline(void* ogre_main_base, RouteCLogFn logger) {
     g_orig_queue_ended = reinterpret_cast<FireQueueFn>(orig_qe);
 
     const bool survey_on = EnvFlagIsOne("TL2_C_C0_SURVEY");
-    const int dbg_mode = ResolveAoDebugMode(3);  // C1 default: DebugMode=3
+    const int dbg_mode = ResolveAoDebugMode(0);  // C2 default: DebugMode=0 (Live AO)
     g_c0_survey_active.store(survey_on, std::memory_order_relaxed);
     g_ao_debug_mode.store(dbg_mode, std::memory_order_relaxed);
     g_hooked.store(true, std::memory_order_relaxed);
 
     if (g_log) {
-        g_log("[RouteC][C1] Hooks installed (debugMode=%d, c0_survey=%s, injectQueue=86).",
+        g_log("[RouteC][C2] Hooks installed (debugMode=%d, c0_survey=%s, injectQueue=86).",
               dbg_mode,
               survey_on ? "ON" : "OFF");
     }
@@ -1055,7 +1055,7 @@ void LogRouteCSurveySummary(RouteCLogFn logger) {
 
     const auto d3d_st = GetRouteCD3DStats();
     logger(
-        "[RouteC][C1][Stats] debugMode=%d ok=%llu skipNoOm=%llu skipFmt=%llu skipFail=%llu depthRebuilds=%u lastTex=%ux%u rtvFmt=%u dsvTexFmt=%u msaa=%ux shadersReady=%d",
+        "[RouteC][C2][Stats] debugMode=%d ok=%llu skipNoOm=%llu skipFmt=%llu skipFail=%llu depthRebuilds=%u lastTex=%ux%u rtvFmt=%u dsvTexFmt=%u msaa=%ux shadersReady=%d",
         g_ao_debug_mode.load(std::memory_order_relaxed),
         static_cast<unsigned long long>(d3d_st.inject_ok),
         static_cast<unsigned long long>(d3d_st.inject_skip_no_om),
@@ -1068,6 +1068,17 @@ void LogRouteCSurveySummary(RouteCLogFn logger) {
         d3d_st.last_dsv_tex_fmt,
         d3d_st.last_sample_count,
         d3d_st.shaders_ready ? 1 : 0);
+    if (d3d_st.bench_samples > 0) {
+        logger(
+            "[RouteC][C2][Bench] samples=%llu avgCopy=%.3fms avgAo=%.3fms avgBlurH=%.3fms avgBlurV=%.3fms avgComp=%.3fms avgTotal=%.3fms",
+            static_cast<unsigned long long>(d3d_st.bench_samples),
+            d3d_st.avg_copy_ms,
+            d3d_st.avg_ao_ms,
+            d3d_st.avg_blur_h_ms,
+            d3d_st.avg_blur_v_ms,
+            d3d_st.avg_comp_ms,
+            d3d_st.avg_total_ms);
+    }
 
     ::AcquireSRWLockShared(&g_survey_lock);
     for (size_t i = 0; i < g_target_record_count; ++i) {

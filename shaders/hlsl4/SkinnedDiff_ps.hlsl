@@ -218,16 +218,14 @@ float4 ShadeSkinnedDiff(VS_OUTPUT input, bool doAlphaReject)
         }
     }
 
+    SurfaceDetail sd = AnalyzeSurfaceDetail(input.Texcoord0.xy, duvX, duvY, albedo.rgb, N, hasNormal);
+
     bool hasNormMap = (p3Flags2.z > 0.5);
     bool hasSpecMap = (p3Flags2.w > 0.5);
-
-    SurfaceDetail sd;
     if (hasNormMap || hasSpecMap)
     {
-        float uvFoot = max(length(duvX), length(duvY));
-        sd.albedo = albedo.rgb;
-        sd.microNormal = N;
-        sd.detailFade = 1.0 - smoothstep(0.012, 0.048, uvFoot);
+        float uvFoot2 = max(length(duvX), length(duvY));
+        sd.detailFade = 1.0 - smoothstep(0.012, 0.048, uvFoot2);
 
         if (hasSpecMap)
         {
@@ -235,17 +233,7 @@ float4 ShadeSkinnedDiff(VS_OUTPUT input, bool doAlphaReject)
             sd.smoothness = saturate(spSample.r);
             sd.metalMask = saturate(spSample.g);
             float cavityAO = saturate(spSample.b);
-            sd.albedo = saturate(albedo.rgb * lerp(1.0, lerp(0.78, 1.05, cavityAO), sd.detailFade));
-        }
-        else
-        {
-            const float3 lumaW3 = float3(0.299, 0.587, 0.114);
-            float maxC3 = max(albedo.r, max(albedo.g, albedo.b));
-            float minC3 = min(albedo.r, min(albedo.g, albedo.b));
-            float sat3 = (maxC3 > 1e-4) ? ((maxC3 - minC3) / maxC3) : 0.0;
-            float lum3 = dot(albedo.rgb, lumaW3);
-            sd.smoothness = saturate(0.24 * smoothstep(0.08, 0.34, lum3));
-            sd.metalMask = (1.0 - smoothstep(0.14, 0.34, sat3)) * smoothstep(0.18, 0.32, lum3) * (1.0 - smoothstep(0.68, 0.84, lum3));
+            sd.albedo = saturate(sd.albedo * lerp(1.0, lerp(0.75, 1.00, cavityAO), sd.detailFade));
         }
 
         if (hasNormMap && hasNormal && sd.detailFade > 0.01)
@@ -253,12 +241,8 @@ float4 ShadeSkinnedDiff(VS_OUTPUT input, bool doAlphaReject)
             float4 nSample = Texture3.SampleGrad(Sampler0, input.Texcoord0.xy, duvX, duvY);
             float2 xy = float2(nSample.a, nSample.g) * 2.0 - 1.0;
             float nz = sqrt(saturate(1.0 - dot(xy, xy)));
-            sd.microNormal = PerturbNormalFromMap(N, input.Texcoord7.xyz, input.Texcoord0.xy, float3(xy, nz), 1.15 * sd.detailFade);
+            sd.microNormal = PerturbNormalFromMap(N, input.Texcoord7.xyz, input.Texcoord0.xy, float3(xy, nz), 1.35 * sd.detailFade);
         }
-    }
-    else
-    {
-        sd = AnalyzeSurfaceDetail(input.Texcoord0.xy, duvX, duvY, albedo.rgb, N, hasNormal);
     }
 
     float3 litEnv = input.Color.rgb;
@@ -275,14 +259,14 @@ float4 ShadeSkinnedDiff(VS_OUTPUT input, bool doAlphaReject)
         float NdotV = saturate(dot(Nmicro, V));
 
         float bevel = dot(Nmicro, V) - dot(N, V);
-        litEnv *= saturate(1.0 + bevel * (0.14 * sd.detailFade));
+        litEnv *= saturate(1.0 + bevel * (0.34 * sd.detailFade));
 
         float l0LenSq = dot(input.Texcoord5.xyz, input.Texcoord5.xyz);
         if (l0LenSq > 1e-6 && dot(input.Texcoord4.rgb, float3(0.299, 0.587, 0.114)) > 1e-4)
         {
             float3 L0 = input.Texcoord5.xyz * rsqrt(l0LenSq);
             float relief = dot(Nmicro, L0) - dot(N, L0);
-            litEnv *= saturate(1.0 + relief * (0.30 * sd.detailFade));
+            litEnv *= saturate(1.0 + relief * (0.62 * sd.detailFade));
 
             float3 H = normalize(L0 + V);
             float ndh = max(dot(Nmicro, H), 0.0);

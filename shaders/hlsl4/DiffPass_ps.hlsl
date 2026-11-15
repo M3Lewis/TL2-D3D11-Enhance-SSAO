@@ -294,17 +294,15 @@ float4 ShadeDiffPass(VS_OUTPUT input, bool doAlphaReject)
         }
     }
 
+    SurfaceDetail sd = AnalyzeSurfaceDetail(input.Texcoord0.xy, duvX, duvY, albedo.rgb, N, hasNormal, detailWeight);
+
     bool hasNormMap = (p3Flags2.z > 0.5);
     bool hasSpecMap = (p3Flags2.w > 0.5);
-
-    SurfaceDetail sd;
     if (hasNormMap || hasSpecMap)
     {
-        float uvFoot = max(length(duvX), length(duvY));
-        sd.albedo = albedo.rgb;
-        sd.microNormal = N;
-        sd.detailFade = (1.0 - smoothstep(0.014, 0.052, uvFoot)) * detailWeight;
-        sd.reliefFade = (1.0 - smoothstep(0.018, 0.068, uvFoot)) * detailWeight;
+        float uvFoot2 = max(length(duvX), length(duvY));
+        sd.detailFade = (1.0 - smoothstep(0.014, 0.052, uvFoot2)) * detailWeight;
+        sd.reliefFade = (1.0 - smoothstep(0.018, 0.068, uvFoot2)) * detailWeight;
 
         if (hasSpecMap)
         {
@@ -312,17 +310,8 @@ float4 ShadeDiffPass(VS_OUTPUT input, bool doAlphaReject)
             sd.smoothness = saturate(spSample.r);
             sd.metalMask = saturate(spSample.g);
             float cavityAO = saturate(spSample.b);
-            sd.albedo = saturate(albedo.rgb * lerp(1.0, lerp(0.76, 1.06, cavityAO), sd.detailFade));
-        }
-        else
-        {
-            const float3 lumaW3 = float3(0.299, 0.587, 0.114);
-            float maxC3 = max(albedo.r, max(albedo.g, albedo.b));
-            float minC3 = min(albedo.r, min(albedo.g, albedo.b));
-            float sat3 = (maxC3 > 1e-4) ? ((maxC3 - minC3) / maxC3) : 0.0;
-            float lum3 = dot(albedo.rgb, lumaW3);
-            sd.smoothness = saturate(0.24 * smoothstep(0.08, 0.34, lum3));
-            sd.metalMask = (1.0 - smoothstep(0.14, 0.34, sat3)) * smoothstep(0.18, 0.32, lum3) * (1.0 - smoothstep(0.68, 0.84, lum3));
+            // Deepen real recessed crevices without lifting flat diffuse brightness above 1.0.
+            sd.albedo = saturate(sd.albedo * lerp(1.0, lerp(0.72, 1.00, cavityAO), sd.detailFade));
         }
 
         if (hasNormMap && hasNormal && sd.reliefFade > 0.01)
@@ -330,12 +319,8 @@ float4 ShadeDiffPass(VS_OUTPUT input, bool doAlphaReject)
             float4 nSample = Texture3.SampleGrad(Sampler0, input.Texcoord0.xy, duvX, duvY);
             float2 xy = float2(nSample.a, nSample.g) * 2.0 - 1.0;
             float nz = sqrt(saturate(1.0 - dot(xy, xy)));
-            sd.microNormal = PerturbNormalFromMap(N, input.Texcoord7.xyz, input.Texcoord0.xy, float3(xy, nz), 1.15 * sd.reliefFade);
+            sd.microNormal = PerturbNormalFromMap(N, input.Texcoord7.xyz, input.Texcoord0.xy, float3(xy, nz), 1.45 * sd.reliefFade);
         }
-    }
-    else
-    {
-        sd = AnalyzeSurfaceDetail(input.Texcoord0.xy, duvX, duvY, albedo.rgb, N, hasNormal, detailWeight);
     }
 
     float3 litEnv = input.Color.rgb;

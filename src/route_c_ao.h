@@ -19,6 +19,7 @@ struct RouteCStats {
 
 bool InstallRouteCAoPipeline(void* ogre_main_base, RouteCLogFn logger);
 void RemoveRouteCAoPipeline();
+bool VerifyRouteCShaders();
 RouteCStats GetRouteCAoStats();
 void LogRouteCSurveySummary(RouteCLogFn logger);
 

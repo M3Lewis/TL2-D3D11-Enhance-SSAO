@@ -530,6 +530,10 @@ extern "C" __declspec(dllexport) void dllStopPlugin() {
     }
 }
 
+extern "C" __declspec(dllexport) bool RouteB_VerifyRouteCShaders() {
+    return routeb::VerifyRouteCShaders();
+}
+
 BOOL APIENTRY DllMain(HMODULE, DWORD reason, LPVOID) {
     if (reason == DLL_PROCESS_DETACH) {
         RemoveCrashLogger();

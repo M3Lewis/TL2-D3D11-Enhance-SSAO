@@ -251,6 +251,14 @@ int main() {
         return 6;
     }
 
+    using VerifyRouteCShadersFn = bool(*)();
+    auto verify_rc_shaders = reinterpret_cast<VerifyRouteCShadersFn>(::GetProcAddress(plugin, "RouteB_VerifyRouteCShaders"));
+    if (!verify_rc_shaders || !verify_rc_shaders()) {
+        std::printf("FAILED Route C HLSL shader compilation verification (vs_4_0 / ps_4_0 / ps_4_1)\n");
+        stop_fn();
+        return 7;
+    }
+
     stop_fn();
 
     if (std::memcmp(p_setpass, kExpectedSetPass, sizeof(kExpectedSetPass)) != 0 ||

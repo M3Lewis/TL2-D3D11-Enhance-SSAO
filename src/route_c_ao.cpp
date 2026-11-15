@@ -1,4 +1,5 @@
 #include "route_c_ao.h"
+#include "route_c_d3d11.h"
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -97,8 +98,16 @@ struct ActiveSceneFrame {
     uint64_t target_key = 0;
     bool is_perspective = false;
     bool world_candidate = false;
+    bool ao_eligible = false;
+    bool ao_injected = false;
+    uint32_t world_geom_draws = 0;
+    int vp_l = 0;
+    int vp_t = 0;
     int vp_w = 0;
     int vp_h = 0;
+    float near_clip = 1.0f;
+    float far_clip = 100.0f;
+    OgreMatrix4Raw proj{};
     char rt_name[48]{};
     ActiveQueueCounters queue{};
 };
@@ -150,6 +159,7 @@ FireQueueFn g_orig_queue_ended = nullptr;
 
 std::atomic<bool> g_hooked{false};
 std::atomic<bool> g_c0_survey_active{false};
+std::atomic<int> g_ao_debug_mode{3};  // Phase C1 default: DebugMode=3 (Left=Depth Contours, Right=Normals)
 std::atomic<uint64_t> g_render_scene_calls{0};
 std::atomic<uint64_t> g_world_candidates{0};
 std::atomic<uint64_t> g_queue_started_calls{0};
@@ -182,6 +192,30 @@ bool EnvFlagIsZero(const char* name) {
     char buf[8] = {};
     const DWORD len = ::GetEnvironmentVariableA(name, buf, static_cast<DWORD>(sizeof(buf)));
     return len > 0 && buf[0] == '0';
+}
+
+int ResolveAoDebugMode(int default_mode) {
+    char buf[16] = {};
+    const DWORD len = ::GetEnvironmentVariableA("TL2_C_AO_DEBUG", buf, static_cast<DWORD>(sizeof(buf)));
+    if (len == 0) {
+        return default_mode;
+    }
+    if (buf[0] == '0') {
+        return 0;
+    }
+    if (buf[0] == '1') {
+        return 1;
+    }
+    if (buf[0] == '2') {
+        return 2;
+    }
+    if (buf[0] == '3') {
+        return 3;
+    }
+    if (std::strcmp(buf, "off") == 0 || std::strcmp(buf, "none") == 0 || std::strcmp(buf, "-1") == 0) {
+        return -1;
+    }
+    return default_mode;
 }
 
 uint64_t Fnv1aHashBytes(uint64_t seed, const void* data, size_t len) {
@@ -575,6 +609,72 @@ void RecordQueueSurvey(
     ::ReleaseSRWLockExclusive(&g_survey_lock);
 }
 
+void TryDispatchAoForFrame(ActiveSceneFrame& frame, const char* trigger_src, uint8_t qid) {
+    if (frame.ao_injected || !frame.ao_eligible || frame.world_geom_draws == 0) {
+        return;
+    }
+    const int dbg_mode = g_ao_debug_mode.load(std::memory_order_relaxed);
+    if (dbg_mode < 0) {
+        return;
+    }
+    frame.ao_injected = true;
+
+    ID3D11DeviceContext* ctx = nullptr;
+    ID3D11RenderTargetView* rt_rtv = nullptr;
+    ID3D11DepthStencilView* rt_dsv = nullptr;
+    if (!TryGetContextFromRenderTarget(frame.rt, &ctx, &rt_rtv, &rt_dsv) || !ctx) {
+        SafeRelease(ctx);
+        return;
+    }
+
+    RouteCAoRenderRequest req{};
+    req.ctx = ctx;
+    req.fallback_rtv = rt_rtv;
+    req.fallback_dsv = rt_dsv;
+    req.proj_4x4 = &frame.proj.m[0][0];
+    req.near_clip = frame.near_clip;
+    req.far_clip = frame.far_clip;
+    req.vp_left = frame.vp_l;
+    req.vp_top = frame.vp_t;
+    req.vp_width = frame.vp_w;
+    req.vp_height = frame.vp_h;
+    req.debug_mode = dbg_mode;
+    const bool ok = ExecuteRouteCAoPass(req, g_log);
+
+    static std::atomic<uint32_t> s_dispatch_logs{0};
+    const uint32_t log_idx = s_dispatch_logs.fetch_add(1, std::memory_order_relaxed);
+    if (g_log && log_idx < 8) {
+        const auto d3d_st = GetRouteCD3DStats();
+        g_log(
+            "[RouteC][C1][Dispatch #%u] ok=%d rt=\"%s\" trig=%s q=%u vp=(%d,%d,%dx%d) draws=%u tex=%ux%u rtvFmt=%u dsvTexFmt=%u",
+            log_idx + 1,
+            ok ? 1 : 0,
+            frame.rt_name,
+            trigger_src ? trigger_src : "?",
+            static_cast<unsigned>(qid),
+            frame.vp_l,
+            frame.vp_t,
+            frame.vp_w,
+            frame.vp_h,
+            frame.world_geom_draws,
+            d3d_st.last_tex_w,
+            d3d_st.last_tex_h,
+            d3d_st.last_rtv_fmt,
+            d3d_st.last_dsv_tex_fmt);
+    }
+
+    SafeRelease(ctx);
+}
+
+bool IsMainWorldRenderTargetName(const std::string& rt_name) {
+    // Compositor scratch RTTs ("rtt/.../rt0", "rt1", "ProjectorRTT_*") are excluded;
+    // keep either "rtt/.../rt_output/..." or non-RTT main RenderWindow.
+    if (rt_name.rfind("rtt/", 0) == 0) {
+        return rt_name.find("/rt_output/") != std::string::npos;
+    }
+    return true;
+}
+
 void __fastcall HookRenderScene(void* sm, void* cam, void* vp, uint8_t show_overlays) {
     g_render_scene_calls.fetch_add(1, std::memory_order_relaxed);
     if (!g_orig_render_scene) {
@@ -582,7 +682,8 @@ void __fastcall HookRenderScene(void* sm, void* cam, void* vp, uint8_t show_over
     }
 
     const bool survey_on = g_c0_survey_active.load(std::memory_order_relaxed);
-    if (!survey_on || g_scene_depth >= kMaxSceneStack || !sm || !vp) {
+    const int dbg_mode = g_ao_debug_mode.load(std::memory_order_relaxed);
+    if ((!survey_on && dbg_mode < 0) || g_scene_depth >= kMaxSceneStack || !sm || !vp) {
         g_orig_render_scene(sm, cam, vp, show_overlays);
         return;
     }
@@ -596,46 +697,28 @@ void __fastcall HookRenderScene(void* sm, void* cam, void* vp, uint8_t show_over
 
     int vp_l = 0, vp_t = 0, vp_w = 0, vp_h = 0;
     g_api.vp_get_dims(vp, vp_l, vp_t, vp_w, vp_h);
-
-    const bool clear_every = g_api.vp_get_clear(vp);
-    const bool overlays_en = g_api.vp_get_overlays(vp);
-    const bool shadows_en = g_api.vp_get_shadows(vp);
-    const float near_clip = g_api.cam_get_near(active_cam);
-    const float far_clip = g_api.cam_get_far(active_cam);
     const OgreMatrix4Raw& proj = g_api.frustum_get_proj_rs(active_cam);
-
     const bool is_persp = (std::fabs(proj.m[3][2] + 1.0f) < 1e-4f && std::fabs(proj.m[3][3]) < 1e-4f);
     const bool world_cand = is_persp && vp_w >= 256 && vp_h >= 256;
     if (world_cand) {
         g_world_candidates.fetch_add(1, std::memory_order_relaxed);
     }
 
-    const std::string& rt_str = g_api.rt_get_name(rt);
     const std::string& sm_str = g_api.sm_get_name(sm);
     const std::string& cam_str = g_api.cam_get_name(active_cam);
+    bool ao_eligible =
+        (dbg_mode >= 0) &&
+        world_cand &&
+        (sm_str == "SMInstance") &&
+        (cam_str == "PlayerCam");
 
-    ID3D11DeviceContext* ctx = nullptr;
-    ID3D11RenderTargetView* rt_rtv = nullptr;
-    ID3D11DepthStencilView* rt_dsv = nullptr;
-    (void)TryGetContextFromRenderTarget(rt, &ctx, &rt_rtv, &rt_dsv);
-
-    D3DResourceInfo rtv_info = InspectRtv(rt_rtv);
-    D3DResourceInfo dsv_info = InspectDsv(rt_dsv);
-    const char* dsv_src = rt_dsv ? "RenderTarget" : "None";
-    if ((!rtv_info.valid || !dsv_info.valid) && ctx) {
-        uint32_t om_cnt = 0;
-        D3DResourceInfo om_rtv0{};
-        D3DResourceInfo om_dsv{};
-        QueryActiveOmViews(ctx, &om_cnt, &om_rtv0, &om_dsv);
-        if (!rtv_info.valid && om_rtv0.valid) {
-            rtv_info = om_rtv0;
-        }
-        if (!dsv_info.valid && om_dsv.valid) {
-            dsv_info = om_dsv;
-            dsv_src = "OM";
+    const std::string* rt_str_ptr = nullptr;
+    if (survey_on || ao_eligible) {
+        rt_str_ptr = &g_api.rt_get_name(rt);
+        if (ao_eligible && !IsMainWorldRenderTargetName(*rt_str_ptr)) {
+            ao_eligible = false;
         }
     }
-    SafeRelease(ctx);
 
     ActiveSceneFrame& frame = g_scene_stack[g_scene_depth++];
     frame = {};
@@ -645,40 +728,77 @@ void __fastcall HookRenderScene(void* sm, void* cam, void* vp, uint8_t show_over
     frame.rt = rt;
     frame.is_perspective = is_persp;
     frame.world_candidate = world_cand;
+    frame.ao_eligible = ao_eligible;
+    frame.vp_l = vp_l;
+    frame.vp_t = vp_t;
     frame.vp_w = vp_w;
     frame.vp_h = vp_h;
-    CopyTruncatedStr(frame.rt_name, sizeof(frame.rt_name), rt_str);
+    frame.near_clip = g_api.cam_get_near(active_cam);
+    frame.far_clip = g_api.cam_get_far(active_cam);
+    frame.proj = proj;
+    if (rt_str_ptr) {
+        CopyTruncatedStr(frame.rt_name, sizeof(frame.rt_name), *rt_str_ptr);
+    }
 
-    uint64_t tkey = 14695981039346656037ULL;
-    tkey = Fnv1aHashCStr(tkey, frame.rt_name);
-    tkey = Fnv1aHashCStr(tkey, sm_str.c_str());
-    tkey = Fnv1aHashBytes(tkey, &vp_l, sizeof(vp_l));
-    tkey = Fnv1aHashBytes(tkey, &vp_t, sizeof(vp_t));
-    tkey = Fnv1aHashBytes(tkey, &vp_w, sizeof(vp_w));
-    tkey = Fnv1aHashBytes(tkey, &vp_h, sizeof(vp_h));
-    tkey = Fnv1aHashBytes(tkey, &is_persp, sizeof(is_persp));
-    tkey = Fnv1aHashBytes(tkey, &overlays_en, sizeof(overlays_en));
-    tkey = Fnv1aHashBytes(tkey, &rtv_info.tex_format, sizeof(rtv_info.tex_format));
-    tkey = Fnv1aHashBytes(tkey, &dsv_info.tex_format, sizeof(dsv_info.tex_format));
-    tkey = Fnv1aHashBytes(tkey, &rtv_info.sample_count, sizeof(rtv_info.sample_count));
-    frame.target_key = tkey;
+    if (survey_on) {
+        const bool clear_every = g_api.vp_get_clear(vp);
+        const bool overlays_en = g_api.vp_get_overlays(vp);
+        const bool shadows_en = g_api.vp_get_shadows(vp);
 
-    RecordTargetSurvey(
-        frame,
-        sm_str.c_str(),
-        cam_str.c_str(),
-        vp_l,
-        vp_t,
-        clear_every,
-        overlays_en,
-        shadows_en,
-        show_overlays,
-        near_clip,
-        far_clip,
-        proj,
-        rtv_info,
-        dsv_info,
-        dsv_src);
+        ID3D11DeviceContext* ctx = nullptr;
+        ID3D11RenderTargetView* rt_rtv = nullptr;
+        ID3D11DepthStencilView* rt_dsv = nullptr;
+        (void)TryGetContextFromRenderTarget(rt, &ctx, &rt_rtv, &rt_dsv);
+
+        D3DResourceInfo rtv_info = InspectRtv(rt_rtv);
+        D3DResourceInfo dsv_info = InspectDsv(rt_dsv);
+        const char* dsv_src = rt_dsv ? "RenderTarget" : "None";
+        if ((!rtv_info.valid || !dsv_info.valid) && ctx) {
+            uint32_t om_cnt = 0;
+            D3DResourceInfo om_rtv0{};
+            D3DResourceInfo om_dsv{};
+            QueryActiveOmViews(ctx, &om_cnt, &om_rtv0, &om_dsv);
+            if (!rtv_info.valid && om_rtv0.valid) {
+                rtv_info = om_rtv0;
+            }
+            if (!dsv_info.valid && om_dsv.valid) {
+                dsv_info = om_dsv;
+                dsv_src = "OM";
+            }
+        }
+        SafeRelease(ctx);
+
+        uint64_t tkey = 14695981039346656037ULL;
+        tkey = Fnv1aHashCStr(tkey, frame.rt_name);
+        tkey = Fnv1aHashCStr(tkey, sm_str.c_str());
+        tkey = Fnv1aHashBytes(tkey, &vp_l, sizeof(vp_l));
+        tkey = Fnv1aHashBytes(tkey, &vp_t, sizeof(vp_t));
+        tkey = Fnv1aHashBytes(tkey, &vp_w, sizeof(vp_w));
+        tkey = Fnv1aHashBytes(tkey, &vp_h, sizeof(vp_h));
+        tkey = Fnv1aHashBytes(tkey, &is_persp, sizeof(is_persp));
+        tkey = Fnv1aHashBytes(tkey, &overlays_en, sizeof(overlays_en));
+        tkey = Fnv1aHashBytes(tkey, &rtv_info.tex_format, sizeof(rtv_info.tex_format));
+        tkey = Fnv1aHashBytes(tkey, &dsv_info.tex_format, sizeof(dsv_info.tex_format));
+        tkey = Fnv1aHashBytes(tkey, &rtv_info.sample_count, sizeof(rtv_info.sample_count));
+        frame.target_key = tkey;
+
+        RecordTargetSurvey(
+            frame,
+            sm_str.c_str(),
+            cam_str.c_str(),
+            vp_l,
+            vp_t,
+            clear_every,
+            overlays_en,
+            shadows_en,
+            show_overlays,
+            frame.near_clip,
+            frame.far_clip,
+            proj,
+            rtv_info,
+            dsv_info,
+            dsv_src);
+    }
 
     struct SceneStackGuard {
         ~SceneStackGuard() {
@@ -693,13 +813,21 @@ void __fastcall HookRenderScene(void* sm, void* cam, void* vp, uint8_t show_over
 
 uint8_t __fastcall HookFireRenderQueueStarted(void* sm, uint8_t queue_group_id, const std::string& invocation) {
     g_queue_started_calls.fetch_add(1, std::memory_order_relaxed);
-    if (g_c0_survey_active.load(std::memory_order_relaxed) && g_scene_depth > 0) {
+    if (g_scene_depth > 0) {
         ActiveSceneFrame& frame = g_scene_stack[g_scene_depth - 1];
         if (frame.sm == sm) {
-            frame.queue = {};
-            frame.queue.active = true;
-            frame.queue.queue_id = queue_group_id;
-            CopyTruncatedStr(frame.queue.invocation, sizeof(frame.queue.invocation), invocation);
+            // Fallback trigger if queue 86 was absent in an empty-entity scene: inject right before q>86 starts.
+            if (queue_group_id > 86) {
+                TryDispatchAoForFrame(frame, "Started>86", queue_group_id);
+            }
+            if (g_c0_survey_active.load(std::memory_order_relaxed)) {
+                frame.queue = {};
+                frame.queue.active = true;
+                frame.queue.queue_id = queue_group_id;
+                CopyTruncatedStr(frame.queue.invocation, sizeof(frame.queue.invocation), invocation);
+            } else if (frame.ao_eligible) {
+                frame.queue.queue_id = queue_group_id;
+            }
         }
     }
     return g_orig_queue_started ? g_orig_queue_started(sm, queue_group_id, invocation) : 1;
@@ -707,26 +835,31 @@ uint8_t __fastcall HookFireRenderQueueStarted(void* sm, uint8_t queue_group_id, 
 
 uint8_t __fastcall HookFireRenderQueueEnded(void* sm, uint8_t queue_group_id, const std::string& invocation) {
     g_queue_ended_calls.fetch_add(1, std::memory_order_relaxed);
-    if (g_c0_survey_active.load(std::memory_order_relaxed) && g_scene_depth > 0) {
+    if (g_scene_depth > 0) {
         ActiveSceneFrame& frame = g_scene_stack[g_scene_depth - 1];
         if (frame.sm == sm) {
-            if (!frame.queue.active || frame.queue.queue_id != queue_group_id) {
-                frame.queue.queue_id = queue_group_id;
-                CopyTruncatedStr(frame.queue.invocation, sizeof(frame.queue.invocation), invocation);
+            if (queue_group_id == 86) {
+                TryDispatchAoForFrame(frame, "Ended86", queue_group_id);
             }
+            if (g_c0_survey_active.load(std::memory_order_relaxed)) {
+                if (!frame.queue.active || frame.queue.queue_id != queue_group_id) {
+                    frame.queue.queue_id = queue_group_id;
+                    CopyTruncatedStr(frame.queue.invocation, sizeof(frame.queue.invocation), invocation);
+                }
 
-            ID3D11DeviceContext* ctx = nullptr;
-            ID3D11RenderTargetView* rt_rtv = nullptr;
-            ID3D11DepthStencilView* rt_dsv = nullptr;
-            uint32_t om_rtv_count = 0;
-            D3DResourceInfo om_rtv0{};
-            D3DResourceInfo om_dsv{};
-            if (TryGetContextFromRenderTarget(frame.rt, &ctx, &rt_rtv, &rt_dsv)) {
-                QueryActiveOmViews(ctx, &om_rtv_count, &om_rtv0, &om_dsv);
-                SafeRelease(ctx);
+                ID3D11DeviceContext* ctx = nullptr;
+                ID3D11RenderTargetView* rt_rtv = nullptr;
+                ID3D11DepthStencilView* rt_dsv = nullptr;
+                uint32_t om_rtv_count = 0;
+                D3DResourceInfo om_rtv0{};
+                D3DResourceInfo om_dsv{};
+                if (TryGetContextFromRenderTarget(frame.rt, &ctx, &rt_rtv, &rt_dsv)) {
+                    QueryActiveOmViews(ctx, &om_rtv_count, &om_rtv0, &om_dsv);
+                    SafeRelease(ctx);
+                }
+                RecordQueueSurvey(frame, frame.queue, om_rtv_count, om_rtv0, om_dsv);
+                frame.queue.active = false;
             }
-            RecordQueueSurvey(frame, frame.queue, om_rtv_count, om_rtv0, om_dsv);
-            frame.queue.active = false;
         }
     }
     return g_orig_queue_ended ? g_orig_queue_ended(sm, queue_group_id, invocation) : 0;
@@ -742,11 +875,16 @@ void OnRouteCScenePassObserved(
     bool alpha_reject,
     bool has_vp,
     bool has_fp) {
-    if (!g_c0_survey_active.load(std::memory_order_relaxed) || g_scene_depth <= 0) {
+    if (g_scene_depth <= 0) {
         return;
     }
     ActiveSceneFrame& frame = g_scene_stack[g_scene_depth - 1];
-    if (!frame.queue.active) {
+    if (frame.ao_eligible && !frame.ao_injected &&
+        !has_fp && !transparent && depth_write &&
+        frame.queue.queue_id <= 86) {
+        ++frame.world_geom_draws;
+    }
+    if (!g_c0_survey_active.load(std::memory_order_relaxed) || !frame.queue.active) {
         return;
     }
     ActiveQueueCounters& q = frame.queue;
@@ -852,12 +990,15 @@ bool InstallRouteCAoPipeline(void* ogre_main_base, RouteCLogFn logger) {
     }
     g_orig_queue_ended = reinterpret_cast<FireQueueFn>(orig_qe);
 
-    const bool survey_on = !EnvFlagIsZero("TL2_C_C0_SURVEY");
+    const bool survey_on = EnvFlagIsOne("TL2_C_C0_SURVEY");
+    const int dbg_mode = ResolveAoDebugMode(3);  // C1 default: DebugMode=3
     g_c0_survey_active.store(survey_on, std::memory_order_relaxed);
+    g_ao_debug_mode.store(dbg_mode, std::memory_order_relaxed);
     g_hooked.store(true, std::memory_order_relaxed);
 
     if (g_log) {
-        g_log("[RouteC][C0] Runtime survey hooks installed (c0_survey=%s, Zero Visual Change).",
+        g_log("[RouteC][C1] Hooks installed (debugMode=%d, c0_survey=%s, injectQueue=86).",
+              dbg_mode,
               survey_on ? "ON" : "OFF");
     }
     return true;
@@ -870,10 +1011,15 @@ void RemoveRouteCAoPipeline() {
     g_detour_queue_ended.Remove();
     g_detour_queue_started.Remove();
     g_detour_render_scene.Remove();
+    ShutdownRouteCD3D11Resources();
 
     g_orig_queue_ended = nullptr;
     g_orig_queue_started = nullptr;
     g_orig_render_scene = nullptr;
+}
+
+bool VerifyRouteCShaders() {
+    return VerifyRouteCShadersCompile(g_log);
 }
 
 RouteCStats GetRouteCAoStats() {
@@ -906,6 +1052,22 @@ void LogRouteCSurveySummary(RouteCLogFn logger) {
         static_cast<unsigned long long>(st.queue_ended_calls),
         static_cast<unsigned long long>(st.survey_unique_targets),
         static_cast<unsigned long long>(st.survey_unique_queues));
+
+    const auto d3d_st = GetRouteCD3DStats();
+    logger(
+        "[RouteC][C1][Stats] debugMode=%d ok=%llu skipNoOm=%llu skipFmt=%llu skipFail=%llu depthRebuilds=%u lastTex=%ux%u rtvFmt=%u dsvTexFmt=%u msaa=%ux shadersReady=%d",
+        g_ao_debug_mode.load(std::memory_order_relaxed),
+        static_cast<unsigned long long>(d3d_st.inject_ok),
+        static_cast<unsigned long long>(d3d_st.inject_skip_no_om),
+        static_cast<unsigned long long>(d3d_st.inject_skip_fmt),
+        static_cast<unsigned long long>(d3d_st.inject_skip_fail),
+        d3d_st.depth_rebuilds,
+        d3d_st.last_tex_w,
+        d3d_st.last_tex_h,
+        d3d_st.last_rtv_fmt,
+        d3d_st.last_dsv_tex_fmt,
+        d3d_st.last_sample_count,
+        d3d_st.shaders_ready ? 1 : 0);
 
     ::AcquireSRWLockShared(&g_survey_lock);
     for (size_t i = 0; i < g_target_record_count; ++i) {

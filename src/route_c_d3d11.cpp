@@ -84,9 +84,9 @@ bool EnvFlagIsZero(const char* name) {
 struct AoTuneConfig {
     bool initialized = false;
     float radius_world = 0.95f;
-    float bias_cos = 0.10f;
-    float strength = 1.35f;
-    float min_ao_floor = 0.55f;
+    float bias_cos = 0.24f;
+    float strength = 1.20f;
+    float min_ao_floor = 0.58f;
     float depth_edge_scale = 55.0f;
     float fade_start = 42.0f;
     float fade_end_cap = 78.0f;
@@ -98,9 +98,9 @@ const AoTuneConfig& GetAoTuneConfig(RouteCD3DLogFn logger) {
     if (!cfg.initialized) {
         cfg.initialized = true;
         cfg.radius_world = ReadEnvFloat("TL2_C_AO_RADIUS", 0.95f, 0.10f, 8.0f);
-        cfg.bias_cos = ReadEnvFloat("TL2_C_AO_BIAS", 0.10f, 0.01f, 0.50f);
-        cfg.strength = ReadEnvFloat("TL2_C_AO_STRENGTH", 1.35f, 0.0f, 4.0f);
-        cfg.min_ao_floor = ReadEnvFloat("TL2_C_AO_FLOOR", 0.55f, 0.20f, 0.98f);
+        cfg.bias_cos = ReadEnvFloat("TL2_C_AO_BIAS", 0.24f, 0.01f, 0.50f);
+        cfg.strength = ReadEnvFloat("TL2_C_AO_STRENGTH", 1.20f, 0.0f, 4.0f);
+        cfg.min_ao_floor = ReadEnvFloat("TL2_C_AO_FLOOR", 0.58f, 0.20f, 0.98f);
         cfg.depth_edge_scale = ReadEnvFloat("TL2_C_AO_EDGE", 55.0f, 5.0f, 300.0f);
         cfg.fade_start = ReadEnvFloat("TL2_C_AO_FADESTART", 42.0f, 5.0f, 150.0f);
         cfg.fade_end_cap = ReadEnvFloat("TL2_C_AO_FADEEND", 78.0f, 10.0f, 250.0f);
@@ -333,6 +333,7 @@ float4 PS_AoRaw(VsOut input) : SV_Target0
     {
         float2 dir = dirs[k];
         float maxDirOcc = 0.0f;
+        float sumDirOcc = 0.0f;
 
         [unroll]
         for (int s = 1; s <= 4; ++s)
@@ -349,14 +350,18 @@ float4 PS_AoRaw(VsOut input) : SV_Target0
                     float3 V = S - P;
                     float distSq = dot(V, V);
                     float invDist = rsqrt(max(distSq, 1e-8f));
-                    float cosTheta = dot(n, V) * invDist;
+                    float hPlane = dot(n, V);
+                    float cosTheta = hPlane * invDist;
                     float angleOcc = saturate((cosTheta - biasCos) * invOneMinusBias);
+                    float heightGate = smoothstep(0.055f, 0.14f, hPlane);
                     float falloff = saturate(1.0f - distSq * invR2);
-                    maxDirOcc = max(maxDirOcc, angleOcc * falloff);
+                    float sampleOcc = angleOcc * heightGate * falloff;
+                    maxDirOcc = max(maxDirOcc, sampleOcc);
+                    sumDirOcc += sampleOcc;
                 }
             }
         }
-        occSum += maxDirOcc;
+        occSum += lerp(sumDirOcc * 0.25f, maxDirOcc, 0.65f);
     }
 
     float occ = occSum * 0.25f;
@@ -498,11 +503,11 @@ float3 ComputeAoCompositeRgb(int2 pix, float rawC)
                     float cosN = hPlane * invDist;
                     float dz = dC - (-S.z);
                     float rangeW = saturate(1.0f - distSq * 2.4f);
-                    float thickW = smoothstep(0.032f, 0.085f, hPlane) *
+                    float thickW = smoothstep(0.050f, 0.12f, hPlane) *
                                    (1.0f - smoothstep(0.28f, 0.55f, hPlane)) *
-                                   smoothstep(0.020f, 0.055f, dz) *
+                                   smoothstep(0.030f, 0.075f, dz) *
                                    (1.0f - smoothstep(0.32f, 0.60f, dz));
-                    float angW = saturate((cosN - 0.28f) * 2.4f);
+                    float angW = saturate((cosN - 0.30f) * 2.5f);
                     float sampleOcc = angW * rangeW * thickW * (1.10f - 0.14f * float(s));
                     contactMax = max(contactMax, sampleOcc);
                     contactSum += sampleOcc;

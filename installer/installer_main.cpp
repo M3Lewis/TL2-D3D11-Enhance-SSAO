@@ -255,7 +255,19 @@ bool IsProcessRunningByName(const wchar_t* exe_name) {
     return found;
 }
 
-bool ValidateGameDirectory(const fs::path& game_dir, Logger& log) {
+void AppendVersionUpgradeHint(Logger& log) {
+    log.AppendBi(
+        L"[升级提示] 当前游戏不是 1.27 (2026 x64 D3D11) 版本，请先将游戏升级至 1.27 版本：",
+        L"[Upgrade Required] Your Torchlight II build is not v1.27 (2026 x64 D3D11). Please update to v1.27:");
+    log.AppendBi(
+        L"          可在 Steam 库中右键游戏 →「属性」→「测试版」→ 选择 public_beta 分支进行更新。",
+        L"          In Steam: Right-click Torchlight II -> Properties -> Betas -> select the public_beta branch.");
+}
+
+bool ValidateGameDirectory(const fs::path& game_dir, Logger& log, bool* out_version_mismatch = nullptr) {
+    if (out_version_mismatch) {
+        *out_version_mismatch = false;
+    }
     std::error_code ec;
     if (game_dir.empty() || !fs::exists(game_dir, ec) || !fs::is_directory(game_dir, ec)) {
         log.AppendBi(L"[错误] 所选目录不存在: " + game_dir.wstring(),
@@ -274,10 +286,14 @@ bool ValidateGameDirectory(const fs::path& game_dir, Logger& log) {
         const fs::path mod_path = game_dir / mod.filename;
         if (!fs::exists(mod_path, ec)) {
             log.AppendBi(
-                std::wstring(L"[错误] 缺少必要引擎文件 ") + mod.filename +
-                    L"（请确认游戏为 2026 x64 D3D11 更新版，而非旧版 32 位 D3D9 客户端）。",
-                std::wstring(L"[Error] Missing required engine file ") + mod.filename +
-                    L" (please ensure the game is the 2026 x64 D3D11 update, not legacy 32-bit D3D9).");
+                std::wstring(L"[错误] 缺少 1.27 版引擎文件 ") + mod.filename +
+                    L"（请确认游戏已升级至 1.27 版本，而非旧版 32 位 D3D9 客户端）。",
+                std::wstring(L"[Error] Missing v1.27 engine file ") + mod.filename +
+                    L" (please update to v1.27 rather than legacy 32-bit D3D9).");
+            AppendVersionUpgradeHint(log);
+            if (out_version_mismatch) {
+                *out_version_mismatch = true;
+            }
             return false;
         }
         uint32_t ts = 0;
@@ -285,24 +301,32 @@ bool ValidateGameDirectory(const fs::path& game_dir, Logger& log) {
         BiText pe_err;
         if (!ReadPeSignature(mod_path, &ts, &img_sz, &pe_err)) {
             log.AppendBi(L"[错误] " + pe_err.zh, L"[Error] " + pe_err.en);
+            AppendVersionUpgradeHint(log);
+            if (out_version_mismatch) {
+                *out_version_mismatch = true;
+            }
             return false;
         }
         if (ts != mod.expected_timestamp || img_sz != mod.expected_image_size) {
             wchar_t msg_zh[256]{};
             wchar_t msg_en[256]{};
             std::swprintf(msg_zh, 256,
-                          L"[错误] %s 版本不匹配 (TimeDateStamp=0x%08X 期望 0x%08X, SizeOfImage=0x%X 期望 0x%X)，为防崩溃已中止。",
+                          L"[错误] %s 不是 1.27 兼容版本 (TimeDateStamp=0x%08X 期望 0x%08X, SizeOfImage=0x%X 期望 0x%X)，为防崩溃已中止。",
                           mod.filename, ts, mod.expected_timestamp, img_sz, mod.expected_image_size);
             std::swprintf(msg_en, 256,
-                          L"[Error] %s version mismatch (TimeDateStamp=0x%08X expected 0x%08X, SizeOfImage=0x%X expected 0x%X); aborted.",
+                          L"[Error] %s is not a compatible v1.27 build (TimeDateStamp=0x%08X expected 0x%08X, SizeOfImage=0x%X expected 0x%X); aborted.",
                           mod.filename, ts, mod.expected_timestamp, img_sz, mod.expected_image_size);
             log.AppendBi(msg_zh, msg_en);
+            AppendVersionUpgradeHint(log);
+            if (out_version_mismatch) {
+                *out_version_mismatch = true;
+            }
             return false;
         }
     }
 
-    log.AppendBi(L"[检查通过] 已识别兼容的 2026 x64 D3D11 版《火炬之光 2》目录。",
-                 L"[Check OK] Compatible 2026 x64 D3D11 Torchlight II installation detected.");
+    log.AppendBi(L"[检查通过] 已识别兼容的 1.27 (2026 x64 D3D11) 版《火炬之光 2》目录。",
+                 L"[Check OK] Compatible Torchlight II v1.27 (2026 x64 D3D11) installation detected.");
     return true;
 }
 
@@ -498,13 +522,16 @@ bool UpdatePluginConfigFile(const fs::path& cfg_path, Logger& log) {
     return true;
 }
 
-bool PerformInstall(const fs::path& game_dir, Logger& log) {
+bool PerformInstall(const fs::path& game_dir, Logger& log, bool* out_version_mismatch = nullptr) {
+    if (out_version_mismatch) {
+        *out_version_mismatch = false;
+    }
     if (IsProcessRunningByName(L"Torchlight2.exe")) {
         log.AppendBi(L"[错误] 检测到 Torchlight2.exe 正在运行，请先退出游戏再安装。",
                      L"[Error] Torchlight2.exe is currently running. Please exit the game first.");
         return false;
     }
-    if (!ValidateGameDirectory(game_dir, log)) {
+    if (!ValidateGameDirectory(game_dir, log, out_version_mismatch)) {
         return false;
     }
 
@@ -999,9 +1026,27 @@ void BuildBackdropBitmap(HWND hwnd) {
             delete logo_bmp;
         }
 
-        // Header right: Title & complete 2-line subtitle (HotkeyPrefixNone preserves '&')
+        // Header right: Title & complete 2-line subtitle (auto-fit font so title never clips before [中]/[EN])
         Gdiplus::FontFamily ff(L"Microsoft YaHei UI");
-        Gdiplus::Font title_f(&ff, Sf(19.5f), Gdiplus::FontStyleBold, Gdiplus::UnitPixel);
+        const wchar_t* main_title_text = T(
+            L"D3D11 画质增强 & SSAO 安装器 (v1.27 x64)",
+            L"D3D11 Graphics & SSAO Setup (v1.27 x64)");
+        const Gdiplus::RectF title_rect(Sf(220), Sf(22), Sf(414), Sf(28));
+        float chosen_title_px = 19.0f;
+        {
+            Gdiplus::StringFormat measure_fmt(Gdiplus::StringFormat::GenericTypographic());
+            measure_fmt.SetHotkeyPrefix(Gdiplus::HotkeyPrefixNone);
+            for (const float cand : {19.0f, 17.5f, 16.5f, 15.5f, 14.5f}) {
+                Gdiplus::Font test_f(&ff, Sf(cand), Gdiplus::FontStyleBold, Gdiplus::UnitPixel);
+                Gdiplus::RectF bounds;
+                g.MeasureString(main_title_text, -1, &test_f, Gdiplus::PointF(0.0f, 0.0f), &measure_fmt, &bounds);
+                chosen_title_px = cand;
+                if (bounds.Width <= title_rect.Width - Sf(6.0f)) {
+                    break;
+                }
+            }
+        }
+        Gdiplus::Font title_f(&ff, Sf(chosen_title_px), Gdiplus::FontStyleBold, Gdiplus::UnitPixel);
         Gdiplus::Font sub_f(&ff, Sf(12.0f), Gdiplus::FontStyleRegular, Gdiplus::UnitPixel);
         Gdiplus::Font chip_f(&ff, Sf(11.5f), Gdiplus::FontStyleBold, Gdiplus::UnitPixel);
         Gdiplus::Font label_f(&ff, Sf(13.5f), Gdiplus::FontStyleRegular, Gdiplus::UnitPixel);
@@ -1029,10 +1074,9 @@ void BuildBackdropBitmap(HWND hwnd) {
 
         DrawTextWithShadow(
             g,
-            T(L"D3D11 画质增强 & SSAO 安装器 (2026 x64)",
-              L"D3D11 Graphics & SSAO Setup (2026 x64)"),
+            main_title_text,
             title_f,
-            Gdiplus::RectF(Sf(224), Sf(22), Sf(404), Sf(28)),
+            title_rect,
             fmt_left,
             Gdiplus::Color(255, 255, 214, 130),
             Sf(2.0f));
@@ -1042,7 +1086,7 @@ void BuildBackdropBitmap(HWND hwnd) {
             T(L"内嵌 Plugin_TL2_DX11_Enhance_SSAO.dll 与全套 16 枚 HLSL4 着色器\n支持原版无损备份 · 游戏内按 [F8] 调出交互式画质配置面板",
               L"Bundles Plugin_TL2_DX11_Enhance_SSAO.dll + 16 HLSL4 Shaders\nLossless vanilla backup · Press [F8] in-game for live settings"),
             sub_f,
-            Gdiplus::RectF(Sf(224), Sf(52), Sf(500), Sf(36)),
+            Gdiplus::RectF(Sf(220), Sf(52), Sf(504), Sf(36)),
             fmt_top_left,
             Gdiplus::Color(255, 218, 208, 190),
             Sf(1.0f));
@@ -1598,18 +1642,31 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
                 return 0;
             }
             if (ctrl_id == kCtrlCheckBtn) {
-                ValidateGameDirectory(GetPathFromEdit(), g_gui_log);
+                bool version_mismatch = false;
+                if (!ValidateGameDirectory(GetPathFromEdit(), g_gui_log, &version_mismatch) && version_mismatch) {
+                    ::MessageBoxW(
+                        hwnd,
+                        T(L"检测到当前《火炬之光 2》不是 1.27 (2026 x64 D3D11) 兼容版本！\n\n请先将游戏升级至 1.27 版本：\n在 Steam 游戏库中右键点击《火炬之光 2》 →「属性」→「测试版」→ 在参与测试下拉框中选择 public_beta 分支更新游戏。",
+                          L"Detected Torchlight II installation is not compatible v1.27 (2026 x64 D3D11)!\n\nPlease update the game to v1.27 first:\nIn Steam Library: Right-click Torchlight II -> Properties -> Betas -> select the public_beta branch to update."),
+                        T(L"需要升级至 1.27 版本", L"v1.27 Update Required"),
+                        MB_OK | MB_ICONWARNING);
+                }
                 return 0;
             }
             if (ctrl_id == kCtrlInstallBtn) {
                 const fs::path dir = GetPathFromEdit();
-                const bool ok = PerformInstall(dir, g_gui_log);
+                bool version_mismatch = false;
+                const bool ok = PerformInstall(dir, g_gui_log, &version_mismatch);
+                const wchar_t* err_msg = version_mismatch
+                    ? T(L"安装已中止：检测到当前《火炬之光 2》不是 1.27 (2026 x64 D3D11) 兼容版本！\n\n请先将游戏升级至 1.27 版本：\n在 Steam 游戏库中右键点击《火炬之光 2》 →「属性」→「测试版」→ 选择 public_beta 分支更新游戏。",
+                        L"Installation aborted: Torchlight II installation is not compatible v1.27 (2026 x64 D3D11)!\n\nPlease update the game to v1.27 first:\nIn Steam Library: Right-click Torchlight II -> Properties -> Betas -> select the public_beta branch to update.")
+                    : T(L"安装未完成，请查看日志窗口中的错误信息。",
+                        L"Installation incomplete. Please check the error details in the log console.");
                 ::MessageBoxW(
                     hwnd,
                     ok ? T(L"安装成功！\n已自动备份原版配置与着色器。\n\n游戏内按 F8 弹出交互式配置面板：支持中英双语切换、10 项效果独立强度滑块、水面 SSR、3D LUT 调色、全开/全关对比，并保存多达 10 组预设。\n\n外部 .cube 调色说明：\n将自定义 3D .cube 文件重命名为 TL2_CustomLUT.cube 并放入游戏根目录（Torchlight2.exe 同级目录），即可在 F8 面板选择「外部 .cube」加载（支持热重载）。",
                            L"Installation successful!\nOriginal configs and shaders were backed up automatically.\n\nPress F8 in-game to open the live panel: toggle ZH/EN UI, tune 10 effect strength sliders, switch Water SSR / 3D LUT / Enable-Disable All, and save up to 10 custom presets.\n\nCustom .cube LUT usage:\nRename any 3D .cube file to TL2_CustomLUT.cube inside the game root (next to Torchlight2.exe), then pick 'Custom .cube' in F8 (hot-reload supported).")
-                       : T(L"安装未完成，请查看日志窗口中的错误信息。",
-                           L"Installation incomplete. Please check the error details in the log console."),
+                       : err_msg,
                     T(L"火炬之光 2 D3D11 画质增强 & SSAO 安装器",
                       L"Torchlight II D3D11 Graphics & SSAO Setup"),
                     ok ? (MB_OK | MB_ICONINFORMATION) : (MB_OK | MB_ICONERROR));

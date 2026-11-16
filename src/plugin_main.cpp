@@ -581,6 +581,13 @@ extern "C" __declspec(dllexport) int RouteB_RunConfigPanelSelfTest() {
     routeb::SetP2SsrStrengthPct(250);       // clamps to 200
     routeb::SetP2FilterStrengthPct(115);
     routeb::SetP2LutStrengthPct(90);
+    if (routeb::GetUiLanguage() != routeb::UiLanguage::ZhCn) {
+        return 15;
+    }
+    routeb::SetUiLanguage(routeb::UiLanguage::EnUs);
+    if (routeb::GetUiLanguage() != routeb::UiLanguage::EnUs) {
+        return 16;
+    }
     if (!routeb::SaveCustomPreset(9)) {
         return 2;
     }
@@ -643,8 +650,12 @@ extern "C" __declspec(dllexport) int RouteB_RunConfigPanelSelfTest() {
     }
     const routeb::VisualConfig reloaded = routeb::CaptureVisualConfigFromEngine();
     const routeb::PresetSlot slot9 = routeb::GetCustomPresetSlot(9);
-    if (!(reloaded == applied) || !slot9.used || !(slot9.cfg == applied)) {
+    if (!(reloaded == applied) || !slot9.used || !(slot9.cfg == applied) ||
+        routeb::GetUiLanguage() != routeb::UiLanguage::EnUs) {
         return 8;
+    }
+    if (routeb::ToggleUiLanguage() != routeb::UiLanguage::ZhCn) {
+        return 17;
     }
 
     routeb::ToggleConfigPanelOpen();

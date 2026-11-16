@@ -43,6 +43,11 @@ struct VisualConfig {
 
 constexpr int kCustomPresetCount = 10;
 
+enum class UiLanguage : int {
+    ZhCn = 0,
+    EnUs = 1,
+};
+
 struct PresetSlot {
     bool used = false;
     VisualConfig cfg;
@@ -66,7 +71,11 @@ bool ApplyCustomPreset(int slot_index);
 PresetSlot GetCustomPresetSlot(int slot_index);
 void ResetConfigPanelStateForTest();
 
-// Interactive panel visibility & WndProc subclassing.
+// Interactive panel visibility, language & WndProc subclassing.
+UiLanguage GetUiLanguage();
+void SetUiLanguage(UiLanguage lang);
+UiLanguage ToggleUiLanguage();
+
 void ToggleConfigPanelOpen();
 void SetConfigPanelOpen(bool open);
 bool IsConfigPanelOpen();

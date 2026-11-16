@@ -40,6 +40,7 @@ enum class HitTargetKind {
     None = 0,
     TitleDrag,
     CloseButton,
+    ToggleLanguage,
     ToggleAllOn,
     ToggleAllOff,
     TogglePhase3,
@@ -96,8 +97,12 @@ enum class HitTargetKind {
 struct HitZone {
     RECT rect{};
     HitTargetKind kind = HitTargetKind::None;
-    const wchar_t* label = L"";
+    const wchar_t* label_zh = L"";
+    const wchar_t* label_en = L"";
 };
+
+constexpr const wchar_t* kDefaultStatusZh = L"F8/ESC关闭 · 拖动滑块/滚轮调强度 · 右键滑块归位100%";
+constexpr const wchar_t* kDefaultStatusEn = L"F8/ESC Close · Drag/Wheel Adjust · Right-Click Reset 100%";
 
 struct PanelRuntimeState {
     std::mutex mutex;
@@ -118,10 +123,12 @@ struct PanelRuntimeState {
     POINT cursor_panel{-1, -1};
     bool cursor_inside = false;
 
+    UiLanguage language = UiLanguage::ZhCn;
     std::array<PresetSlot, kCustomPresetCount> presets{};
     int active_custom_slot = -1;
     std::wstring ini_path;
-    std::wstring status_text = L"F8/ESC关闭 · 拖动滑块/滚轮调强度 · 右键滑块归位100%";
+    std::wstring status_zh = kDefaultStatusZh;
+    std::wstring status_en = kDefaultStatusEn;
 
     HWND hwnd = nullptr;
     WNDPROC orig_wndproc = nullptr;
@@ -141,6 +148,23 @@ struct PanelRuntimeState {
 PanelRuntimeState g_panel;
 std::atomic<bool> g_wndproc_attached{false};
 
+bool IsEnglishLocked() {
+    return g_panel.language == UiLanguage::EnUs;
+}
+
+const wchar_t* PickLang(const wchar_t* zh, const wchar_t* en) {
+    return IsEnglishLocked() ? en : zh;
+}
+
+const wchar_t* ZoneLabel(const HitZone& z) {
+    return IsEnglishLocked() ? z.label_en : z.label_zh;
+}
+
+void SetStatusBilingualLocked(const wchar_t* zh, const wchar_t* en) {
+    g_panel.status_zh = zh ? zh : kDefaultStatusZh;
+    g_panel.status_en = en ? en : kDefaultStatusEn;
+}
+
 int ClampFilterPreset(int v) {
     if (v < 0 || v > 2) return 1;
     return v;
@@ -157,7 +181,8 @@ int ClampStrengthPct(int v) {
 
 struct EffectSliderSpec {
     const wchar_t* ini_key;
-    const wchar_t* label;
+    const wchar_t* label_zh;
+    const wchar_t* label_en;
     int VisualConfig::*member;
     void (*set_fn)(int);
     int (*get_fn)();
@@ -165,16 +190,16 @@ struct EffectSliderSpec {
 
 constexpr size_t kEffectSliderCount = 10;
 constexpr std::array<EffectSliderSpec, kEffectSliderCount> kSliderSpecs = {{
-    {L"Phase3Strength", L"Phase 3 材质/边缘光", &VisualConfig::phase3_strength, &SetPhase3StrengthPct, &GetPhase3StrengthPct},
-    {L"AfPointStrength", L"动态点光增强", &VisualConfig::af_point_strength, &SetF11PointLightStrengthPct, &GetF11PointLightStrengthPct},
-    {L"P0RimLitStrength", L"P0-1 RimLit / _GLO", &VisualConfig::p0_rimlit_strength, &SetP0RimLitStrengthPct, &GetP0RimLitStrengthPct},
-    {L"AoStrength", L"Route C SSAO", &VisualConfig::ao_strength, &SetRouteCAoStrengthPct, &GetRouteCAoStrengthPct},
-    {L"P0SscsStrength", L"P0-2 SSCS + 冷色调", &VisualConfig::p0_sscs_strength, &SetRouteCSscsStrengthPct, &GetRouteCSscsStrengthPct},
-    {L"P1SoftStrength", L"P1 屏幕空间软粒子", &VisualConfig::p1_soft_strength, &SetP1SoftParticlesStrengthPct, &GetP1SoftParticlesStrengthPct},
-    {L"P2AerialStrength", L"P2 空气透视 + 暗角", &VisualConfig::p2_aerial_strength, &SetP2AerialVignetteStrengthPct, &GetP2AerialVignetteStrengthPct},
-    {L"P2SsrStrength", L"P2 水面 SSR 反射", &VisualConfig::p2_ssr_strength, &SetP2SsrStrengthPct, &GetP2SsrStrengthPct},
-    {L"P2FilterStrength", L"P2 画面风格滤镜", &VisualConfig::p2_filter_strength, &SetP2FilterStrengthPct, &GetP2FilterStrengthPct},
-    {L"P2LutStrength", L"P2 3D LUT 调色", &VisualConfig::p2_lut_strength, &SetP2LutStrengthPct, &GetP2LutStrengthPct},
+    {L"Phase3Strength", L"材质法线与边缘光", L"Surface Normals & Rim", &VisualConfig::phase3_strength, &SetPhase3StrengthPct, &GetPhase3StrengthPct},
+    {L"AfPointStrength", L"动态点光增强", L"Dynamic Point Lights", &VisualConfig::af_point_strength, &SetF11PointLightStrengthPct, &GetF11PointLightStrengthPct},
+    {L"P0RimLitStrength", L"微法线 / 高光 / 自发光", L"Micro-Normals / Specular", &VisualConfig::p0_rimlit_strength, &SetP0RimLitStrengthPct, &GetP0RimLitStrengthPct},
+    {L"AoStrength", L"环境光遮蔽 (SSAO)", L"Ambient Occlusion (SSAO)", &VisualConfig::ao_strength, &SetRouteCAoStrengthPct, &GetRouteCAoStrengthPct},
+    {L"P0SscsStrength", L"接触阴影 (SSCS) + 冷色调", L"Contact Shadows (SSCS)", &VisualConfig::p0_sscs_strength, &SetRouteCSscsStrengthPct, &GetRouteCSscsStrengthPct},
+    {L"P1SoftStrength", L"屏幕空间软粒子", L"Soft Particles", &VisualConfig::p1_soft_strength, &SetP1SoftParticlesStrengthPct, &GetP1SoftParticlesStrengthPct},
+    {L"P2AerialStrength", L"空气透视 + 光学暗角", L"Aerial Fog + Vignette", &VisualConfig::p2_aerial_strength, &SetP2AerialVignetteStrengthPct, &GetP2AerialVignetteStrengthPct},
+    {L"P2SsrStrength", L"水面反射 (SSR)", L"Water Reflections (SSR)", &VisualConfig::p2_ssr_strength, &SetP2SsrStrengthPct, &GetP2SsrStrengthPct},
+    {L"P2FilterStrength", L"画面风格滤镜", L"Style Filter", &VisualConfig::p2_filter_strength, &SetP2FilterStrengthPct, &GetP2FilterStrengthPct},
+    {L"P2LutStrength", L"3D LUT 电影调色", L"3D LUT Grading", &VisualConfig::p2_lut_strength, &SetP2LutStrengthPct, &GetP2LutStrengthPct},
 }};
 
 int PctFromTrackX(int local_x) {
@@ -189,11 +214,13 @@ void ApplyEffectStrengthByIndex(int slider_idx, int pct) {
         return;
     }
     const int clamped = ClampStrengthPct(pct);
-    kSliderSpecs[static_cast<size_t>(slider_idx)].set_fn(clamped);
-    wchar_t msg[96] = {};
-    swprintf_s(msg, L"%ls 强度已调至: %d%%",
-               kSliderSpecs[static_cast<size_t>(slider_idx)].label, clamped);
-    g_panel.status_text = msg;
+    const auto& spec = kSliderSpecs[static_cast<size_t>(slider_idx)];
+    spec.set_fn(clamped);
+    wchar_t msg_zh[96] = {};
+    wchar_t msg_en[96] = {};
+    swprintf_s(msg_zh, L"%ls 强度已调至: %d%%", spec.label_zh, clamped);
+    swprintf_s(msg_en, L"%ls strength: %d%%", spec.label_en, clamped);
+    SetStatusBilingualLocked(msg_zh, msg_en);
     g_panel.active_custom_slot = -1;
     g_panel.dirty = true;
 }
@@ -275,6 +302,9 @@ bool SaveConfigFileLocked(const wchar_t* path_override) {
                                             : (g_panel.ini_path.empty() ? ResolveDefaultConfigIniPath()
                                                                         : g_panel.ini_path);
     g_panel.ini_path = target;
+    ::WritePrivateProfileStringW(
+        L"Panel", L"Language", IsEnglishLocked() ? L"en" : L"zh", target.c_str());
+
     const VisualConfig current = CaptureVisualConfigFromEngine();
     SaveVisualConfigToSection(L"Active", current, target.c_str());
 
@@ -287,14 +317,14 @@ bool SaveConfigFileLocked(const wchar_t* path_override) {
     return true;
 }
 
-std::wstring FormatPresetSummary(const VisualConfig& cfg) {
-    const wchar_t* filter_str = L"原";
+std::wstring FormatPresetSummary(const VisualConfig& cfg, bool english) {
+    const wchar_t* filter_str = english ? L"Off" : L"原";
     if (cfg.p2_filter_preset == 1) filter_str = L"Hob";
-    else if (cfg.p2_filter_preset == 2) filter_str = L"暗";
+    else if (cfg.p2_filter_preset == 2) filter_str = english ? L"Dark" : L"暗";
 
     const wchar_t* lut_str = L"";
-    if (cfg.p2_lut_preset == 1) lut_str = L"·暖";
-    else if (cfg.p2_lut_preset == 2) lut_str = L"·冷";
+    if (cfg.p2_lut_preset == 1) lut_str = english ? L"·Warm" : L"·暖";
+    else if (cfg.p2_lut_preset == 2) lut_str = english ? L"·Cold" : L"·冷";
     else if (cfg.p2_lut_preset == 3) lut_str = L"·CUBE";
 
     int on_count = 0;
@@ -312,88 +342,109 @@ std::wstring FormatPresetSummary(const VisualConfig& cfg) {
     return buf;
 }
 
-constexpr size_t kHitZoneCount = 53;
+constexpr size_t kHitZoneCount = 54;
 
 std::array<HitZone, kHitZoneCount> BuildHitZones() {
     std::array<HitZone, kHitZoneCount> zones{};
     size_t idx = 0;
 
-    // 0: Close [X] button (must be tested before TitleDrag!)
+    // Close [X] & Language toggle buttons (must be tested before TitleDrag!)
     zones[idx++] = {RECT{static_cast<LONG>(kPanelWidth - 38), 7,
                          static_cast<LONG>(kPanelWidth - 10), 35},
-                    HitTargetKind::CloseButton, L"×"};
-    // 1: Title bar drag region
+                    HitTargetKind::CloseButton, L"×", L"×"};
+    zones[idx++] = {RECT{474, 8, 564, 34},
+                    HitTargetKind::ToggleLanguage, L"语言: 中文", L"Lang: EN"};
+    // Title bar drag region
     zones[idx++] = {RECT{0, 0, static_cast<LONG>(kPanelWidth), kTitleBarHeight},
-                    HitTargetKind::TitleDrag, L""};
+                    HitTargetKind::TitleDrag, L"", L""};
 
-    // 2..3: Select All / Clear All batch toggles on Section 1 header bar
-    zones[idx++] = {RECT{430, 46, 508, 65}, HitTargetKind::ToggleAllOn, L"全部开启"};
-    zones[idx++] = {RECT{516, 46, 594, 65}, HitTargetKind::ToggleAllOff, L"全部关闭"};
+    // Select All / Clear All / Reset 100% buttons on Section 1 header bar
+    zones[idx++] = {RECT{428, 46, 508, 65}, HitTargetKind::ToggleAllOn, L"全部开启", L"Enable All"};
+    zones[idx++] = {RECT{514, 46, 594, 65}, HitTargetKind::ToggleAllOff, L"全部关闭", L"Disable All"};
 
-    // 4..11: 8 Feature checkboxes (left half of each row)
+    // 8 Feature checkboxes (left half of each row) — clean feature names only
     const struct {
         HitTargetKind kind;
-        const wchar_t* label;
+        const wchar_t* label_zh;
+        const wchar_t* label_en;
     } kToggles[8] = {
-        {HitTargetKind::TogglePhase3, L"Phase 3 材质法线与边缘光总开关"},
-        {HitTargetKind::ToggleAfPoint, L"16x 各向异性过滤 + 动态点光增强"},
-        {HitTargetKind::ToggleP0RimLit, L"P0-1 RimLit 微法线 / 金属高光 / _GLO 自发光"},
-        {HitTargetKind::ToggleAo, L"Route C 屏幕空间环境光遮蔽 (SSAO)"},
-        {HitTargetKind::ToggleP0Sscs, L"P0-2 全分辨率接触阴影 (SSCS) + 冷色调曲线"},
-        {HitTargetKind::ToggleP1SoftParticles, L"P1 屏幕空间软粒子 (消除火焰/光晕硬切线)"},
-        {HitTargetKind::ToggleP2AerialVignette, L"P2 深度空气透视 + 光学暗角 (纵深聚焦)"},
-        {HitTargetKind::ToggleP2Ssr, L"P2 局部水面/湿地屏幕空间反射 (SSR)"},
+        {HitTargetKind::TogglePhase3,
+         L"材质法线细节与边缘光增强",
+         L"Surface Normals & Rim Lighting"},
+        {HitTargetKind::ToggleAfPoint,
+         L"16x 各向异性过滤 + 动态点光增强",
+         L"16x Anisotropic Filter + Point Lights"},
+        {HitTargetKind::ToggleP0RimLit,
+         L"微法线细节 / 金属高光 / 纹理自发光",
+         L"Micro-Normals / Specular / Emissive"},
+        {HitTargetKind::ToggleAo,
+         L"屏幕空间环境光遮蔽 (SSAO)",
+         L"Screen-Space Ambient Occlusion (SSAO)"},
+        {HitTargetKind::ToggleP0Sscs,
+         L"全分辨率接触阴影 (SSCS) + 冷色调曲线",
+         L"Contact Shadows (SSCS) + Cool Tone"},
+        {HitTargetKind::ToggleP1SoftParticles,
+         L"屏幕空间软粒子 (消除火焰/光晕硬切线)",
+         L"Soft Particles (Smooth Glow Edges)"},
+        {HitTargetKind::ToggleP2AerialVignette,
+         L"深度空气透视 + 光学暗角 (纵深聚焦)",
+         L"Aerial Perspective + Optical Vignette"},
+        {HitTargetKind::ToggleP2Ssr,
+         L"局部水面/湿地屏幕空间反射 (SSR)",
+         L"Water / Puddle Reflections (SSR)"},
     };
     int y = 72;
     for (const auto& t : kToggles) {
         zones[idx++] = {RECT{kPaddingX, y, kSliderZoneLeft - 4, y + 27},
-                        t.kind, t.label};
+                        t.kind, t.label_zh, t.label_en};
         y += 30;
     }
 
-    // 12..14: P2 Filter pills
+    // Visual Style Filter pills
     y = 340;
     const int pill_w = 186;
     const int pill_gap = 10;
     zones[idx++] = {RECT{kPaddingX, y, kPaddingX + pill_w, y + 28},
-                    HitTargetKind::FilterOff, L"关闭滤镜"};
+                    HitTargetKind::FilterOff, L"关闭滤镜", L"Filter Off"};
     zones[idx++] = {RECT{kPaddingX + (pill_w + pill_gap), y,
                          kPaddingX + (pill_w + pill_gap) + pill_w, y + 28},
-                    HitTargetKind::FilterHob, L"Hob 明快"};
+                    HitTargetKind::FilterHob, L"Hob 明快", L"Hob Vibrant"};
     zones[idx++] = {RECT{kPaddingX + 2 * (pill_w + pill_gap), y,
                          kPaddingX + 2 * (pill_w + pill_gap) + pill_w, y + 28},
-                    HitTargetKind::FilterDark, L"暗黑胶片"};
+                    HitTargetKind::FilterDark, L"暗黑胶片", L"Dark Film"};
 
-    // 15..18: P2 3D LUT pills (4 pills)
+    // 3D LUT Color Grading pills (4 pills)
     y = 398;
     const int lut_w = 138;
     const int lut_gap = 8;
     const struct {
         HitTargetKind kind;
-        const wchar_t* label;
+        const wchar_t* label_zh;
+        const wchar_t* label_en;
     } kLuts[4] = {
-        {HitTargetKind::LutOff, L"关闭调色"},
-        {HitTargetKind::LutTealOrange, L"映画暖青"},
-        {HitTargetKind::LutColdNordic, L"冷峻史诗"},
-        {HitTargetKind::LutCustomCube, L"外部 .cube"},
+        {HitTargetKind::LutOff, L"关闭调色", L"LUT Off"},
+        {HitTargetKind::LutTealOrange, L"映画暖青", L"Teal & Orange"},
+        {HitTargetKind::LutColdNordic, L"冷峻史诗", L"Cold Nordic"},
+        {HitTargetKind::LutCustomCube, L"外部 .cube", L"Custom .cube"},
     };
     for (int i = 0; i < 4; ++i) {
         const int lx = kPaddingX + i * (lut_w + lut_gap);
-        zones[idx++] = {RECT{lx, y, lx + lut_w, y + 28}, kLuts[i].kind, kLuts[i].label};
+        zones[idx++] = {RECT{lx, y, lx + lut_w, y + 28},
+                        kLuts[i].kind, kLuts[i].label_zh, kLuts[i].label_en};
     }
 
-    // 19..21: Built-in presets
+    // Built-in presets
     y = 456;
     zones[idx++] = {RECT{kPaddingX, y, kPaddingX + pill_w, y + 28},
-                    HitTargetKind::BuiltinFullHd, L"全开高清"};
+                    HitTargetKind::BuiltinFullHd, L"全开高清", L"Full HD+"};
     zones[idx++] = {RECT{kPaddingX + (pill_w + pill_gap), y,
                          kPaddingX + (pill_w + pill_gap) + pill_w, y + 28},
-                    HitTargetKind::BuiltinDarkDungeon, L"暗黑地牢"};
+                    HitTargetKind::BuiltinDarkDungeon, L"暗黑地牢", L"Dark Dungeon"};
     zones[idx++] = {RECT{kPaddingX + 2 * (pill_w + pill_gap), y,
                          kPaddingX + 2 * (pill_w + pill_gap) + pill_w, y + 28},
-                    HitTargetKind::BuiltinVanilla, L"纯原版"};
+                    HitTargetKind::BuiltinVanilla, L"纯原版", L"Vanilla"};
 
-    // 22..41: 10 Custom preset slots (2 columns x 5 rows, Load + Save)
+    // 10 Custom preset slots (2 columns x 5 rows, Load + Save)
     const int base_y = 516;
     const int col_w = 284;
     const int col_gap = 10;
@@ -407,23 +458,23 @@ std::array<HitZone, kHitZoneCount> BuildHitZones() {
         const int ry = base_y + row * 30;
         const auto load_kind = static_cast<HitTargetKind>(static_cast<int>(HitTargetKind::CustomLoad0) + i);
         const auto save_kind = static_cast<HitTargetKind>(static_cast<int>(HitTargetKind::CustomSave0) + i);
-        zones[idx++] = {RECT{cx, ry, cx + load_w, ry + 27}, load_kind, L""};
-        zones[idx++] = {RECT{cx + load_w + save_gap, ry, cx + col_w, ry + 27}, save_kind, L"保存"};
+        zones[idx++] = {RECT{cx, ry, cx + load_w, ry + 27}, load_kind, L"", L""};
+        zones[idx++] = {RECT{cx + load_w + save_gap, ry, cx + col_w, ry + 27}, save_kind, L"保存", L"Save"};
     }
 
-    // 42: Reset all effect strengths back to 100%
-    zones[idx++] = {RECT{350, 46, 422, 65}, HitTargetKind::ResetStrengths, L"强度归位"};
+    // Reset all effect strengths back to 100%
+    zones[idx++] = {RECT{332, 46, 420, 65}, HitTargetKind::ResetStrengths, L"强度归位", L"Reset 100%"};
 
-    // 43..50: Sliders 0..7 on the right half of the 8 toggle rows
+    // Sliders 0..7 on the right half of the 8 toggle rows
     y = 72;
     for (int i = 0; i < 8; ++i) {
         const auto s_kind = static_cast<HitTargetKind>(static_cast<int>(HitTargetKind::Slider0) + i);
-        zones[idx++] = {RECT{kSliderZoneLeft, y, kSliderZoneRight, y + 27}, s_kind, L""};
+        zones[idx++] = {RECT{kSliderZoneLeft, y, kSliderZoneRight, y + 27}, s_kind, L"", L""};
         y += 30;
     }
-    // 51..52: Sliders 8..9 on Section 2 & Section 3 headers
-    zones[idx++] = {RECT{kSliderZoneLeft, 314, kSliderZoneRight, 336}, HitTargetKind::Slider8, L""};
-    zones[idx++] = {RECT{kSliderZoneLeft, 372, kSliderZoneRight, 394}, HitTargetKind::Slider9, L""};
+    // Sliders 8..9 on Section 2 & Section 3 headers
+    zones[idx++] = {RECT{kSliderZoneLeft, 314, kSliderZoneRight, 336}, HitTargetKind::Slider8, L"", L""};
+    zones[idx++] = {RECT{kSliderZoneLeft, 372, kSliderZoneRight, 394}, HitTargetKind::Slider9, L"", L""};
 
     return zones;
 }
@@ -431,6 +482,16 @@ std::array<HitZone, kHitZoneCount> BuildHitZones() {
 const std::array<HitZone, kHitZoneCount>& GetHitZones() {
     static const std::array<HitZone, kHitZoneCount> kZones = BuildHitZones();
     return kZones;
+}
+
+size_t ZoneIndexByKind(HitTargetKind kind) {
+    const auto& zones = GetHitZones();
+    for (size_t i = 0; i < zones.size(); ++i) {
+        if (zones[i].kind == kind) {
+            return i;
+        }
+    }
+    return 0;
 }
 
 int HitTestPanelLocal(int local_x, int local_y) {
@@ -665,22 +726,37 @@ void PaintPanelToDibLocked() {
     ::SelectObject(dc, old_sep);
     ::DeleteObject(sep);
 
+    const bool en = IsEnglishLocked();
     DrawTextBox(dc, g_panel.font_title, RGB(238, 245, 255),
-                RECT{kPaddingX, 0, static_cast<LONG>(kPanelWidth - 46), kTitleBarHeight},
-                L"TL2 DX11 画质增强面板  [F8]", DT_LEFT | DT_VCENTER);
+                RECT{kPaddingX, 0, 466, kTitleBarHeight},
+                PickLang(L"TL2 DX11 画质增强面板  [F8]", L"TL2 DX11 Graphics Panel  [F8]"),
+                DT_LEFT | DT_VCENTER);
+
+    // Language switch button (ZH / EN)
+    {
+        const size_t lang_idx = ZoneIndexByKind(HitTargetKind::ToggleLanguage);
+        const bool hovered = (g_panel.hover_index == static_cast<int>(lang_idx));
+        DrawBorderRect(dc, zones[lang_idx].rect,
+                       en ? (hovered ? RGB(52, 98, 152) : RGB(36, 72, 118))
+                          : (hovered ? RGB(52, 72, 102) : RGB(34, 46, 66)),
+                       hovered ? RGB(130, 198, 255) : RGB(78, 116, 162), 5);
+        DrawTextBox(dc, g_panel.font_small, RGB(228, 242, 255),
+                    zones[lang_idx].rect, ZoneLabel(zones[lang_idx]), DT_CENTER | DT_VCENTER);
+    }
 
     // Close [X] button
     {
-        const bool hovered = (g_panel.hover_index == 0);
-        DrawBorderRect(dc, zones[0].rect,
+        const size_t close_idx = ZoneIndexByKind(HitTargetKind::CloseButton);
+        const bool hovered = (g_panel.hover_index == static_cast<int>(close_idx));
+        DrawBorderRect(dc, zones[close_idx].rect,
                        hovered ? RGB(176, 52, 62) : RGB(44, 52, 68),
                        hovered ? RGB(235, 110, 120) : RGB(78, 92, 118), 5);
-        DrawTextBox(dc, g_panel.font_title, RGB(240, 244, 250), zones[0].rect, L"×",
+        DrawTextBox(dc, g_panel.font_title, RGB(240, 244, 250), zones[close_idx].rect, L"×",
                     DT_CENTER | DT_VCENTER);
     }
 
-    // Section 1: 8 Feature toggles + batch [全部开启] / [全部关闭]
-    DrawSectionHeader(dc, 48, L"实时渲染与 P0 / P1 / P2 画质开关");
+    // Section 1: 8 Feature toggles + batch [Reset] / [Enable All] / [Disable All]
+    DrawSectionHeader(dc, 48, PickLang(L"实时渲染与画质开关", L"Real-Time Render Toggles"));
     const bool toggle_states[8] = {
         cfg.phase3_enhance,
         cfg.af_point_enhance,
@@ -701,33 +777,38 @@ void PaintPanelToDibLocked() {
         }
     }
     {
-        const bool h_rst = (g_panel.hover_index == 42);
-        DrawBorderRect(dc, zones[42].rect,
+        const size_t rst_idx = ZoneIndexByKind(HitTargetKind::ResetStrengths);
+        const bool h_rst = (g_panel.hover_index == static_cast<int>(rst_idx));
+        DrawBorderRect(dc, zones[rst_idx].rect,
                        all_default_str ? RGB(26, 36, 48) : (h_rst ? RGB(58, 86, 128) : RGB(36, 56, 86)),
                        all_default_str ? RGB(58, 74, 98) : (h_rst ? RGB(126, 192, 255) : RGB(94, 152, 220)), 5);
         DrawTextBox(dc, g_panel.font_small,
                     all_default_str ? RGB(156, 176, 204) : RGB(224, 240, 255),
-                    zones[42].rect, zones[42].label, DT_CENTER | DT_VCENTER);
+                    zones[rst_idx].rect, ZoneLabel(zones[rst_idx]), DT_CENTER | DT_VCENTER);
 
-        const bool h_on = (g_panel.hover_index == 2);
-        DrawBorderRect(dc, zones[2].rect,
+        const size_t on_idx = ZoneIndexByKind(HitTargetKind::ToggleAllOn);
+        const bool h_on = (g_panel.hover_index == static_cast<int>(on_idx));
+        DrawBorderRect(dc, zones[on_idx].rect,
                        all_on ? RGB(36, 120, 88) : (h_on ? RGB(42, 68, 58) : RGB(26, 36, 48)),
                        all_on ? RGB(104, 228, 174) : (h_on ? RGB(92, 186, 142) : RGB(56, 78, 96)), 5);
         DrawTextBox(dc, g_panel.font_small,
                     all_on ? RGB(240, 255, 248) : RGB(178, 224, 198),
-                    zones[2].rect, zones[2].label, DT_CENTER | DT_VCENTER);
+                    zones[on_idx].rect, ZoneLabel(zones[on_idx]), DT_CENTER | DT_VCENTER);
 
-        const bool h_off = (g_panel.hover_index == 3);
-        DrawBorderRect(dc, zones[3].rect,
+        const size_t off_idx = ZoneIndexByKind(HitTargetKind::ToggleAllOff);
+        const bool h_off = (g_panel.hover_index == static_cast<int>(off_idx));
+        DrawBorderRect(dc, zones[off_idx].rect,
                        all_off ? RGB(126, 52, 58) : (h_off ? RGB(68, 42, 52) : RGB(26, 36, 48)),
                        all_off ? RGB(232, 118, 128) : (h_off ? RGB(188, 98, 108) : RGB(68, 62, 82)), 5);
         DrawTextBox(dc, g_panel.font_small,
                     all_off ? RGB(255, 240, 242) : RGB(224, 182, 188),
-                    zones[3].rect, zones[3].label, DT_CENTER | DT_VCENTER);
+                    zones[off_idx].rect, ZoneLabel(zones[off_idx]), DT_CENTER | DT_VCENTER);
     }
     for (int i = 0; i < 8; ++i) {
-        const size_t z_idx = static_cast<size_t>(4 + i);
-        const size_t s_idx = static_cast<size_t>(43 + i);
+        const size_t z_idx = ZoneIndexByKind(
+            static_cast<HitTargetKind>(static_cast<int>(HitTargetKind::TogglePhase3) + i));
+        const size_t s_idx = ZoneIndexByKind(
+            static_cast<HitTargetKind>(static_cast<int>(HitTargetKind::Slider0) + i));
         const RECT& tog_r = zones[z_idx].rect;
         const RECT& sld_r = zones[s_idx].rect;
         const RECT row_r{tog_r.left, tog_r.top, sld_r.right, tog_r.bottom};
@@ -755,28 +836,33 @@ void PaintPanelToDibLocked() {
         RECT text_r{tog_r.left + 32, tog_r.top, tog_r.right - 38, tog_r.bottom};
         DrawTextBox(dc, g_panel.font_body,
                     on ? RGB(232, 240, 250) : RGB(148, 158, 176),
-                    text_r, zones[z_idx].label, DT_LEFT | DT_VCENTER);
+                    text_r, ZoneLabel(zones[z_idx]), DT_LEFT | DT_VCENTER);
 
         RECT tag_r{tog_r.right - 38, tog_r.top, tog_r.right - 4, tog_r.bottom};
         DrawTextBox(dc, g_panel.font_small,
                     on ? RGB(102, 232, 170) : RGB(128, 134, 150),
-                    tag_r, on ? L"开启" : L"关闭", DT_RIGHT | DT_VCENTER);
+                    tag_r, on ? PickLang(L"开启", L"ON") : PickLang(L"关闭", L"OFF"),
+                    DT_RIGHT | DT_VCENTER);
 
         // Interactive strength slider
         DrawIntensitySlider(dc, sld_r, cfg.*(kSliderSpecs[static_cast<size_t>(i)].member),
                             on, sld_hover, sld_drag);
     }
 
-    // Section 2: P2 Filter pills + strength slider on header bar
-    DrawSectionHeader(dc, 318, L"P2 画面风格滤镜");
+    // Section 2: Style Filter pills + strength slider on header bar
+    DrawSectionHeader(dc, 318, PickLang(L"画面风格滤镜", L"Visual Style Filter"));
     DrawTextBox(dc, g_panel.font_small, RGB(154, 176, 206),
-                RECT{372, 314, 406, 336}, L"强度", DT_RIGHT | DT_VCENTER);
-    DrawIntensitySlider(dc, zones[51].rect, cfg.p2_filter_strength,
-                        cfg.p2_filter_preset > 0,
-                        g_panel.hover_index == 51,
-                        g_panel.active_slider_index == 8);
+                RECT{344, 314, 406, 336}, PickLang(L"强度", L"Strength"), DT_RIGHT | DT_VCENTER);
+    {
+        const size_t s8_idx = ZoneIndexByKind(HitTargetKind::Slider8);
+        DrawIntensitySlider(dc, zones[s8_idx].rect, cfg.p2_filter_strength,
+                            cfg.p2_filter_preset > 0,
+                            g_panel.hover_index == static_cast<int>(s8_idx),
+                            g_panel.active_slider_index == 8);
+    }
     for (int i = 0; i < 3; ++i) {
-        const size_t z_idx = static_cast<size_t>(12 + i);
+        const size_t z_idx = ZoneIndexByKind(
+            static_cast<HitTargetKind>(static_cast<int>(HitTargetKind::FilterOff) + i));
         const RECT& r = zones[z_idx].rect;
         const bool active = (cfg.p2_filter_preset == i);
         const bool hovered = (g_panel.hover_index == static_cast<int>(z_idx));
@@ -787,22 +873,27 @@ void PaintPanelToDibLocked() {
         DrawBorderRect(dc, r, fill, border, 6);
         DrawTextBox(dc, active ? g_panel.font_section : g_panel.font_body,
                     active ? RGB(248, 252, 255) : RGB(196, 206, 224),
-                    r, zones[z_idx].label, DT_CENTER | DT_VCENTER);
+                    r, ZoneLabel(zones[z_idx]), DT_CENTER | DT_VCENTER);
     }
 
-    // Section 3: P2 3D LUT Color Grading pills + hint + strength slider on header bar
-    DrawSectionHeader(dc, 376, L"P2 3D LUT 电影调色");
+    // Section 3: 3D LUT Color Grading pills + hint + strength slider on header bar
+    DrawSectionHeader(dc, 376, PickLang(L"3D LUT 电影调色", L"3D LUT Color Grading"));
     DrawTextBox(dc, g_panel.font_small, RGB(218, 182, 116),
-                RECT{kPaddingX + 144, 372, 370, 394},
-                L"外部: 根目录 TL2_CustomLUT.cube", DT_LEFT | DT_VCENTER);
+                RECT{174, 372, 344, 394},
+                PickLang(L"外部: TL2_CustomLUT.cube", L"File: TL2_CustomLUT.cube"),
+                DT_LEFT | DT_VCENTER);
     DrawTextBox(dc, g_panel.font_small, RGB(154, 176, 206),
-                RECT{372, 372, 406, 394}, L"强度", DT_RIGHT | DT_VCENTER);
-    DrawIntensitySlider(dc, zones[52].rect, cfg.p2_lut_strength,
-                        cfg.p2_lut_preset > 0,
-                        g_panel.hover_index == 52,
-                        g_panel.active_slider_index == 9);
+                RECT{344, 372, 406, 394}, PickLang(L"强度", L"Strength"), DT_RIGHT | DT_VCENTER);
+    {
+        const size_t s9_idx = ZoneIndexByKind(HitTargetKind::Slider9);
+        DrawIntensitySlider(dc, zones[s9_idx].rect, cfg.p2_lut_strength,
+                            cfg.p2_lut_preset > 0,
+                            g_panel.hover_index == static_cast<int>(s9_idx),
+                            g_panel.active_slider_index == 9);
+    }
     for (int i = 0; i < 4; ++i) {
-        const size_t z_idx = static_cast<size_t>(15 + i);
+        const size_t z_idx = ZoneIndexByKind(
+            static_cast<HitTargetKind>(static_cast<int>(HitTargetKind::LutOff) + i));
         const RECT& r = zones[z_idx].rect;
         const bool active = (cfg.p2_lut_preset == i);
         const bool hovered = (g_panel.hover_index == static_cast<int>(z_idx));
@@ -813,13 +904,14 @@ void PaintPanelToDibLocked() {
         DrawBorderRect(dc, r, fill, border, 6);
         DrawTextBox(dc, active ? g_panel.font_section : g_panel.font_body,
                     active ? RGB(255, 248, 236) : RGB(196, 206, 224),
-                    r, zones[z_idx].label, DT_CENTER | DT_VCENTER);
+                    r, ZoneLabel(zones[z_idx]), DT_CENTER | DT_VCENTER);
     }
 
     // Section 4: Built-in presets
-    DrawSectionHeader(dc, 434, L"内置预设 (一键切换)");
+    DrawSectionHeader(dc, 434, PickLang(L"内置预设 (一键切换)", L"Built-in Presets (One-Click)"));
     for (int i = 0; i < 3; ++i) {
-        const size_t z_idx = static_cast<size_t>(19 + i);
+        const size_t z_idx = ZoneIndexByKind(
+            static_cast<HitTargetKind>(static_cast<int>(HitTargetKind::BuiltinFullHd) + i));
         const RECT& r = zones[z_idx].rect;
         const bool matches = (cfg == MakeBuiltinPreset(i));
         const bool hovered = (g_panel.hover_index == static_cast<int>(z_idx));
@@ -830,14 +922,18 @@ void PaintPanelToDibLocked() {
         DrawBorderRect(dc, r, fill, border, 6);
         DrawTextBox(dc, matches ? g_panel.font_section : g_panel.font_body,
                     matches ? RGB(244, 255, 250) : RGB(198, 208, 224),
-                    r, zones[z_idx].label, DT_CENTER | DT_VCENTER);
+                    r, ZoneLabel(zones[z_idx]), DT_CENTER | DT_VCENTER);
     }
 
     // Section 5: 10 Custom Presets (2 columns x 5 rows)
-    DrawSectionHeader(dc, 492, L"自定义预设 (10个槽位 · 点击名称切换 / 点 [保存] 覆盖)");
+    DrawSectionHeader(dc, 492,
+                      PickLang(L"自定义预设 (10个槽位 · 点击名称切换 / 点 [保存] 覆盖)",
+                               L"Custom Presets (10 Slots · Click Slot to Load / [Save])"));
     for (int i = 0; i < kCustomPresetCount; ++i) {
-        const size_t load_idx = static_cast<size_t>(22 + i * 2);
-        const size_t save_idx = load_idx + 1;
+        const size_t load_idx = ZoneIndexByKind(
+            static_cast<HitTargetKind>(static_cast<int>(HitTargetKind::CustomLoad0) + i));
+        const size_t save_idx = ZoneIndexByKind(
+            static_cast<HitTargetKind>(static_cast<int>(HitTargetKind::CustomSave0) + i));
         const PresetSlot& slot = g_panel.presets[static_cast<size_t>(i)];
 
         const bool load_hover = (g_panel.hover_index == static_cast<int>(load_idx));
@@ -851,11 +947,11 @@ void PaintPanelToDibLocked() {
 
         wchar_t slot_label[96] = {};
         if (slot.used) {
-            const std::wstring summary = FormatPresetSummary(slot.cfg);
-            swprintf_s(slot_label, L"预设%d [%ls]%ls", i + 1, summary.c_str(),
-                       (cfg == slot.cfg) ? L"★" : L"");
+            const std::wstring summary = FormatPresetSummary(slot.cfg, en);
+            swprintf_s(slot_label, en ? L"Slot %d [%ls]%ls" : L"预设%d [%ls]%ls",
+                       i + 1, summary.c_str(), (cfg == slot.cfg) ? L"★" : L"");
         } else {
-            swprintf_s(slot_label, L"预设 %d  (空)", i + 1);
+            swprintf_s(slot_label, en ? L"Slot %d  (Empty)" : L"预设 %d  (空)", i + 1);
         }
         RECT label_r = zones[load_idx].rect;
         label_r.left += 7;
@@ -868,18 +964,25 @@ void PaintPanelToDibLocked() {
         DrawBorderRect(dc, zones[save_idx].rect,
                        save_hover ? RGB(60, 120, 88) : RGB(32, 42, 58),
                        save_hover ? RGB(116, 224, 164) : RGB(66, 82, 108), 5);
-        DrawTextBox(dc, g_panel.font_small, RGB(214, 242, 224), zones[save_idx].rect, L"保存",
-                    DT_CENTER | DT_VCENTER);
+        DrawTextBox(dc, g_panel.font_small, RGB(214, 242, 224), zones[save_idx].rect,
+                    ZoneLabel(zones[save_idx]), DT_CENTER | DT_VCENTER);
     }
 
     // Bottom footer bar
-    const wchar_t* footer_text = g_panel.status_text.c_str();
+    const wchar_t* footer_text = en ? g_panel.status_en.c_str() : g_panel.status_zh.c_str();
     if (g_panel.hover_index >= 0 &&
-        static_cast<size_t>(g_panel.hover_index) < zones.size() &&
-        zones[static_cast<size_t>(g_panel.hover_index)].kind == HitTargetKind::LutCustomCube) {
-        footer_text = IsP2CustomCubeLutLoaded()
-                          ? L"已检测到 <游戏根目录>\\TL2_CustomLUT.cube，点击即可启用（支持热重载）"
-                          : L"用法: 将 3D .cube 改名为 TL2_CustomLUT.cube 放游戏根目录（支持热重载）";
+        static_cast<size_t>(g_panel.hover_index) < zones.size()) {
+        const HitTargetKind hover_kind = zones[static_cast<size_t>(g_panel.hover_index)].kind;
+        if (hover_kind == HitTargetKind::LutCustomCube) {
+            footer_text = IsP2CustomCubeLutLoaded()
+                              ? PickLang(L"已检测到 <游戏根目录>\\TL2_CustomLUT.cube，点击即可启用（支持热重载）",
+                                         L"Detected <GameRoot>\\TL2_CustomLUT.cube — click to enable (hot-reload)")
+                              : PickLang(L"用法: 将 3D .cube 改名为 TL2_CustomLUT.cube 放游戏根目录（支持热重载）",
+                                         L"Usage: Rename 3D .cube to TL2_CustomLUT.cube in game root (hot-reload)");
+        } else if (hover_kind == HitTargetKind::ToggleLanguage) {
+            footer_text = PickLang(L"点击实时切换中英文界面 (当前: 简体中文)",
+                                   L"Click to switch UI language in real time (Current: English)");
+        }
     }
     FillSolidRect(dc, RECT{0, static_cast<LONG>(kPanelHeight - 30),
                            static_cast<LONG>(kPanelWidth), static_cast<LONG>(kPanelHeight)},
@@ -903,12 +1006,19 @@ void HandleHitClickLocked(int hit_idx) {
             g_panel.dragging = false;
             g_panel.active_slider_index = -1;
             return;
+        case HitTargetKind::ToggleLanguage:
+            g_panel.language =
+                (g_panel.language == UiLanguage::ZhCn) ? UiLanguage::EnUs : UiLanguage::ZhCn;
+            SetStatusBilingualLocked(L"界面语言已切换为: 简体中文",
+                                     L"UI language switched to: English");
+            break;
         case HitTargetKind::ResetStrengths: {
             for (const auto& spec : kSliderSpecs) {
                 spec.set_fn(100);
             }
             g_panel.active_custom_slot = -1;
-            g_panel.status_text = L"已将全部 10 项渲染强度恢复为默认 100%";
+            SetStatusBilingualLocked(L"已将全部 10 项渲染强度恢复为默认 100%",
+                                     L"All 10 render strength sliders reset to 100%");
             break;
         }
         case HitTargetKind::ToggleAllOn:
@@ -925,110 +1035,176 @@ void HandleHitClickLocked(int hit_idx) {
             next_cfg.p2_ssr_enabled = enable_all;
             ApplyVisualConfigToEngine(next_cfg);
             g_panel.active_custom_slot = -1;
-            g_panel.status_text = enable_all ? L"已全部开启 8 项实时渲染效果"
-                                             : L"已全部关闭 8 项实时渲染效果 (便于原版对比)";
+            if (enable_all) {
+                SetStatusBilingualLocked(L"已全部开启 8 项实时渲染效果",
+                                         L"Enabled all 8 real-time render effects");
+            } else {
+                SetStatusBilingualLocked(L"已全部关闭 8 项实时渲染效果 (便于原版对比)",
+                                         L"Disabled all 8 render effects (vanilla comparison)");
+            }
             break;
         }
         case HitTargetKind::TogglePhase3: {
             const bool next = TogglePhase3RuntimeEnhance();
             g_panel.active_custom_slot = -1;
-            g_panel.status_text = next ? L"已开启: Phase 3 材质/边缘光" : L"已关闭: Phase 3 (仅基础场景)";
+            if (next) {
+                SetStatusBilingualLocked(L"已开启: 材质法线细节与边缘光",
+                                         L"Enabled: Surface Normals & Rim Lighting");
+            } else {
+                SetStatusBilingualLocked(L"已关闭: 材质法线细节与边缘光",
+                                         L"Disabled: Surface Normals & Rim Lighting");
+            }
             break;
         }
         case HitTargetKind::ToggleAfPoint: {
             const bool next = ToggleF11VisualEnhance();
             g_panel.active_custom_slot = -1;
-            g_panel.status_text = next ? L"已开启: 16x AF + 点光增强" : L"已关闭: 16x AF + 点光增强";
+            if (next) {
+                SetStatusBilingualLocked(L"已开启: 16x 各向异性过滤 + 动态点光增强",
+                                         L"Enabled: 16x Anisotropic Filter + Point Lights");
+            } else {
+                SetStatusBilingualLocked(L"已关闭: 16x 各向异性过滤 + 动态点光增强",
+                                         L"Disabled: 16x Anisotropic Filter + Point Lights");
+            }
             break;
         }
         case HitTargetKind::ToggleP0RimLit: {
             const bool next = ToggleP0RimLitEnhance();
             g_panel.active_custom_slot = -1;
-            g_panel.status_text = next ? L"已开启: P0-1 RimLit / _GLO" : L"已关闭: P0-1 RimLit 增强";
+            if (next) {
+                SetStatusBilingualLocked(L"已开启: 微法线细节 / 金属高光 / 纹理自发光",
+                                         L"Enabled: Micro-Normals / Specular / Emissive");
+            } else {
+                SetStatusBilingualLocked(L"已关闭: 微法线细节 / 金属高光 / 纹理自发光",
+                                         L"Disabled: Micro-Normals / Specular / Emissive");
+            }
             break;
         }
         case HitTargetKind::ToggleAo: {
             const bool next = ToggleRouteCAoRuntimeEnabled();
             g_panel.active_custom_slot = -1;
-            g_panel.status_text = next ? L"已开启: Route C SSAO" : L"已关闭: Route C SSAO";
+            if (next) {
+                SetStatusBilingualLocked(L"已开启: 屏幕空间环境光遮蔽 (SSAO)",
+                                         L"Enabled: Screen-Space Ambient Occlusion (SSAO)");
+            } else {
+                SetStatusBilingualLocked(L"已关闭: 屏幕空间环境光遮蔽 (SSAO)",
+                                         L"Disabled: Screen-Space Ambient Occlusion (SSAO)");
+            }
             break;
         }
         case HitTargetKind::ToggleP0Sscs: {
             const bool next = !IsRouteCSscsRuntimeEnabled();
             SetRouteCSscsRuntimeEnabled(next);
             g_panel.active_custom_slot = -1;
-            g_panel.status_text = next ? L"已开启: P0-2 SSCS + 冷色调" : L"已关闭: P0-2 SSCS + 冷色调";
+            if (next) {
+                SetStatusBilingualLocked(L"已开启: 全分辨率接触阴影 (SSCS) + 冷色调",
+                                         L"Enabled: Contact Shadows (SSCS) + Cool Tone");
+            } else {
+                SetStatusBilingualLocked(L"已关闭: 全分辨率接触阴影 (SSCS) + 冷色调",
+                                         L"Disabled: Contact Shadows (SSCS) + Cool Tone");
+            }
             break;
         }
         case HitTargetKind::ToggleP1SoftParticles: {
             const bool next = ToggleP1SoftParticlesEnabled();
             g_panel.active_custom_slot = -1;
-            g_panel.status_text = next ? L"已开启: P1 屏幕空间软粒子" : L"已关闭: P1 屏幕空间软粒子";
+            if (next) {
+                SetStatusBilingualLocked(L"已开启: 屏幕空间软粒子",
+                                         L"Enabled: Screen-Space Soft Particles");
+            } else {
+                SetStatusBilingualLocked(L"已关闭: 屏幕空间软粒子",
+                                         L"Disabled: Screen-Space Soft Particles");
+            }
             break;
         }
         case HitTargetKind::ToggleP2AerialVignette: {
             const bool next = ToggleP2AerialVignetteEnabled();
             g_panel.active_custom_slot = -1;
-            g_panel.status_text = next ? L"已开启: P2 深度空气透视 + 光学暗角" : L"已关闭: P2 深度空气透视 + 光学暗角";
+            if (next) {
+                SetStatusBilingualLocked(L"已开启: 深度空气透视 + 光学暗角",
+                                         L"Enabled: Aerial Perspective + Optical Vignette");
+            } else {
+                SetStatusBilingualLocked(L"已关闭: 深度空气透视 + 光学暗角",
+                                         L"Disabled: Aerial Perspective + Optical Vignette");
+            }
             break;
         }
         case HitTargetKind::ToggleP2Ssr: {
             const bool next = ToggleP2SsrEnabled();
             g_panel.active_custom_slot = -1;
-            g_panel.status_text = next ? L"已开启: P2 水面/湿地屏幕空间反射 (SSR)" : L"已关闭: P2 水面/湿地屏幕空间反射";
+            if (next) {
+                SetStatusBilingualLocked(L"已开启: 局部水面/湿地屏幕空间反射 (SSR)",
+                                         L"Enabled: Water / Puddle Reflections (SSR)");
+            } else {
+                SetStatusBilingualLocked(L"已关闭: 局部水面/湿地屏幕空间反射",
+                                         L"Disabled: Water / Puddle Reflections (SSR)");
+            }
             break;
         }
         case HitTargetKind::FilterOff:
             SetP2FilterPreset(0);
             g_panel.active_custom_slot = -1;
-            g_panel.status_text = L"P2 滤镜已设为: 关闭";
+            SetStatusBilingualLocked(L"画面风格滤镜已设为: 关闭",
+                                     L"Visual Style Filter set to: Off");
             break;
         case HitTargetKind::FilterHob:
             SetP2FilterPreset(1);
             g_panel.active_custom_slot = -1;
-            g_panel.status_text = L"P2 滤镜已设为: Hob 明快";
+            SetStatusBilingualLocked(L"画面风格滤镜已设为: Hob 明快",
+                                     L"Visual Style Filter set to: Hob Vibrant");
             break;
         case HitTargetKind::FilterDark:
             SetP2FilterPreset(2);
             g_panel.active_custom_slot = -1;
-            g_panel.status_text = L"P2 滤镜已设为: 暗黑胶片";
+            SetStatusBilingualLocked(L"画面风格滤镜已设为: 暗黑胶片",
+                                     L"Visual Style Filter set to: Dark Film");
             break;
         case HitTargetKind::LutOff:
             SetP2LutPreset(0);
             g_panel.active_custom_slot = -1;
-            g_panel.status_text = L"3D LUT 已设为: 关闭";
+            SetStatusBilingualLocked(L"3D LUT 调色已设为: 关闭",
+                                     L"3D LUT Color Grading set to: Off");
             break;
         case HitTargetKind::LutTealOrange:
             SetP2LutPreset(1);
             g_panel.active_custom_slot = -1;
-            g_panel.status_text = L"3D LUT 已设为: 映画暖青 (Teal & Orange)";
+            SetStatusBilingualLocked(L"3D LUT 调色已设为: 映画暖青 (Teal & Orange)",
+                                     L"3D LUT Color Grading set to: Teal & Orange");
             break;
         case HitTargetKind::LutColdNordic:
             SetP2LutPreset(2);
             g_panel.active_custom_slot = -1;
-            g_panel.status_text = L"3D LUT 已设为: 冷峻史诗 (Cold Nordic)";
+            SetStatusBilingualLocked(L"3D LUT 调色已设为: 冷峻史诗 (Cold Nordic)",
+                                     L"3D LUT Color Grading set to: Cold Nordic");
             break;
         case HitTargetKind::LutCustomCube:
             SetP2LutPreset(3);
             g_panel.active_custom_slot = -1;
-            g_panel.status_text = IsP2CustomCubeLutLoaded()
-                                      ? L"3D LUT 已载入: <游戏根目录>\\TL2_CustomLUT.cube"
-                                      : L"未找到文件: 请将 3D .cube 改名为 TL2_CustomLUT.cube 放游戏根目录";
+            if (IsP2CustomCubeLutLoaded()) {
+                SetStatusBilingualLocked(L"3D LUT 已载入: <游戏根目录>\\TL2_CustomLUT.cube",
+                                         L"3D LUT loaded: <GameRoot>\\TL2_CustomLUT.cube");
+            } else {
+                SetStatusBilingualLocked(L"未找到文件: 请将 3D .cube 改名为 TL2_CustomLUT.cube 放游戏根目录",
+                                         L"Not found: Rename 3D .cube to TL2_CustomLUT.cube in game root");
+            }
             break;
         case HitTargetKind::BuiltinFullHd:
             ApplyVisualConfigToEngine(MakeBuiltinPreset(0));
             g_panel.active_custom_slot = -1;
-            g_panel.status_text = L"已应用内置预设: 全开高清";
+            SetStatusBilingualLocked(L"已应用内置预设: 全开高清",
+                                     L"Applied built-in preset: Full HD+");
             break;
         case HitTargetKind::BuiltinDarkDungeon:
             ApplyVisualConfigToEngine(MakeBuiltinPreset(1));
             g_panel.active_custom_slot = -1;
-            g_panel.status_text = L"已应用内置预设: 暗黑地牢";
+            SetStatusBilingualLocked(L"已应用内置预设: 暗黑地牢",
+                                     L"Applied built-in preset: Dark Dungeon");
             break;
         case HitTargetKind::BuiltinVanilla:
             ApplyVisualConfigToEngine(MakeBuiltinPreset(2));
             g_panel.active_custom_slot = -1;
-            g_panel.status_text = L"已应用内置预设: 纯原版";
+            SetStatusBilingualLocked(L"已应用内置预设: 纯原版",
+                                     L"Applied built-in preset: Vanilla");
             break;
         case HitTargetKind::CustomLoad0:
         case HitTargetKind::CustomLoad1:
@@ -1044,13 +1220,17 @@ void HandleHitClickLocked(int hit_idx) {
             if (g_panel.presets[static_cast<size_t>(slot)].used) {
                 ApplyVisualConfigToEngine(g_panel.presets[static_cast<size_t>(slot)].cfg);
                 g_panel.active_custom_slot = slot;
-                wchar_t msg[64] = {};
-                swprintf_s(msg, L"已切换至自定义预设 %d", slot + 1);
-                g_panel.status_text = msg;
+                wchar_t msg_zh[64] = {};
+                wchar_t msg_en[64] = {};
+                swprintf_s(msg_zh, L"已切换至自定义预设 %d", slot + 1);
+                swprintf_s(msg_en, L"Loaded Custom Slot %d", slot + 1);
+                SetStatusBilingualLocked(msg_zh, msg_en);
             } else {
-                wchar_t msg[64] = {};
-                swprintf_s(msg, L"预设 %d 为空，请先点击右侧 [保存]", slot + 1);
-                g_panel.status_text = msg;
+                wchar_t msg_zh[64] = {};
+                wchar_t msg_en[64] = {};
+                swprintf_s(msg_zh, L"预设 %d 为空，请先点击右侧 [保存]", slot + 1);
+                swprintf_s(msg_en, L"Slot %d is empty — click [Save] on the right first", slot + 1);
+                SetStatusBilingualLocked(msg_zh, msg_en);
                 g_panel.dirty = true;
                 return;
             }
@@ -1070,9 +1250,11 @@ void HandleHitClickLocked(int hit_idx) {
             g_panel.presets[static_cast<size_t>(slot)].used = true;
             g_panel.presets[static_cast<size_t>(slot)].cfg = CaptureVisualConfigFromEngine();
             g_panel.active_custom_slot = slot;
-            wchar_t msg[64] = {};
-            swprintf_s(msg, L"已保存当前配置至 预设 %d", slot + 1);
-            g_panel.status_text = msg;
+            wchar_t msg_zh[64] = {};
+            wchar_t msg_en[64] = {};
+            swprintf_s(msg_zh, L"已保存当前配置至 预设 %d", slot + 1);
+            swprintf_s(msg_en, L"Saved current settings to Slot %d", slot + 1);
+            SetStatusBilingualLocked(msg_zh, msg_en);
             break;
         }
         default:
@@ -1333,11 +1515,21 @@ bool LoadVisualConfigAndPresets(const wchar_t* ini_path_override) {
     const VisualConfig defaults{};
     const DWORD attrs = ::GetFileAttributesW(target.c_str());
     if (attrs == INVALID_FILE_ATTRIBUTES) {
+        g_panel.language = UiLanguage::ZhCn;
         ApplyVisualConfigToEngine(defaults);
         g_panel.presets = {};
         g_panel.active_custom_slot = -1;
         g_panel.dirty = true;
         return SaveConfigFileLocked(target.c_str());
+    }
+
+    wchar_t lang_buf[16] = {};
+    ::GetPrivateProfileStringW(L"Panel", L"Language", L"zh", lang_buf, 16, target.c_str());
+    if (_wcsicmp(lang_buf, L"en") == 0 || _wcsicmp(lang_buf, L"en-us") == 0 ||
+        _wcsicmp(lang_buf, L"1") == 0) {
+        g_panel.language = UiLanguage::EnUs;
+    } else {
+        g_panel.language = UiLanguage::ZhCn;
     }
 
     const VisualConfig loaded_active = LoadVisualConfigFromSection(L"Active", defaults, target.c_str());
@@ -1465,11 +1657,31 @@ void ResetConfigPanelStateForTest() {
     g_panel.dragging = false;
     g_panel.active_slider_index = -1;
     g_panel.hover_index = -1;
+    g_panel.language = UiLanguage::ZhCn;
     g_panel.presets = {};
     g_panel.active_custom_slot = -1;
     g_panel.ini_path.clear();
-    g_panel.status_text = L"F8/ESC关闭 · 拖动滑块/滚轮调强度 · 右键滑块归位100%";
+    SetStatusBilingualLocked(kDefaultStatusZh, kDefaultStatusEn);
     ApplyVisualConfigToEngine(VisualConfig{});
+}
+
+UiLanguage GetUiLanguage() {
+    std::lock_guard<std::mutex> lock(g_panel.mutex);
+    return g_panel.language;
+}
+
+void SetUiLanguage(UiLanguage lang) {
+    std::lock_guard<std::mutex> lock(g_panel.mutex);
+    g_panel.language = (lang == UiLanguage::EnUs) ? UiLanguage::EnUs : UiLanguage::ZhCn;
+    g_panel.dirty = true;
+}
+
+UiLanguage ToggleUiLanguage() {
+    std::lock_guard<std::mutex> lock(g_panel.mutex);
+    g_panel.language =
+        (g_panel.language == UiLanguage::ZhCn) ? UiLanguage::EnUs : UiLanguage::ZhCn;
+    g_panel.dirty = true;
+    return g_panel.language;
 }
 
 void ToggleConfigPanelOpen() {

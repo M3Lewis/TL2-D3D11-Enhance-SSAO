@@ -581,7 +581,7 @@ extern "C" __declspec(dllexport) int RouteB_RunConfigPanelSelfTest() {
     routeb::SetP2SsrStrengthPct(250);       // clamps to 200
     routeb::SetP2FilterStrengthPct(115);
     routeb::SetP2LutStrengthPct(90);
-    if (routeb::GetUiLanguage() != routeb::UiLanguage::ZhCn) {
+    if (routeb::GetUiLanguage() != routeb::DetectSystemDefaultUiLanguage()) {
         return 15;
     }
     routeb::SetUiLanguage(routeb::UiLanguage::EnUs);

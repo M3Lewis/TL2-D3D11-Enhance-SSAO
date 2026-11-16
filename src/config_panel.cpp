@@ -40,7 +40,8 @@ enum class HitTargetKind {
     None = 0,
     TitleDrag,
     CloseButton,
-    ToggleLanguage,
+    LangZh,
+    LangEn,
     ToggleAllOn,
     ToggleAllOff,
     TogglePhase3,
@@ -342,18 +343,20 @@ std::wstring FormatPresetSummary(const VisualConfig& cfg, bool english) {
     return buf;
 }
 
-constexpr size_t kHitZoneCount = 54;
+constexpr size_t kHitZoneCount = 55;
 
 std::array<HitZone, kHitZoneCount> BuildHitZones() {
     std::array<HitZone, kHitZoneCount> zones{};
     size_t idx = 0;
 
-    // Close [X] & Language toggle buttons (must be tested before TitleDrag!)
+    // Close [X] & explicit [中] / [EN] language buttons (must be tested before TitleDrag!)
     zones[idx++] = {RECT{static_cast<LONG>(kPanelWidth - 38), 7,
                          static_cast<LONG>(kPanelWidth - 10), 35},
                     HitTargetKind::CloseButton, L"×", L"×"};
-    zones[idx++] = {RECT{474, 8, 564, 34},
-                    HitTargetKind::ToggleLanguage, L"语言: 中文", L"Lang: EN"};
+    zones[idx++] = {RECT{484, 9, 522, 33},
+                    HitTargetKind::LangZh, L"中", L"中"};
+    zones[idx++] = {RECT{526, 9, 564, 33},
+                    HitTargetKind::LangEn, L"EN", L"EN"};
     // Title bar drag region
     zones[idx++] = {RECT{0, 0, static_cast<LONG>(kPanelWidth), kTitleBarHeight},
                     HitTargetKind::TitleDrag, L"", L""};
@@ -728,20 +731,26 @@ void PaintPanelToDibLocked() {
 
     const bool en = IsEnglishLocked();
     DrawTextBox(dc, g_panel.font_title, RGB(238, 245, 255),
-                RECT{kPaddingX, 0, 466, kTitleBarHeight},
+                RECT{kPaddingX, 0, 476, kTitleBarHeight},
                 PickLang(L"TL2 DX11 画质增强面板  [F8]", L"TL2 DX11 Graphics Panel  [F8]"),
                 DT_LEFT | DT_VCENTER);
 
-    // Language switch button (ZH / EN)
+    // Explicit [中] and [EN] language buttons
     {
-        const size_t lang_idx = ZoneIndexByKind(HitTargetKind::ToggleLanguage);
-        const bool hovered = (g_panel.hover_index == static_cast<int>(lang_idx));
-        DrawBorderRect(dc, zones[lang_idx].rect,
-                       en ? (hovered ? RGB(52, 98, 152) : RGB(36, 72, 118))
-                          : (hovered ? RGB(52, 72, 102) : RGB(34, 46, 66)),
-                       hovered ? RGB(130, 198, 255) : RGB(78, 116, 162), 5);
-        DrawTextBox(dc, g_panel.font_small, RGB(228, 242, 255),
-                    zones[lang_idx].rect, ZoneLabel(zones[lang_idx]), DT_CENTER | DT_VCENTER);
+        const auto draw_lang_btn = [&](HitTargetKind kind, bool active) {
+            const size_t idx = ZoneIndexByKind(kind);
+            const bool hovered = (g_panel.hover_index == static_cast<int>(idx));
+            const COLORREF fill = active ? RGB(42, 112, 186)
+                                         : (hovered ? RGB(38, 48, 68) : RGB(24, 30, 44));
+            const COLORREF border = active ? RGB(114, 194, 255)
+                                           : (hovered ? RGB(92, 136, 198) : RGB(56, 70, 96));
+            DrawBorderRect(dc, zones[idx].rect, fill, border, 5);
+            DrawTextBox(dc, active ? g_panel.font_section : g_panel.font_small,
+                        active ? RGB(248, 252, 255) : (hovered ? RGB(214, 226, 244) : RGB(156, 170, 194)),
+                        zones[idx].rect, ZoneLabel(zones[idx]), DT_CENTER | DT_VCENTER);
+        };
+        draw_lang_btn(HitTargetKind::LangZh, !en);
+        draw_lang_btn(HitTargetKind::LangEn, en);
     }
 
     // Close [X] button
@@ -979,9 +988,10 @@ void PaintPanelToDibLocked() {
                                          L"Detected <GameRoot>\\TL2_CustomLUT.cube — click to enable (hot-reload)")
                               : PickLang(L"用法: 将 3D .cube 改名为 TL2_CustomLUT.cube 放游戏根目录（支持热重载）",
                                          L"Usage: Rename 3D .cube to TL2_CustomLUT.cube in game root (hot-reload)");
-        } else if (hover_kind == HitTargetKind::ToggleLanguage) {
-            footer_text = PickLang(L"点击实时切换中英文界面 (当前: 简体中文)",
-                                   L"Click to switch UI language in real time (Current: English)");
+        } else if (hover_kind == HitTargetKind::LangZh) {
+            footer_text = L"切换界面语言为简体中文";
+        } else if (hover_kind == HitTargetKind::LangEn) {
+            footer_text = L"Switch UI language to English";
         }
     }
     FillSolidRect(dc, RECT{0, static_cast<LONG>(kPanelHeight - 30),
@@ -1006,10 +1016,14 @@ void HandleHitClickLocked(int hit_idx) {
             g_panel.dragging = false;
             g_panel.active_slider_index = -1;
             return;
-        case HitTargetKind::ToggleLanguage:
-            g_panel.language =
-                (g_panel.language == UiLanguage::ZhCn) ? UiLanguage::EnUs : UiLanguage::ZhCn;
+        case HitTargetKind::LangZh:
+            g_panel.language = UiLanguage::ZhCn;
             SetStatusBilingualLocked(L"界面语言已切换为: 简体中文",
+                                     L"界面语言已切换为: 简体中文");
+            break;
+        case HitTargetKind::LangEn:
+            g_panel.language = UiLanguage::EnUs;
+            SetStatusBilingualLocked(L"UI language switched to: English",
                                      L"UI language switched to: English");
             break;
         case HitTargetKind::ResetStrengths: {
@@ -1513,9 +1527,10 @@ bool LoadVisualConfigAndPresets(const wchar_t* ini_path_override) {
     g_panel.ini_path = target;
 
     const VisualConfig defaults{};
+    const UiLanguage sys_lang = DetectSystemDefaultUiLanguage();
     const DWORD attrs = ::GetFileAttributesW(target.c_str());
     if (attrs == INVALID_FILE_ATTRIBUTES) {
-        g_panel.language = UiLanguage::ZhCn;
+        g_panel.language = sys_lang;
         ApplyVisualConfigToEngine(defaults);
         g_panel.presets = {};
         g_panel.active_custom_slot = -1;
@@ -1523,8 +1538,9 @@ bool LoadVisualConfigAndPresets(const wchar_t* ini_path_override) {
         return SaveConfigFileLocked(target.c_str());
     }
 
+    const wchar_t* sys_lang_str = (sys_lang == UiLanguage::EnUs) ? L"en" : L"zh";
     wchar_t lang_buf[16] = {};
-    ::GetPrivateProfileStringW(L"Panel", L"Language", L"zh", lang_buf, 16, target.c_str());
+    ::GetPrivateProfileStringW(L"Panel", L"Language", sys_lang_str, lang_buf, 16, target.c_str());
     if (_wcsicmp(lang_buf, L"en") == 0 || _wcsicmp(lang_buf, L"en-us") == 0 ||
         _wcsicmp(lang_buf, L"1") == 0) {
         g_panel.language = UiLanguage::EnUs;
@@ -1663,6 +1679,11 @@ void ResetConfigPanelStateForTest() {
     g_panel.ini_path.clear();
     SetStatusBilingualLocked(kDefaultStatusZh, kDefaultStatusEn);
     ApplyVisualConfigToEngine(VisualConfig{});
+}
+
+UiLanguage DetectSystemDefaultUiLanguage() {
+    const LANGID lang = ::GetUserDefaultUILanguage();
+    return (PRIMARYLANGID(lang) == LANG_CHINESE) ? UiLanguage::ZhCn : UiLanguage::EnUs;
 }
 
 UiLanguage GetUiLanguage() {

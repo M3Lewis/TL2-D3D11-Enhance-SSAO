@@ -55,7 +55,8 @@ constexpr int kCtrlCheckBtn = 1003;
 constexpr int kCtrlInstallBtn = 1004;
 constexpr int kCtrlUninstallBtn = 1005;
 constexpr int kCtrlLogEdit = 1006;
-constexpr int kCtrlLangBtn = 1007;
+constexpr int kCtrlLangZhBtn = 1007;
+constexpr int kCtrlLangEnBtn = 1008;
 
 constexpr int kUiResLogo = 201;
 constexpr int kUiResMapBg = 202;
@@ -75,7 +76,8 @@ struct AppUi {
     HWND check_btn = nullptr;
     HWND install_btn = nullptr;
     HWND uninstall_btn = nullptr;
-    HWND lang_btn = nullptr;
+    HWND lang_zh_btn = nullptr;
+    HWND lang_en_btn = nullptr;
     HWND log_edit = nullptr;
     HWND hovered_btn = nullptr;
     HFONT ui_font = nullptr;
@@ -1254,6 +1256,22 @@ void DrawOwnerButton(const DRAWITEMSTRUCT* dis) {
                               : (hovered ? Gdiplus::Color(255, 50, 18, 22) : Gdiplus::Color(255, 36, 14, 16));
             border_col = hovered ? Gdiplus::Color(255, 212, 104, 104) : Gdiplus::Color(255, 142, 62, 62);
             txt_col = Gdiplus::Color(255, 248, 212, 212);
+        } else if (dis->CtlID == kCtrlLangZhBtn || dis->CtlID == kCtrlLangEnBtn) {
+            const bool active_lang =
+                (dis->CtlID == kCtrlLangZhBtn) ? (!g_ui.english) : g_ui.english;
+            if (active_lang) {
+                top_col = Gdiplus::Color(255, 184, 102, 18);
+                bot_col = Gdiplus::Color(255, 112, 56, 10);
+                border_col = Gdiplus::Color(255, 245, 166, 35);
+                txt_col = Gdiplus::Color(255, 255, 246, 224);
+            } else {
+                top_col = pressed ? Gdiplus::Color(255, 24, 28, 38)
+                                  : (hovered ? Gdiplus::Color(255, 42, 48, 62) : Gdiplus::Color(255, 24, 28, 38));
+                bot_col = pressed ? Gdiplus::Color(255, 16, 18, 26)
+                                  : (hovered ? Gdiplus::Color(255, 28, 32, 42) : Gdiplus::Color(255, 18, 20, 28));
+                border_col = hovered ? Gdiplus::Color(255, 214, 162, 78) : Gdiplus::Color(255, 84, 68, 42);
+                txt_col = hovered ? Gdiplus::Color(255, 238, 226, 202) : Gdiplus::Color(255, 168, 160, 146);
+            }
         } else {
             top_col = pressed ? Gdiplus::Color(255, 28, 32, 42)
                               : (hovered ? Gdiplus::Color(255, 48, 52, 64) : Gdiplus::Color(255, 34, 38, 48));
@@ -1285,8 +1303,14 @@ void DrawOwnerButton(const DRAWITEMSTRUCT* dis) {
         wchar_t text[128]{};
         ::GetWindowTextW(dis->hwndItem, text, 128);
         Gdiplus::FontFamily ff(L"Microsoft YaHei UI");
-        const int weight = (dis->CtlID == kCtrlInstallBtn) ? Gdiplus::FontStyleBold : Gdiplus::FontStyleRegular;
-        const float pt_sz = (dis->CtlID == kCtrlLangBtn) ? 12.0f : 14.0f;
+        const bool is_lang_btn = (dis->CtlID == kCtrlLangZhBtn || dis->CtlID == kCtrlLangEnBtn);
+        const bool is_active_lang =
+            (dis->CtlID == kCtrlLangZhBtn && !g_ui.english) ||
+            (dis->CtlID == kCtrlLangEnBtn && g_ui.english);
+        const int weight = (dis->CtlID == kCtrlInstallBtn || is_active_lang)
+                               ? Gdiplus::FontStyleBold
+                               : Gdiplus::FontStyleRegular;
+        const float pt_sz = is_lang_btn ? 12.0f : 14.0f;
         Gdiplus::Font btn_f(&ff, Sf(pt_sz), weight, Gdiplus::UnitPixel);
         Gdiplus::StringFormat fmt;
         fmt.SetAlignment(Gdiplus::StringAlignmentCenter);
@@ -1358,7 +1382,8 @@ void RefreshUiLanguage(HWND hwnd) {
     }
     ::SetWindowTextW(hwnd, T(L"火炬之光 2 D3D11 画质增强 & SSAO 安装器",
                              L"Torchlight II D3D11 Graphics & SSAO Setup"));
-    if (g_ui.lang_btn) ::SetWindowTextW(g_ui.lang_btn, T(L"语言: 中文", L"Lang: EN"));
+    if (g_ui.lang_zh_btn) ::InvalidateRect(g_ui.lang_zh_btn, nullptr, FALSE);
+    if (g_ui.lang_en_btn) ::InvalidateRect(g_ui.lang_en_btn, nullptr, FALSE);
     if (g_ui.browse_btn) ::SetWindowTextW(g_ui.browse_btn, T(L"浏览...", L"Browse..."));
     if (g_ui.check_btn) ::SetWindowTextW(g_ui.check_btn, T(L"检测版本兼容性", L"Check Compatibility"));
     if (g_ui.install_btn) ::SetWindowTextW(g_ui.install_btn, T(L"一键安装 / 升级", L"Install / Upgrade"));
@@ -1404,7 +1429,8 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
                 return b;
             };
 
-            g_ui.lang_btn = make_btn(T(L"语言: 中文", L"Lang: EN"), 634, 24, 90, 24, kCtrlLangBtn);
+            g_ui.lang_zh_btn = make_btn(L"中", 640, 24, 40, 24, kCtrlLangZhBtn);
+            g_ui.lang_en_btn = make_btn(L"EN", 684, 24, 40, 24, kCtrlLangEnBtn);
             g_ui.browse_btn = make_btn(T(L"浏览...", L"Browse..."), 626, 166, 98, 32, kCtrlBrowseBtn);
             g_ui.check_btn = make_btn(T(L"检测版本兼容性", L"Check Compatibility"), 36, 212, 166, 38, kCtrlCheckBtn);
             g_ui.install_btn = make_btn(T(L"一键安装 / 升级", L"Install / Upgrade"), 214, 212, 292, 38, kCtrlInstallBtn);
@@ -1549,9 +1575,18 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
         }
         case WM_COMMAND: {
             const int ctrl_id = LOWORD(wparam);
-            if (ctrl_id == kCtrlLangBtn) {
-                g_ui.english = !g_ui.english;
-                RefreshUiLanguage(hwnd);
+            if (ctrl_id == kCtrlLangZhBtn) {
+                if (g_ui.english) {
+                    g_ui.english = false;
+                    RefreshUiLanguage(hwnd);
+                }
+                return 0;
+            }
+            if (ctrl_id == kCtrlLangEnBtn) {
+                if (!g_ui.english) {
+                    g_ui.english = true;
+                    RefreshUiLanguage(hwnd);
+                }
                 return 0;
             }
             if (ctrl_id == kCtrlBrowseBtn) {

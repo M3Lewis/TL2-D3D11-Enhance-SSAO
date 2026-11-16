@@ -72,6 +72,7 @@ PresetSlot GetCustomPresetSlot(int slot_index);
 void ResetConfigPanelStateForTest();
 
 // Interactive panel visibility, language & WndProc subclassing.
+UiLanguage DetectSystemDefaultUiLanguage();
 UiLanguage GetUiLanguage();
 void SetUiLanguage(UiLanguage lang);
 UiLanguage ToggleUiLanguage();

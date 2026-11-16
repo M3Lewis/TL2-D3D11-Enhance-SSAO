@@ -55,6 +55,7 @@ constexpr int kCtrlCheckBtn = 1003;
 constexpr int kCtrlInstallBtn = 1004;
 constexpr int kCtrlUninstallBtn = 1005;
 constexpr int kCtrlLogEdit = 1006;
+constexpr int kCtrlLangBtn = 1007;
 
 constexpr int kUiResLogo = 201;
 constexpr int kUiResMapBg = 202;
@@ -74,6 +75,7 @@ struct AppUi {
     HWND check_btn = nullptr;
     HWND install_btn = nullptr;
     HWND uninstall_btn = nullptr;
+    HWND lang_btn = nullptr;
     HWND log_edit = nullptr;
     HWND hovered_btn = nullptr;
     HFONT ui_font = nullptr;
@@ -86,6 +88,7 @@ struct AppUi {
     float github_x = 0.0f;
     float github_y = 0.0f;
     bool github_hovered = false;
+    bool english = false;
     int client_w = kBaseWidth;
     int client_h = kBaseHeight;
     int dpi = 96;
@@ -93,33 +96,58 @@ struct AppUi {
 
 AppUi g_ui{};
 
+bool DetectDefaultEnglish() {
+    const LANGID lang = ::GetUserDefaultUILanguage();
+    return PRIMARYLANGID(lang) != LANG_CHINESE;
+}
+
+const wchar_t* T(const wchar_t* zh, const wchar_t* en) {
+    return g_ui.english ? en : zh;
+}
+
 class Logger {
 public:
     explicit Logger(bool cli_mode) : cli_mode_(cli_mode) {}
 
     void Append(const std::wstring& line) {
-        if (!lines_.empty()) {
-            lines_ += L"\r\n";
-        }
-        lines_ += line;
+        AppendBi(line, line);
+    }
+
+    void AppendBi(const std::wstring& zh, const std::wstring& en) {
+        entries_.push_back({zh, en});
+        const std::wstring& active = g_ui.english ? en : zh;
         if (cli_mode_) {
-            const int n = ::WideCharToMultiByte(CP_UTF8, 0, line.c_str(), static_cast<int>(line.size()), nullptr, 0, nullptr, nullptr);
+            const int n = ::WideCharToMultiByte(CP_UTF8, 0, active.c_str(), static_cast<int>(active.size()), nullptr, 0, nullptr, nullptr);
             if (n > 0) {
                 std::string u8(static_cast<size_t>(n), '\0');
-                ::WideCharToMultiByte(CP_UTF8, 0, line.c_str(), static_cast<int>(line.size()), u8.data(), n, nullptr, nullptr);
+                ::WideCharToMultiByte(CP_UTF8, 0, active.c_str(), static_cast<int>(active.size()), u8.data(), n, nullptr, nullptr);
                 std::fwrite(u8.data(), 1, u8.size(), stdout);
                 std::fputc('\n', stdout);
             }
-        } else if (g_ui.log_edit) {
-            ::SetWindowTextW(g_ui.log_edit, lines_.c_str());
-            const int len = ::GetWindowTextLengthW(g_ui.log_edit);
-            ::SendMessageW(g_ui.log_edit, EM_SETSEL, static_cast<WPARAM>(len), static_cast<LPARAM>(len));
-            ::SendMessageW(g_ui.log_edit, EM_SCROLLCARET, 0, 0);
+        } else {
+            SyncGuiEdit();
         }
     }
 
+    void SyncGuiEdit() const {
+        if (cli_mode_ || !g_ui.log_edit) {
+            return;
+        }
+        std::wstring joined;
+        for (size_t i = 0; i < entries_.size(); ++i) {
+            if (i > 0) {
+                joined += L"\r\n";
+            }
+            joined += g_ui.english ? entries_[i].second : entries_[i].first;
+        }
+        ::SetWindowTextW(g_ui.log_edit, joined.c_str());
+        const int len = ::GetWindowTextLengthW(g_ui.log_edit);
+        ::SendMessageW(g_ui.log_edit, EM_SETSEL, static_cast<WPARAM>(len), static_cast<LPARAM>(len));
+        ::SendMessageW(g_ui.log_edit, EM_SCROLLCARET, 0, 0);
+    }
+
     void Clear() {
-        lines_.clear();
+        entries_.clear();
         if (!cli_mode_ && g_ui.log_edit) {
             ::SetWindowTextW(g_ui.log_edit, L"");
         }
@@ -127,22 +155,35 @@ public:
 
 private:
     bool cli_mode_ = false;
-    std::wstring lines_;
+    std::vector<std::pair<std::wstring, std::wstring>> entries_;
 };
 
 Logger g_gui_log(false);
 
 std::wstring FormatWin32Error(DWORD err) {
-    wchar_t buf[32]{};
-    std::swprintf(buf, 32, L"Win32错误码 %lu", static_cast<unsigned long>(err));
+    wchar_t buf[48]{};
+    std::swprintf(buf, 48, T(L"Win32错误码 %lu", L"Win32 Error %lu"), static_cast<unsigned long>(err));
     return buf;
 }
 
-bool ReadPeSignature(const fs::path& file_path, uint32_t* out_timestamp, uint32_t* out_image_size, std::wstring* err_msg) {
+std::wstring FormatWin32ErrorPair(DWORD err, bool english) {
+    wchar_t buf[48]{};
+    std::swprintf(buf, 48, english ? L"Win32 Error %lu" : L"Win32错误码 %lu", static_cast<unsigned long>(err));
+    return buf;
+}
+
+struct BiText {
+    std::wstring zh;
+    std::wstring en;
+};
+
+bool ReadPeSignature(const fs::path& file_path, uint32_t* out_timestamp, uint32_t* out_image_size, BiText* err_msg) {
+    const std::wstring fname = file_path.filename().wstring();
     std::ifstream ifs(file_path, std::ios::binary);
     if (!ifs) {
         if (err_msg) {
-            *err_msg = L"无法打开文件: " + file_path.wstring();
+            *err_msg = {L"无法打开文件: " + file_path.wstring(),
+                        L"Failed to open file: " + file_path.wstring()};
         }
         return false;
     }
@@ -151,7 +192,8 @@ bool ReadPeSignature(const fs::path& file_path, uint32_t* out_timestamp, uint32_
     ifs.read(reinterpret_cast<char*>(&dos), sizeof(dos));
     if (!ifs || dos.e_magic != IMAGE_DOS_SIGNATURE) {
         if (err_msg) {
-            *err_msg = L"无效 PE DOS 头: " + file_path.filename().wstring();
+            *err_msg = {L"无效 PE DOS 头: " + fname,
+                        L"Invalid PE DOS header: " + fname};
         }
         return false;
     }
@@ -163,13 +205,15 @@ bool ReadPeSignature(const fs::path& file_path, uint32_t* out_timestamp, uint32_
     ifs.read(reinterpret_cast<char*>(&file_hdr), sizeof(file_hdr));
     if (!ifs || pe_sig != IMAGE_NT_SIGNATURE) {
         if (err_msg) {
-            *err_msg = L"无效 PE NT 头: " + file_path.filename().wstring();
+            *err_msg = {L"无效 PE NT 头: " + fname,
+                        L"Invalid PE NT header: " + fname};
         }
         return false;
     }
     if (file_hdr.Machine != IMAGE_FILE_MACHINE_AMD64) {
         if (err_msg) {
-            *err_msg = file_path.filename().wstring() + L" 不是 64 位 (x64) 模块，当前插件仅支持 2026 x64 D3D11 版火炬之光 2。";
+            *err_msg = {fname + L" 不是 64 位 (x64) 模块，当前插件仅支持 2026 x64 D3D11 版火炬之光 2。",
+                        fname + L" is not a 64-bit (x64) module. Only the 2026 x64 D3D11 Torchlight II release is supported."};
         }
         return false;
     }
@@ -178,7 +222,8 @@ bool ReadPeSignature(const fs::path& file_path, uint32_t* out_timestamp, uint32_
     ifs.read(reinterpret_cast<char*>(&opt_hdr), sizeof(opt_hdr));
     if (!ifs || opt_hdr.Magic != IMAGE_NT_OPTIONAL_HDR64_MAGIC) {
         if (err_msg) {
-            *err_msg = L"无效 PE64 OptionalHeader: " + file_path.filename().wstring();
+            *err_msg = {L"无效 PE64 OptionalHeader: " + fname,
+                        L"Invalid PE64 OptionalHeader: " + fname};
         }
         return false;
     }
@@ -211,56 +256,69 @@ bool IsProcessRunningByName(const wchar_t* exe_name) {
 bool ValidateGameDirectory(const fs::path& game_dir, Logger& log) {
     std::error_code ec;
     if (game_dir.empty() || !fs::exists(game_dir, ec) || !fs::is_directory(game_dir, ec)) {
-        log.Append(L"[错误] 所选目录不存在: " + game_dir.wstring());
+        log.AppendBi(L"[错误] 所选目录不存在: " + game_dir.wstring(),
+                     L"[Error] Selected directory does not exist: " + game_dir.wstring());
         return false;
     }
 
     const fs::path exe_path = game_dir / L"Torchlight2.exe";
     if (!fs::exists(exe_path, ec)) {
-        log.Append(L"[错误] 未找到 Torchlight2.exe，请选择《火炬之光 2》游戏根目录。");
+        log.AppendBi(L"[错误] 未找到 Torchlight2.exe，请选择《火炬之光 2》游戏根目录。",
+                     L"[Error] Torchlight2.exe not found. Please select the Torchlight II root directory.");
         return false;
     }
 
     for (const auto& mod : kRequiredPeModules) {
         const fs::path mod_path = game_dir / mod.filename;
         if (!fs::exists(mod_path, ec)) {
-            log.Append(std::wstring(L"[错误] 缺少必要引擎文件 ") + mod.filename +
-                       L"（请确认游戏为 2026 x64 D3D11 更新版，而非旧版 32 位 D3D9 客户端）。");
+            log.AppendBi(
+                std::wstring(L"[错误] 缺少必要引擎文件 ") + mod.filename +
+                    L"（请确认游戏为 2026 x64 D3D11 更新版，而非旧版 32 位 D3D9 客户端）。",
+                std::wstring(L"[Error] Missing required engine file ") + mod.filename +
+                    L" (please ensure the game is the 2026 x64 D3D11 update, not legacy 32-bit D3D9).");
             return false;
         }
         uint32_t ts = 0;
         uint32_t img_sz = 0;
-        std::wstring pe_err;
+        BiText pe_err;
         if (!ReadPeSignature(mod_path, &ts, &img_sz, &pe_err)) {
-            log.Append(L"[错误] " + pe_err);
+            log.AppendBi(L"[错误] " + pe_err.zh, L"[Error] " + pe_err.en);
             return false;
         }
         if (ts != mod.expected_timestamp || img_sz != mod.expected_image_size) {
-            wchar_t msg[256]{};
-            std::swprintf(msg, 256,
+            wchar_t msg_zh[256]{};
+            wchar_t msg_en[256]{};
+            std::swprintf(msg_zh, 256,
                           L"[错误] %s 版本不匹配 (TimeDateStamp=0x%08X 期望 0x%08X, SizeOfImage=0x%X 期望 0x%X)，为防崩溃已中止。",
                           mod.filename, ts, mod.expected_timestamp, img_sz, mod.expected_image_size);
-            log.Append(msg);
+            std::swprintf(msg_en, 256,
+                          L"[Error] %s version mismatch (TimeDateStamp=0x%08X expected 0x%08X, SizeOfImage=0x%X expected 0x%X); aborted.",
+                          mod.filename, ts, mod.expected_timestamp, img_sz, mod.expected_image_size);
+            log.AppendBi(msg_zh, msg_en);
             return false;
         }
     }
 
-    log.Append(L"[检查通过] 已识别兼容的 2026 x64 D3D11 版《火炬之光 2》目录。");
+    log.AppendBi(L"[检查通过] 已识别兼容的 2026 x64 D3D11 版《火炬之光 2》目录。",
+                 L"[Check OK] Compatible 2026 x64 D3D11 Torchlight II installation detected.");
     return true;
 }
 
-bool ExtractResourceToFile(int resource_id, const fs::path& dest_path, std::wstring* err_msg) {
+bool ExtractResourceToFile(int resource_id, const fs::path& dest_path, BiText* err_msg) {
     HRSRC res = ::FindResourceW(nullptr, MAKEINTRESOURCEW(resource_id), RT_RCDATA);
     if (!res) {
         if (err_msg) {
-            *err_msg = L"找不到内嵌资源 ID=" + std::to_wstring(resource_id);
+            *err_msg = {L"找不到内嵌资源 ID=" + std::to_wstring(resource_id),
+                        L"Embedded resource not found: ID=" + std::to_wstring(resource_id)};
         }
         return false;
     }
     HGLOBAL loaded = ::LoadResource(nullptr, res);
     if (!loaded) {
+        const DWORD err = ::GetLastError();
         if (err_msg) {
-            *err_msg = L"加载内嵌资源失败: " + FormatWin32Error(::GetLastError());
+            *err_msg = {L"加载内嵌资源失败: " + FormatWin32ErrorPair(err, false),
+                        L"Failed to load embedded resource: " + FormatWin32ErrorPair(err, true)};
         }
         return false;
     }
@@ -268,7 +326,7 @@ bool ExtractResourceToFile(int resource_id, const fs::path& dest_path, std::wstr
     const void* data = ::LockResource(loaded);
     if (!data || size == 0) {
         if (err_msg) {
-            *err_msg = L"锁定内嵌资源数据失败。";
+            *err_msg = {L"锁定内嵌资源数据失败。", L"Failed to lock embedded resource data."};
         }
         return false;
     }
@@ -277,7 +335,8 @@ bool ExtractResourceToFile(int resource_id, const fs::path& dest_path, std::wstr
     fs::create_directories(dest_path.parent_path(), ec);
     if (ec) {
         if (err_msg) {
-            *err_msg = L"创建目标目录失败: " + dest_path.parent_path().wstring();
+            *err_msg = {L"创建目标目录失败: " + dest_path.parent_path().wstring(),
+                        L"Failed to create target folder: " + dest_path.parent_path().wstring()};
         }
         return false;
     }
@@ -285,7 +344,8 @@ bool ExtractResourceToFile(int resource_id, const fs::path& dest_path, std::wstr
     std::ofstream ofs(dest_path, std::ios::binary | std::ios::trunc);
     if (!ofs) {
         if (err_msg) {
-            *err_msg = L"写入文件失败（请检查目录写入权限或关闭占用程序）: " + dest_path.wstring();
+            *err_msg = {L"写入文件失败（请检查目录写入权限或关闭占用程序）: " + dest_path.wstring(),
+                        L"Failed to write file (check permissions / file locks): " + dest_path.wstring()};
         }
         return false;
     }
@@ -293,7 +353,8 @@ bool ExtractResourceToFile(int resource_id, const fs::path& dest_path, std::wstr
     ofs.flush();
     if (!ofs) {
         if (err_msg) {
-            *err_msg = L"磁盘写入未完成: " + dest_path.wstring();
+            *err_msg = {L"磁盘写入未完成: " + dest_path.wstring(),
+                        L"Incomplete disk write: " + dest_path.wstring()};
         }
         return false;
     }
@@ -309,15 +370,19 @@ bool BackupFileOnce(const fs::path& game_dir, const fs::path& rel_path, Logger& 
     }
     fs::create_directories(dst.parent_path(), ec);
     if (ec) {
-        log.Append(L"[错误] 创建备份目录失败: " + dst.parent_path().wstring());
+        log.AppendBi(L"[错误] 创建备份目录失败: " + dst.parent_path().wstring(),
+                     L"[Error] Failed to create backup folder: " + dst.parent_path().wstring());
         return false;
     }
     fs::copy_file(src, dst, fs::copy_options::none, ec);
     if (ec) {
-        log.Append(L"[错误] 备份原版文件失败: " + rel_path.wstring());
+        log.AppendBi(L"[错误] 备份原版文件失败: " + rel_path.wstring(),
+                     L"[Error] Failed to back up vanilla file: " + rel_path.wstring());
         return false;
     }
-    log.Append(L"[备份] 已保留原版文件 -> " + (fs::path(kBackupDirName) / rel_path).wstring());
+    const std::wstring backed_rel = (fs::path(kBackupDirName) / rel_path).wstring();
+    log.AppendBi(L"[备份] 已保留原版文件 -> " + backed_rel,
+                 L"[Backup] Saved vanilla file -> " + backed_rel);
     return true;
 }
 
@@ -341,7 +406,8 @@ bool UpdatePluginConfigFile(const fs::path& cfg_path, Logger& log) {
     if (fs::exists(cfg_path, ec)) {
         std::ifstream ifs(cfg_path, std::ios::binary);
         if (!ifs) {
-            log.Append(L"[错误] 无法读取配置文件: " + cfg_path.filename().wstring());
+            log.AppendBi(L"[错误] 无法读取配置文件: " + cfg_path.filename().wstring(),
+                         L"[Error] Failed to read config file: " + cfg_path.filename().wstring());
             return false;
         }
         std::string line;
@@ -412,7 +478,8 @@ bool UpdatePluginConfigFile(const fs::path& cfg_path, Logger& log) {
 
     std::ofstream ofs(cfg_path, std::ios::binary | std::ios::trunc);
     if (!ofs) {
-        log.Append(L"[错误] 写入配置文件失败: " + cfg_path.filename().wstring());
+        log.AppendBi(L"[错误] 写入配置文件失败: " + cfg_path.filename().wstring(),
+                     L"[Error] Failed to write config file: " + cfg_path.filename().wstring());
         return false;
     }
     for (const auto& l : out_lines) {
@@ -420,16 +487,19 @@ bool UpdatePluginConfigFile(const fs::path& cfg_path, Logger& log) {
     }
     ofs.flush();
     if (!ofs) {
-        log.Append(L"[错误] 配置文件保存失败: " + cfg_path.filename().wstring());
+        log.AppendBi(L"[错误] 配置文件保存失败: " + cfg_path.filename().wstring(),
+                     L"[Error] Failed to save config file: " + cfg_path.filename().wstring());
         return false;
     }
-    log.Append(L"[配置] 已更新 " + cfg_path.filename().wstring() + L" (D3D11 + Plugin_TL2_DX11_Enhance_SSAO)");
+    log.AppendBi(L"[配置] 已更新 " + cfg_path.filename().wstring() + L" (D3D11 + Plugin_TL2_DX11_Enhance_SSAO)",
+                 L"[Config] Updated " + cfg_path.filename().wstring() + L" (D3D11 + Plugin_TL2_DX11_Enhance_SSAO)");
     return true;
 }
 
 bool PerformInstall(const fs::path& game_dir, Logger& log) {
     if (IsProcessRunningByName(L"Torchlight2.exe")) {
-        log.Append(L"[错误] 检测到 Torchlight2.exe 正在运行，请先退出游戏再安装。");
+        log.AppendBi(L"[错误] 检测到 Torchlight2.exe 正在运行，请先退出游戏再安装。",
+                     L"[Error] Torchlight2.exe is currently running. Please exit the game first.");
         return false;
     }
     if (!ValidateGameDirectory(game_dir, log)) {
@@ -448,7 +518,8 @@ bool PerformInstall(const fs::path& game_dir, Logger& log) {
     if (fs::exists(legacy_dll, ec)) {
         const fs::path legacy_bak = game_dir / L"Plugin_TL2_RouteB.dll.bak";
         if (::MoveFileExW(legacy_dll.c_str(), legacy_bak.c_str(), MOVEFILE_REPLACE_EXISTING)) {
-            log.Append(L"[清理] 已将旧版 Plugin_TL2_RouteB.dll 备份重命名为 .bak");
+            log.AppendBi(L"[清理] 已将旧版 Plugin_TL2_RouteB.dll 备份重命名为 .bak",
+                         L"[Cleanup] Renamed legacy Plugin_TL2_RouteB.dll to .bak");
         }
     }
 
@@ -459,12 +530,12 @@ bool PerformInstall(const fs::path& game_dir, Logger& log) {
                 return false;
             }
         }
-        std::wstring err_msg;
+        BiText err_msg;
         if (!ExtractResourceToFile(item.resource_id, game_dir / rel, &err_msg)) {
-            log.Append(L"[错误] " + err_msg);
+            log.AppendBi(L"[错误] " + err_msg.zh, L"[Error] " + err_msg.en);
             return false;
         }
-        log.Append(L"[安装] " + rel.wstring());
+        log.AppendBi(L"[安装] " + rel.wstring(), L"[Install] " + rel.wstring());
     }
 
     if (!UpdatePluginConfigFile(game_dir / L"Plugins.cfg", log)) {
@@ -477,9 +548,13 @@ bool PerformInstall(const fs::path& game_dir, Logger& log) {
     }
 
     log.Append(L"");
-    log.Append(L"=== 安装完成！===");
-    log.Append(L"游戏内热键：按 F8 弹出交互式配置面板 (支持 P0/P1/P2 画质开关、水面 SSR、3D LUT、全选对比及 10 组预设)。");
-    log.Append(L"外部 3D LUT 用法：将自定义 3D .cube 文件改名为 TL2_CustomLUT.cube 放入游戏根目录（含 Torchlight2.exe），再在 F8 中选择「外部 .cube」（支持运行时热重载）。");
+    log.AppendBi(L"=== 安装完成！===", L"=== Installation Complete! ===");
+    log.AppendBi(
+        L"游戏内热键：按 F8 弹出交互式配置面板 (支持中英切换、10项强度滑块、水面 SSR、3D LUT 及 10 组预设)。",
+        L"In-Game Hotkey: Press F8 to open the live panel (ZH/EN toggle, 10 strength sliders, SSR, 3D LUT & 10 presets).");
+    log.AppendBi(
+        L"外部 3D LUT 用法：将自定义 3D .cube 文件改名为 TL2_CustomLUT.cube 放入游戏根目录（含 Torchlight2.exe），再在 F8 中选择「外部 .cube」（支持运行时热重载）。",
+        L"External 3D LUT: Rename any 3D .cube file to TL2_CustomLUT.cube in your game root (next to Torchlight2.exe), then pick 'Custom .cube' in F8.");
     return true;
 }
 
@@ -493,27 +568,32 @@ bool RestoreFromBackup(const fs::path& game_dir, const fs::path& rel_path, Logge
     fs::create_directories(dst.parent_path(), ec);
     fs::copy_file(bak, dst, fs::copy_options::overwrite_existing, ec);
     if (ec) {
-        log.Append(L"[错误] 恢复备份失败: " + rel_path.wstring());
+        log.AppendBi(L"[错误] 恢复备份失败: " + rel_path.wstring(),
+                     L"[Error] Failed to restore backup: " + rel_path.wstring());
         return false;
     }
-    log.Append(L"[恢复] " + rel_path.wstring());
+    log.AppendBi(L"[恢复] " + rel_path.wstring(), L"[Restore] " + rel_path.wstring());
     return true;
 }
 
 bool PerformUninstall(const fs::path& game_dir, Logger& log) {
     if (IsProcessRunningByName(L"Torchlight2.exe")) {
-        log.Append(L"[错误] 检测到 Torchlight2.exe 正在运行，请先退出游戏再卸载。");
+        log.AppendBi(L"[错误] 检测到 Torchlight2.exe 正在运行，请先退出游戏再卸载。",
+                     L"[Error] Torchlight2.exe is currently running. Please exit the game first.");
         return false;
     }
     std::error_code ec;
     if (game_dir.empty() || !fs::exists(game_dir / L"Torchlight2.exe", ec)) {
-        log.Append(L"[错误] 所选目录中未找到 Torchlight2.exe。");
+        log.AppendBi(L"[错误] 所选目录中未找到 Torchlight2.exe。",
+                     L"[Error] Torchlight2.exe not found in the selected directory.");
         return false;
     }
 
     const fs::path backup_root = game_dir / kBackupDirName;
     if (!fs::exists(backup_root, ec)) {
-        log.Append(L"[提示] 未找到备份目录 TL2_DX11_Enhance_Backup，将仅移除插件新增文件（不会修改缺失备份的配置）。");
+        log.AppendBi(
+            L"[提示] 未找到备份目录 TL2_DX11_Enhance_Backup，将仅移除插件新增文件（不会修改缺失备份的配置）。",
+            L"[Notice] Backup folder TL2_DX11_Enhance_Backup not found; only added files will be removed.");
     }
 
     bool ok = true;
@@ -528,10 +608,13 @@ bool PerformUninstall(const fs::path& game_dir, Logger& log) {
             const fs::path dst = game_dir / rel;
             if (fs::exists(dst, ec)) {
                 if (!::DeleteFileW(dst.c_str())) {
-                    log.Append(L"[错误] 移除文件失败: " + rel.wstring() + L" (" + FormatWin32Error(::GetLastError()) + L")");
+                    const DWORD err = ::GetLastError();
+                    log.AppendBi(
+                        L"[错误] 移除文件失败: " + rel.wstring() + L" (" + FormatWin32ErrorPair(err, false) + L")",
+                        L"[Error] Failed to remove file: " + rel.wstring() + L" (" + FormatWin32ErrorPair(err, true) + L")");
                     ok = false;
                 } else {
-                    log.Append(L"[移除] " + rel.wstring());
+                    log.AppendBi(L"[移除] " + rel.wstring(), L"[Remove] " + rel.wstring());
                 }
             }
         }
@@ -539,7 +622,7 @@ bool PerformUninstall(const fs::path& game_dir, Logger& log) {
 
     if (ok) {
         log.Append(L"");
-        log.Append(L"=== 卸载与原版恢复完成！===");
+        log.AppendBi(L"=== 卸载与原版恢复完成！===", L"=== Uninstall & Vanilla Restore Complete! ===");
     }
     return ok;
 }
@@ -647,7 +730,8 @@ std::wstring BrowseForGameFolder(HWND owner, const std::wstring& initial_dir) {
     DWORD opts = 0;
     dlg->GetOptions(&opts);
     dlg->SetOptions(opts | FOS_PICKFOLDERS | FOS_PATHMUSTEXIST | FOS_FORCEFILESYSTEM);
-    dlg->SetTitle(L"请选择《火炬之光 2》(Torchlight II) 安装根目录");
+    dlg->SetTitle(T(L"请选择《火炬之光 2》(Torchlight II) 安装根目录",
+                    L"Select the Torchlight II Root Installation Folder"));
 
     if (!initial_dir.empty()) {
         IShellItem* init_item = nullptr;
@@ -943,16 +1027,18 @@ void BuildBackdropBitmap(HWND hwnd) {
 
         DrawTextWithShadow(
             g,
-            L"D3D11 画质增强 & SSAO 安装器 (2026 x64)",
+            T(L"D3D11 画质增强 & SSAO 安装器 (2026 x64)",
+              L"D3D11 Graphics & SSAO Setup (2026 x64)"),
             title_f,
-            Gdiplus::RectF(Sf(224), Sf(22), Sf(500), Sf(28)),
+            Gdiplus::RectF(Sf(224), Sf(22), Sf(404), Sf(28)),
             fmt_left,
             Gdiplus::Color(255, 255, 214, 130),
             Sf(2.0f));
 
         DrawTextWithShadow(
             g,
-            L"内嵌 Plugin_TL2_DX11_Enhance_SSAO.dll 与全套 16 枚 HLSL4 着色器\n支持原版无损备份 · 游戏内按 [F8] 调出交互式画质配置面板",
+            T(L"内嵌 Plugin_TL2_DX11_Enhance_SSAO.dll 与全套 16 枚 HLSL4 着色器\n支持原版无损备份 · 游戏内按 [F8] 调出交互式画质配置面板",
+              L"Bundles Plugin_TL2_DX11_Enhance_SSAO.dll + 16 HLSL4 Shaders\nLossless vanilla backup · Press [F8] in-game for live settings"),
             sub_f,
             Gdiplus::RectF(Sf(224), Sf(52), Sf(500), Sf(36)),
             fmt_top_left,
@@ -962,13 +1048,14 @@ void BuildBackdropBitmap(HWND hwnd) {
         // Feature chips bar (4 Torchlight-style dark amber pills)
         struct ChipSpec {
             float w;
-            const wchar_t* label;
+            const wchar_t* label_zh;
+            const wchar_t* label_en;
         };
         const ChipSpec chips[4] = {
-            {180.0f, L"P0 法线凹凸 / 金属高光 / SSCS"},
-            {134.0f, L"P1 屏幕空间软粒子"},
-            {192.0f, L"P2 水面 SSR · 透视 · 3D LUT"},
-            {158.0f, L"F8 全选对比 · 10 槽位"},
+            {180.0f, L"法线凹凸 / 金属高光 / SSCS", L"Normals / Specular / SSCS"},
+            {134.0f, L"屏幕空间软粒子", L"Soft Particles"},
+            {192.0f, L"水面 SSR · 透视 · 3D LUT", L"SSR · Aerial · 3D LUT"},
+            {158.0f, L"F8 实时调节 · 10 槽位", L"F8 Live UI · 10 Slots"},
         };
         float cx = Sf(36);
         const float cy = Sf(96);
@@ -984,7 +1071,7 @@ void BuildBackdropBitmap(HWND hwnd) {
             g.FillPath(&c_fill, &cp);
             g.DrawPath(&c_pen, &cp);
             DrawTextWithShadow(
-                g, chip.label, chip_f, cr, fmt_center,
+                g, T(chip.label_zh, chip.label_en), chip_f, cr, fmt_center,
                 Gdiplus::Color(255, 248, 198, 108), Sf(1.0f));
             cx += cw + gap;
         }
@@ -1010,9 +1097,10 @@ void BuildBackdropBitmap(HWND hwnd) {
         // Directory section label & bronze border around path EDIT
         DrawTextWithShadow(
             g,
-            L"游戏根目录（含 Torchlight2.exe）：",
+            T(L"游戏根目录（含 Torchlight2.exe）：",
+              L"Game Root Directory (containing Torchlight2.exe):"),
             label_f,
-            Gdiplus::RectF(Sf(36), Sf(140), Sf(400), Sf(22)),
+            Gdiplus::RectF(Sf(36), Sf(140), Sf(500), Sf(22)),
             fmt_left,
             Gdiplus::Color(255, 232, 220, 196),
             Sf(1.0f));
@@ -1037,7 +1125,8 @@ void BuildBackdropBitmap(HWND hwnd) {
         // Row 1: backup & CLI hints
         DrawTextWithShadow(
             g,
-            L"自动备份原版配置与着色器至 TL2_DX11_Enhance_Backup，随时可无损还原",
+            T(L"自动备份原版配置与着色器至 TL2_DX11_Enhance_Backup，随时可无损还原",
+              L"Vanilla configs & shaders auto-backed up to TL2_DX11_Enhance_Backup"),
             foot_f,
             Gdiplus::RectF(Sf(36), Sf(493), Sf(450), Sf(18)),
             fmt_left,
@@ -1045,7 +1134,8 @@ void BuildBackdropBitmap(HWND hwnd) {
             Sf(1.0f));
         DrawTextWithShadow(
             g,
-            L"命令行: --check / --install / --uninstall",
+            T(L"命令行: --check / --install / --uninstall",
+              L"CLI: --check / --install / --uninstall"),
             foot_f,
             Gdiplus::RectF(Sf(490), Sf(493), Sf(234), Sf(18)),
             fmt_right,
@@ -1068,7 +1158,7 @@ void BuildBackdropBitmap(HWND hwnd) {
             fmt_typo.SetFormatFlags(fmt_typo.GetFormatFlags() | Gdiplus::StringFormatFlagsMeasureTrailingSpaces);
             fmt_typo.SetHotkeyPrefix(Gdiplus::HotkeyPrefixNone);
 
-            const wchar_t* auth_prefix = L"作者: ";
+            const wchar_t* auth_prefix = T(L"作者: ", L"Author: ");
             const wchar_t* auth_name = L"M3Lewis";
             Gdiplus::RectF box_ap;
             Gdiplus::RectF box_an;
@@ -1196,7 +1286,8 @@ void DrawOwnerButton(const DRAWITEMSTRUCT* dis) {
         ::GetWindowTextW(dis->hwndItem, text, 128);
         Gdiplus::FontFamily ff(L"Microsoft YaHei UI");
         const int weight = (dis->CtlID == kCtrlInstallBtn) ? Gdiplus::FontStyleBold : Gdiplus::FontStyleRegular;
-        Gdiplus::Font btn_f(&ff, Sf(14.0f), weight, Gdiplus::UnitPixel);
+        const float pt_sz = (dis->CtlID == kCtrlLangBtn) ? 12.0f : 14.0f;
+        Gdiplus::Font btn_f(&ff, Sf(pt_sz), weight, Gdiplus::UnitPixel);
         Gdiplus::StringFormat fmt;
         fmt.SetAlignment(Gdiplus::StringAlignmentCenter);
         fmt.SetLineAlignment(Gdiplus::StringAlignmentCenter);
@@ -1261,6 +1352,22 @@ void TryApplyDarkScrollbar(HWND hwnd) {
     ::FreeLibrary(ux);
 }
 
+void RefreshUiLanguage(HWND hwnd) {
+    if (!hwnd) {
+        return;
+    }
+    ::SetWindowTextW(hwnd, T(L"火炬之光 2 D3D11 画质增强 & SSAO 安装器",
+                             L"Torchlight II D3D11 Graphics & SSAO Setup"));
+    if (g_ui.lang_btn) ::SetWindowTextW(g_ui.lang_btn, T(L"语言: 中文", L"Lang: EN"));
+    if (g_ui.browse_btn) ::SetWindowTextW(g_ui.browse_btn, T(L"浏览...", L"Browse..."));
+    if (g_ui.check_btn) ::SetWindowTextW(g_ui.check_btn, T(L"检测版本兼容性", L"Check Compatibility"));
+    if (g_ui.install_btn) ::SetWindowTextW(g_ui.install_btn, T(L"一键安装 / 升级", L"Install / Upgrade"));
+    if (g_ui.uninstall_btn) ::SetWindowTextW(g_ui.uninstall_btn, T(L"卸载并恢复原版", L"Uninstall & Restore"));
+    BuildBackdropBitmap(hwnd);
+    g_gui_log.SyncGuiEdit();
+    ::InvalidateRect(hwnd, nullptr, FALSE);
+}
+
 LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
     switch (msg) {
         case WM_CREATE: {
@@ -1297,10 +1404,11 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
                 return b;
             };
 
-            g_ui.browse_btn = make_btn(L"浏览...", 626, 166, 98, 32, kCtrlBrowseBtn);
-            g_ui.check_btn = make_btn(L"检测版本兼容性", 36, 212, 166, 38, kCtrlCheckBtn);
-            g_ui.install_btn = make_btn(L"一键安装 / 升级", 214, 212, 292, 38, kCtrlInstallBtn);
-            g_ui.uninstall_btn = make_btn(L"卸载并恢复原版", 518, 212, 206, 38, kCtrlUninstallBtn);
+            g_ui.lang_btn = make_btn(T(L"语言: 中文", L"Lang: EN"), 634, 24, 90, 24, kCtrlLangBtn);
+            g_ui.browse_btn = make_btn(T(L"浏览...", L"Browse..."), 626, 166, 98, 32, kCtrlBrowseBtn);
+            g_ui.check_btn = make_btn(T(L"检测版本兼容性", L"Check Compatibility"), 36, 212, 166, 38, kCtrlCheckBtn);
+            g_ui.install_btn = make_btn(T(L"一键安装 / 升级", L"Install / Upgrade"), 214, 212, 292, 38, kCtrlInstallBtn);
+            g_ui.uninstall_btn = make_btn(T(L"卸载并恢复原版", L"Uninstall & Restore"), 518, 212, 206, 38, kCtrlUninstallBtn);
 
             g_ui.log_edit = ::CreateWindowExW(
                 0, L"EDIT", L"",
@@ -1316,12 +1424,20 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
             g_gui_log.Clear();
             if (!detected.empty()) {
                 ::SetWindowTextW(g_ui.path_edit, detected.c_str());
-                g_gui_log.Append(L"[自动探测] 已找到游戏目录: " + detected);
-                g_gui_log.Append(L"[提示] 点击上方「一键安装 / 升级」即可覆盖部署最新增强插件与着色器。");
+                g_gui_log.AppendBi(
+                    L"[自动探测] 已找到游戏目录: " + detected,
+                    L"[Auto-Detect] Found game directory: " + detected);
+                g_gui_log.AppendBi(
+                    L"[提示] 点击上方「一键安装 / 升级」即可覆盖部署最新增强插件与着色器。",
+                    L"[Tip] Click 'Install / Upgrade' above to deploy the latest plugin and shaders.");
             } else {
-                g_gui_log.Append(L"[提示] 未自动定位游戏目录，请点击“浏览...”选择含 Torchlight2.exe 的文件夹。");
+                g_gui_log.AppendBi(
+                    L"[提示] 未自动定位游戏目录，请点击“浏览...”选择含 Torchlight2.exe 的文件夹。",
+                    L"[Tip] Game folder not found automatically. Click 'Browse...' to select the folder containing Torchlight2.exe.");
             }
-            g_gui_log.Append(L"[外部 LUT] 如需加载第三方 3D .cube 调色，请改名为 TL2_CustomLUT.cube 放入游戏根目录后在 F8 面板启用。");
+            g_gui_log.AppendBi(
+                L"[外部 LUT] 如需加载第三方 3D .cube 调色，请改名为 TL2_CustomLUT.cube 放入游戏根目录后在 F8 面板启用。",
+                L"[External LUT] To load a custom 3D .cube file, rename it to TL2_CustomLUT.cube in your game root and select 'Custom .cube' in F8.");
             return 0;
         }
         case WM_ERASEBKGND:
@@ -1433,11 +1549,16 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
         }
         case WM_COMMAND: {
             const int ctrl_id = LOWORD(wparam);
+            if (ctrl_id == kCtrlLangBtn) {
+                g_ui.english = !g_ui.english;
+                RefreshUiLanguage(hwnd);
+                return 0;
+            }
             if (ctrl_id == kCtrlBrowseBtn) {
                 const std::wstring chosen = BrowseForGameFolder(hwnd, GetPathFromEdit());
                 if (!chosen.empty()) {
                     ::SetWindowTextW(g_ui.path_edit, chosen.c_str());
-                    g_gui_log.Append(L"[已选目录] " + chosen);
+                    g_gui_log.AppendBi(L"[已选目录] " + chosen, L"[Selected] " + chosen);
                 }
                 return 0;
             }
@@ -1450,25 +1571,33 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
                 const bool ok = PerformInstall(dir, g_gui_log);
                 ::MessageBoxW(
                     hwnd,
-                    ok ? L"安装成功！\n已自动备份原版配置与着色器。\n\n游戏内按 F8 弹出交互式配置面板：可切换 P0/P1/P2 画质开关、水面 SSR、3D LUT 调色、使用 [全部开启/全部关闭] 快速对比，并保存多达 10 组预设。\n\n外部 .cube 调色说明：\n将自定义 3D .cube 文件重命名为 TL2_CustomLUT.cube 并放入游戏根目录（Torchlight2.exe 同级目录），即可在 F8 面板选择「外部 .cube」加载（支持热重载）。"
-                       : L"安装未完成，请查看日志窗口中的错误信息。",
-                    L"火炬之光 2 D3D11 画质增强 & SSAO 安装器",
+                    ok ? T(L"安装成功！\n已自动备份原版配置与着色器。\n\n游戏内按 F8 弹出交互式配置面板：支持中英双语切换、10 项效果独立强度滑块、水面 SSR、3D LUT 调色、全开/全关对比，并保存多达 10 组预设。\n\n外部 .cube 调色说明：\n将自定义 3D .cube 文件重命名为 TL2_CustomLUT.cube 并放入游戏根目录（Torchlight2.exe 同级目录），即可在 F8 面板选择「外部 .cube」加载（支持热重载）。",
+                           L"Installation successful!\nOriginal configs and shaders were backed up automatically.\n\nPress F8 in-game to open the live panel: toggle ZH/EN UI, tune 10 effect strength sliders, switch Water SSR / 3D LUT / Enable-Disable All, and save up to 10 custom presets.\n\nCustom .cube LUT usage:\nRename any 3D .cube file to TL2_CustomLUT.cube inside the game root (next to Torchlight2.exe), then pick 'Custom .cube' in F8 (hot-reload supported).")
+                       : T(L"安装未完成，请查看日志窗口中的错误信息。",
+                           L"Installation incomplete. Please check the error details in the log console."),
+                    T(L"火炬之光 2 D3D11 画质增强 & SSAO 安装器",
+                      L"Torchlight II D3D11 Graphics & SSAO Setup"),
                     ok ? (MB_OK | MB_ICONINFORMATION) : (MB_OK | MB_ICONERROR));
                 return 0;
             }
             if (ctrl_id == kCtrlUninstallBtn) {
                 if (::MessageBoxW(
                         hwnd,
-                        L"确定卸载增强插件并恢复原版文件与配置吗？",
-                        L"确认卸载",
+                        T(L"确定卸载增强插件并恢复原版文件与配置吗？",
+                          L"Uninstall the enhancement mod and restore original vanilla files & configs?"),
+                        T(L"确认卸载", L"Confirm Uninstall"),
                         MB_YESNO | MB_ICONQUESTION) != IDYES) {
                     return 0;
                 }
                 const bool ok = PerformUninstall(GetPathFromEdit(), g_gui_log);
                 ::MessageBoxW(
                     hwnd,
-                    ok ? L"已卸载插件并恢复原版配置！" : L"卸载过程中出现错误，请查看日志窗口。",
-                    L"火炬之光 2 D3D11 画质增强 & SSAO 安装器",
+                    ok ? T(L"已卸载插件并恢复原版配置！",
+                           L"Plugin removed and original vanilla files restored!")
+                       : T(L"卸载过程中出现错误，请查看日志窗口。",
+                           L"Errors occurred during uninstall. Please check the log console."),
+                    T(L"火炬之光 2 D3D11 画质增强 & SSAO 安装器",
+                      L"Torchlight II D3D11 Graphics & SSAO Setup"),
                     ok ? (MB_OK | MB_ICONINFORMATION) : (MB_OK | MB_ICONWARNING));
                 return 0;
             }
@@ -1495,12 +1624,23 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
 }
 
 int RunCli(int argc, wchar_t** argv) {
-    if (argc < 3) {
-        std::fwprintf(stderr, L"Usage: Setup.exe <--check|--install|--uninstall> <GameDir>\n");
+    std::vector<std::wstring> pos;
+    for (int i = 1; i < argc; ++i) {
+        const std::wstring arg = argv[i];
+        if (arg == L"--lang=en") {
+            g_ui.english = true;
+        } else if (arg == L"--lang=zh") {
+            g_ui.english = false;
+        } else {
+            pos.push_back(arg);
+        }
+    }
+    if (pos.size() < 2) {
+        std::fwprintf(stderr, L"Usage: Setup.exe <--check|--install|--uninstall> <GameDir> [--lang=zh|--lang=en]\n");
         return 1;
     }
-    const std::wstring cmd = argv[1];
-    const fs::path game_dir = argv[2];
+    const std::wstring& cmd = pos[0];
+    const fs::path game_dir = pos[1];
     Logger log(true);
     if (cmd == L"--check") {
         return ValidateGameDirectory(game_dir, log) ? 0 : 2;
@@ -1520,6 +1660,7 @@ int RunCli(int argc, wchar_t** argv) {
 int WINAPI wWinMain(HINSTANCE hinst, HINSTANCE, PWSTR, int nCmdShow) {
     ::SetProcessDPIAware();
     ::CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+    g_ui.english = DetectDefaultEnglish();
 
     INITCOMMONCONTROLSEX icc{};
     icc.dwSize = sizeof(icc);
@@ -1575,7 +1716,8 @@ int WINAPI wWinMain(HINSTANCE hinst, HINSTANCE, PWSTR, int nCmdShow) {
     HWND hwnd = ::CreateWindowExW(
         0,
         wc.lpszClassName,
-        L"火炬之光 2 D3D11 画质增强 & SSAO 安装器",
+        T(L"火炬之光 2 D3D11 画质增强 & SSAO 安装器",
+          L"Torchlight II D3D11 Graphics & SSAO Setup"),
         style,
         win_x,
         win_y,

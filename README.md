@@ -57,7 +57,7 @@ tl2_d3d11_route_b/
 │   ├── shaders.program
 │   ├── Phase3_Scene.program
 │   └── RenderScale.material
-├── scripts/                # Build and Workshop deployment scripts
+├── scripts/                # Environment check and helper scripts
 ├── tests/                  # Verification test suites
 ├── build.ps1               # Builds Plugin_TL2_DX11_Enhance_SSAO.dll via MSVC cl.exe
 └── build_installer.ps1     # Compiles TL2_DX11_Enhance_SSAO_Setup.exe

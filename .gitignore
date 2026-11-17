@@ -16,3 +16,10 @@ obj/
 .vscode/
 *.user
 Thumbs.db
+__pycache__/
+*.pyc
+
+# Steam Workshop Internal Automation & Staging
+scripts/upload_workshop.ps1
+scripts/STEAM_WORKSHOP_GUIDE.md
+workshop_upload/

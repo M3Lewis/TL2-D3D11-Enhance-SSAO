@@ -487,6 +487,9 @@ extern "C" __declspec(dllexport) void dllStartPlugin() {
     g_stats_logged.store(false, std::memory_order_relaxed);
     g_cleaned_up.store(false, std::memory_order_relaxed);
     if (!g_log) {
+        if (::GetFileAttributesA("TL2_RouteB_D3D11.log") != INVALID_FILE_ATTRIBUTES) {
+            ::MoveFileExA("TL2_RouteB_D3D11.log", "TL2_RouteB_D3D11.prev.log", MOVEFILE_REPLACE_EXISTING);
+        }
         ::fopen_s(&g_log, "TL2_RouteB_D3D11.log", "w");
     }
     InstallCrashLogger();

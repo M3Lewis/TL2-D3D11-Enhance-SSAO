@@ -5,6 +5,7 @@
 #include "route_c_d3d11.h"
 
 #include <d3d11.h>
+#include <commctrl.h>
 #include <windowsx.h>
 
 #include <algorithm>
@@ -16,6 +17,7 @@
 #include <mutex>
 #include <string>
 
+#pragma comment(lib, "comctl32.lib")
 #pragma comment(lib, "gdi32.lib")
 #pragma comment(lib, "user32.lib")
 
@@ -132,7 +134,6 @@ struct PanelRuntimeState {
     std::wstring status_en = kDefaultStatusEn;
 
     HWND hwnd = nullptr;
-    WNDPROC orig_wndproc = nullptr;
     bool swallow_esc_keyup = false;
     bool swallow_f8_keyup = false;
 
@@ -1299,22 +1300,29 @@ bool IsMouseMessage(UINT msg) {
     }
 }
 
-LRESULT CALLBACK PanelHookWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
-    WNDPROC orig = nullptr;
+constexpr UINT_PTR kPanelSubclassId = 0x544C3246ULL;  // 'TL2F'
+
+LRESULT CALLBACK PanelHookWndProc(
+    HWND hwnd,
+    UINT msg,
+    WPARAM wParam,
+    LPARAM lParam,
+    UINT_PTR uIdSubclass,
+    DWORD_PTR /*dwRefData*/) {
     bool swallow = false;
     bool need_release_capture = false;
     bool need_set_capture = false;
+    bool remove_self = false;
 
     {
         std::lock_guard<std::mutex> lock(g_panel.mutex);
-        orig = g_panel.orig_wndproc;
 
         if (msg == WM_NCDESTROY) {
             g_panel.hwnd = nullptr;
-            g_panel.orig_wndproc = nullptr;
             g_panel.dragging = false;
             g_panel.active_slider_index = -1;
             g_wndproc_attached.store(false, std::memory_order_release);
+            remove_self = true;
         } else if (msg == WM_CAPTURECHANGED && (g_panel.dragging || g_panel.active_slider_index >= 0)) {
             g_panel.dragging = false;
             g_panel.active_slider_index = -1;
@@ -1469,14 +1477,14 @@ LRESULT CALLBACK PanelHookWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPa
     if (need_release_capture) {
         ::ReleaseCapture();
     }
+    if (remove_self) {
+        ::RemoveWindowSubclass(hwnd, &PanelHookWndProc, uIdSubclass);
+    }
 
     if (swallow) {
         return 0;
     }
-    if (orig) {
-        return ::CallWindowProcW(orig, hwnd, msg, wParam, lParam);
-    }
-    return ::DefWindowProcW(hwnd, msg, wParam, lParam);
+    return ::DefSubclassProc(hwnd, msg, wParam, lParam);
 }
 
 }  // namespace
@@ -1728,42 +1736,45 @@ bool AttachPanelWindow(HWND hwnd) {
     if (!hwnd || !::IsWindow(hwnd)) {
         return false;
     }
-    std::lock_guard<std::mutex> lock(g_panel.mutex);
-    if (g_panel.hwnd == hwnd && g_panel.orig_wndproc != nullptr) {
-        return true;
+    HWND prev_hwnd = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(g_panel.mutex);
+        if (g_panel.hwnd == hwnd && g_wndproc_attached.load(std::memory_order_acquire)) {
+            return true;
+        }
+        prev_hwnd = g_panel.hwnd;
+        g_panel.hwnd = nullptr;
+        g_wndproc_attached.store(false, std::memory_order_release);
     }
-    if (g_panel.hwnd && g_panel.orig_wndproc && ::IsWindow(g_panel.hwnd)) {
-        ::SetWindowLongPtrW(g_panel.hwnd, GWLP_WNDPROC,
-                            reinterpret_cast<LONG_PTR>(g_panel.orig_wndproc));
+    if (prev_hwnd && ::IsWindow(prev_hwnd)) {
+        ::RemoveWindowSubclass(prev_hwnd, &PanelHookWndProc, kPanelSubclassId);
     }
-    const LONG_PTR prev = ::SetWindowLongPtrW(hwnd, GWLP_WNDPROC,
-                                              reinterpret_cast<LONG_PTR>(&PanelHookWndProc));
-    if (prev == 0 && ::GetLastError() != 0) {
+    if (!::SetWindowSubclass(hwnd, &PanelHookWndProc, kPanelSubclassId, 0)) {
         return false;
     }
-    g_panel.hwnd = hwnd;
-    g_panel.orig_wndproc = reinterpret_cast<WNDPROC>(prev);
-    g_wndproc_attached.store(true, std::memory_order_release);
+    {
+        std::lock_guard<std::mutex> lock(g_panel.mutex);
+        g_panel.hwnd = hwnd;
+        g_wndproc_attached.store(true, std::memory_order_release);
+    }
     return true;
 }
 
 void DetachPanelWindow() {
     HWND hwnd = nullptr;
-    WNDPROC orig = nullptr;
     {
         std::lock_guard<std::mutex> lock(g_panel.mutex);
         hwnd = g_panel.hwnd;
-        orig = g_panel.orig_wndproc;
         g_panel.hwnd = nullptr;
-        g_panel.orig_wndproc = nullptr;
         g_panel.dragging = false;
+        g_panel.active_slider_index = -1;
         g_wndproc_attached.store(false, std::memory_order_release);
     }
-    if (hwnd && orig && ::IsWindow(hwnd)) {
+    if (hwnd && ::IsWindow(hwnd)) {
         if (::GetCapture() == hwnd) {
             ::ReleaseCapture();
         }
-        ::SetWindowLongPtrW(hwnd, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(orig));
+        ::RemoveWindowSubclass(hwnd, &PanelHookWndProc, kPanelSubclassId);
     }
 }
 

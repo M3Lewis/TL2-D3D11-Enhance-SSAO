@@ -1,7 +1,18 @@
+# Build Outputs
 bin/
 obj/
+*.dll
+*.exe
 *.pdb
 *.ilk
 *.exp
 *.lib
 *.obj
+*.log
+*.bak
+
+# OS / Editor files
+.vs/
+.vscode/
+*.user
+Thumbs.db

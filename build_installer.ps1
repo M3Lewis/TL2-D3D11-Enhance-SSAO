@@ -13,6 +13,37 @@ if (-not (Test-Path $DllPath)) {
 New-Item -ItemType Directory -Path $OutDir -Force | Out-Null
 New-Item -ItemType Directory -Path $ObjDir -Force | Out-Null
 
+# --- HLSL Shader Pre-compilation Validation ---
+$fxcCandidates = @(
+    "C:\Program Files (x86)\Windows Kits\10\bin\10.0.22621.0\x64\fxc.exe",
+    "C:\Program Files (x86)\Windows Kits\10\bin\10.0.18362.0\x64\fxc.exe"
+)
+$fxcPath = $fxcCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+if ($fxcPath) {
+    Write-Host "[Validating Shaders] Running fxc pre-compilation check..." -ForegroundColor Cyan
+    $testShaders = @(
+        @{ File = "shaders\hlsl4\DiffPass_ps.hlsl"; Entry = "main_opaque"; Target = "ps_4_0" },
+        @{ File = "shaders\hlsl4\DiffPass_ps.hlsl"; Entry = "main_alpha"; Target = "ps_4_0" },
+        @{ File = "shaders\hlsl4\SkinnedDiff_ps.hlsl"; Entry = "main_opaque"; Target = "ps_4_0" },
+        @{ File = "shaders\hlsl4\SkinnedDiff_ps.hlsl"; Entry = "main_alpha"; Target = "ps_4_0" },
+        @{ File = "shaders\hlsl4\LightPass_ps.hlsl"; Entry = "main"; Target = "ps_4_0" },
+        @{ File = "shaders\hlsl4\RimLit_ps.hlsl"; Entry = "main_2d"; Target = "ps_4_0" },
+        @{ File = "shaders\hlsl4\RimLit_ps.hlsl"; Entry = "main_cube"; Target = "ps_4_0" },
+        @{ File = "shaders\hlsl4\RimLit_ps.hlsl"; Entry = "main_cube3"; Target = "ps_4_0" },
+        @{ File = "shaders\hlsl4\skinning.hlsl"; Entry = "hardwareSkinning_vp"; Target = "vs_4_0" },
+        @{ File = "shaders\hlsl4\SimpleUI_ps.hlsl"; Entry = "main"; Target = "ps_4_0" },
+        @{ File = "shaders\hlsl4\SimpleUI_vs.hlsl"; Entry = "main"; Target = "vs_4_0" }
+    )
+    foreach ($ts in $testShaders) {
+        $shaderFullPath = Join-Path $RootDir $ts.File
+        $proc = Start-Process -FilePath $fxcPath -ArgumentList "/nologo", "/T", $ts.Target, "/E", $ts.Entry, "`"$shaderFullPath`"" -NoNewWindow -Wait -PassThru
+        if ($proc.ExitCode -ne 0) {
+            throw "Shader validation failed: $($ts.File)::$($ts.Entry) [$($ts.Target)]"
+        }
+    }
+    Write-Host "[Validating Shaders] All shaders compiled cleanly." -ForegroundColor Green
+}
+
 $Payloads = @(
     @{ Id = 101; RelSrc = "bin\Plugin_TL2_DX11_Enhance_SSAO.dll";   Dst = "Plugin_TL2_DX11_Enhance_SSAO.dll";   Overwrite = $false },
     @{ Id = 102; RelSrc = "shaders\Copy_ps.hlsl";                   Dst = "programs\Copy_ps.hlsl";              Overwrite = $false },

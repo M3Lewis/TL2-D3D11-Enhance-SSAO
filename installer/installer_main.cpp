@@ -36,14 +36,19 @@ struct PayloadEntry {
 
 struct ExpectedPeModule {
     const wchar_t* filename;
-    uint32_t expected_timestamp;
+    const uint32_t* valid_timestamps;
+    size_t timestamp_count;
     uint32_t expected_image_size;
 };
 
+constexpr uint32_t kOgreTimestamps[]  = {0x6af5faa0U, 0x6aff34acU};
+constexpr uint32_t kD3D11Timestamps[] = {0x6af5fabfU, 0x6aff34cbU};
+constexpr uint32_t kGuiTimestamps[]   = {0x6af5fab0U, 0x6aff34b0U};
+
 constexpr ExpectedPeModule kRequiredPeModules[] = {
-    {L"OgreMain.dll", 0x6af5faa0U, 0x006b6000U},
-    {L"RenderSystem_Direct3D11.dll", 0x6af5fabfU, 0x0008a000U},
-    {L"OgreGUIRenderer.dll", 0x6af5fab0U, 0x00014000U},
+    {L"OgreMain.dll",                kOgreTimestamps,  sizeof(kOgreTimestamps) / sizeof(kOgreTimestamps[0]),   0x006b6000U},
+    {L"RenderSystem_Direct3D11.dll", kD3D11Timestamps, sizeof(kD3D11Timestamps) / sizeof(kD3D11Timestamps[0]), 0x0008a000U},
+    {L"OgreGUIRenderer.dll",         kGuiTimestamps,   sizeof(kGuiTimestamps) / sizeof(kGuiTimestamps[0]),     0x00014000U},
 };
 
 constexpr wchar_t kBackupDirName[] = L"TL2_DX11_Enhance_Backup";
@@ -307,15 +312,22 @@ bool ValidateGameDirectory(const fs::path& game_dir, Logger& log, bool* out_vers
             }
             return false;
         }
-        if (ts != mod.expected_timestamp || img_sz != mod.expected_image_size) {
+        bool ts_matched = false;
+        for (size_t i = 0; i < mod.timestamp_count; ++i) {
+            if (ts == mod.valid_timestamps[i]) {
+                ts_matched = true;
+                break;
+            }
+        }
+        if (!ts_matched || img_sz != mod.expected_image_size) {
             wchar_t msg_zh[256]{};
             wchar_t msg_en[256]{};
             std::swprintf(msg_zh, 256,
-                          L"[错误] %s 不是 1.27 兼容版本 (TimeDateStamp=0x%08X 期望 0x%08X, SizeOfImage=0x%X 期望 0x%X)，为防崩溃已中止。",
-                          mod.filename, ts, mod.expected_timestamp, img_sz, mod.expected_image_size);
+                          L"[错误] %s 不是 1.27 兼容版本 (TimeDateStamp=0x%08X, SizeOfImage=0x%X 期望 0x%X)，为防崩溃已中止。",
+                          mod.filename, ts, img_sz, mod.expected_image_size);
             std::swprintf(msg_en, 256,
-                          L"[Error] %s is not a compatible v1.27 build (TimeDateStamp=0x%08X expected 0x%08X, SizeOfImage=0x%X expected 0x%X); aborted.",
-                          mod.filename, ts, mod.expected_timestamp, img_sz, mod.expected_image_size);
+                          L"[Error] %s is not a compatible v1.27 build (TimeDateStamp=0x%08X, SizeOfImage=0x%X expected 0x%X); aborted.",
+                          mod.filename, ts, img_sz, mod.expected_image_size);
             log.AppendBi(msg_zh, msg_en);
             AppendVersionUpgradeHint(log);
             if (out_version_mismatch) {

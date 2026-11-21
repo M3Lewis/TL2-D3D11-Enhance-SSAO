@@ -20,13 +20,18 @@ namespace {
 
 struct ExpectedModule {
     const wchar_t* module_name;
-    std::uint32_t expected_timestamp;
+    const std::uint32_t* valid_timestamps;
+    size_t timestamp_count;
     std::uint32_t expected_size_of_image;
 };
 
-constexpr ExpectedModule kModD3D11 = {L"RenderSystem_Direct3D11.dll", 0x6af5fabfU, 0x0008a000U};
-constexpr ExpectedModule kModGui   = {L"OgreGUIRenderer.dll",         0x6af5fab0U, 0x00014000U};
-constexpr ExpectedModule kModOgre  = {L"OgreMain.dll",                0x6af5faa0U, 0x006b6000U};
+constexpr std::uint32_t kD3D11Timestamps[] = {0x6af5fabfU, 0x6aff34cbU};
+constexpr std::uint32_t kGuiTimestamps[]   = {0x6af5fab0U, 0x6aff34b0U};
+constexpr std::uint32_t kOgreTimestamps[]  = {0x6af5faa0U, 0x6aff34acU};
+
+constexpr ExpectedModule kModD3D11 = {L"RenderSystem_Direct3D11.dll", kD3D11Timestamps, sizeof(kD3D11Timestamps) / sizeof(kD3D11Timestamps[0]), 0x0008a000U};
+constexpr ExpectedModule kModGui   = {L"OgreGUIRenderer.dll",         kGuiTimestamps,   sizeof(kGuiTimestamps) / sizeof(kGuiTimestamps[0]),     0x00014000U};
+constexpr ExpectedModule kModOgre  = {L"OgreMain.dll",                kOgreTimestamps,  sizeof(kOgreTimestamps) / sizeof(kOgreTimestamps[0]),   0x006b6000U};
 
 FILE* g_log = nullptr;
 bool g_phase1_installed = false;
@@ -382,7 +387,14 @@ void* ValidateModulePe(const ExpectedModule& spec, bool* out_matched) {
 
     const std::uint32_t ts = nt->FileHeader.TimeDateStamp;
     const std::uint32_t img_size = nt->OptionalHeader.SizeOfImage;
-    const bool matched = (ts == spec.expected_timestamp) && (img_size == spec.expected_size_of_image);
+    bool ts_matched = false;
+    for (size_t i = 0; i < spec.timestamp_count; ++i) {
+        if (ts == spec.valid_timestamps[i]) {
+            ts_matched = true;
+            break;
+        }
+    }
+    const bool matched = ts_matched && (img_size == spec.expected_size_of_image);
     *out_matched = matched;
 
     LogLine(

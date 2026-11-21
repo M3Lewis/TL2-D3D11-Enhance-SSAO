@@ -1344,8 +1344,11 @@ void OnRouteCScenePassObserved(
     AppendUniqueSamplePass(q.sample_passes, sizeof(q.sample_passes), pass_name);
 }
 
+static void EnsureEngineWeatherTimeFuncs();
+
 bool InstallRouteCAoPipeline(void* ogre_main_base, RouteCLogFn logger) {
     g_log = logger;
+    EnsureEngineWeatherTimeFuncs();
     if (g_hooked.load(std::memory_order_relaxed)) {
         return true;
     }
@@ -1648,6 +1651,16 @@ static void EnsureEngineWeatherTimeFuncs() {
         g_fnSetTimeOfDayMult = reinterpret_cast<FnEditorSetTimeOfDayMult>(::GetProcAddress(hExe, "EditorSetTimeOfDayMult"));
         g_fnSetShowWeather = reinterpret_cast<FnEditorSetShowWeatherEffects>(::GetProcAddress(hExe, "EditorSetShowWeatherEffects"));
         g_fnGetShowWeather = reinterpret_cast<FnEditorGetShowWeatherEffects>(::GetProcAddress(hExe, "EditorGetShowWeatherEffects"));
+
+        if (g_log) {
+            g_log("[RouteC][TimeOfDay] Engine Weather/Time Funcs Init: hExe=%p Set=%p Get=%p SetUpd=%p SetMult=%p ShowWeather=%p",
+                  hExe, g_fnSetTimeOfDay, g_fnGetTimeOfDay, g_fnSetUpdateTimeOfDay, g_fnSetTimeOfDayMult, g_fnSetShowWeather);
+            if (g_fnSetTimeOfDay) {
+                const auto* b = reinterpret_cast<const uint8_t*>(g_fnSetTimeOfDay);
+                g_log("[RouteC][TimeOfDay] SetTimeOfDay OpCodes (16B): %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X",
+                      b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7], b[8], b[9], b[10], b[11], b[12], b[13], b[14], b[15]);
+            }
+        }
     }
     g_engine_funcs_inited.store(true, std::memory_order_relaxed);
 }
@@ -1656,9 +1669,17 @@ void SetWeatherRainEnabled(bool enabled) {
     g_weather_rain_enabled.store(enabled, std::memory_order_relaxed);
     EnsureEngineWeatherTimeFuncs();
     if (g_fnSetShowWeather) {
+        DWORD excCode = 0;
         __try {
             g_fnSetShowWeather(enabled);
-        } __except (EXCEPTION_EXECUTE_HANDLER) {}
+            if (g_log) {
+                g_log("[RouteC][Weather] SetShowWeatherEffects(%d) invoked", enabled ? 1 : 0);
+            }
+        } __except (excCode = GetExceptionCode(), EXCEPTION_EXECUTE_HANDLER) {
+            if (g_log) {
+                g_log("[RouteC][Weather] EXCEPTION 0x%08X during SetShowWeatherEffects(%d)!", excCode, enabled ? 1 : 0);
+            }
+        }
     }
 }
 
@@ -1685,19 +1706,54 @@ void SetTimeOfDayHours(int hours) {
     EnsureEngineWeatherTimeFuncs();
     if (hours >= 0 && hours <= 24) {
         if (g_fnSetTimeOfDay) {
+            DWORD excCode = 0;
+            float before = -999.0f;
+            float after = -999.0f;
             __try {
-                g_fnSetTimeOfDay(static_cast<float>(hours));
-                if (g_fnSetUpdateTimeOfDay) {
-                    g_fnSetUpdateTimeOfDay(!g_time_of_day_locked.load(std::memory_order_relaxed));
+                if (g_fnGetTimeOfDay) {
+                    before = g_fnGetTimeOfDay();
                 }
-            } __except (EXCEPTION_EXECUTE_HANDLER) {}
+                g_fnSetTimeOfDay(static_cast<float>(hours));
+                // Expert advice 9: Use timeScale (EditorSetTimeOfDayMult) = 0.0f to lock progression,
+                // while keeping EditorSetUpdateTimeOfDay = true so lighting, skybox and sun angles interpolate
+                if (g_fnSetTimeOfDayMult) {
+                    g_fnSetTimeOfDayMult(g_time_of_day_locked.load(std::memory_order_relaxed) ? 0.0f : 1.0f);
+                }
+                if (g_fnSetUpdateTimeOfDay) {
+                    g_fnSetUpdateTimeOfDay(true);
+                }
+                if (g_fnGetTimeOfDay) {
+                    after = g_fnGetTimeOfDay();
+                }
+                if (g_log) {
+                    g_log("[RouteC][TimeOfDay] SetHours: before=%.3f -> set=%d -> after=%.3f (locked=%d)",
+                          before, hours, after, g_time_of_day_locked.load(std::memory_order_relaxed) ? 1 : 0);
+                }
+            } __except (excCode = GetExceptionCode(), EXCEPTION_EXECUTE_HANDLER) {
+                if (g_log) {
+                    g_log("[RouteC][TimeOfDay] EXCEPTION 0x%08X during SetTimeOfDay(%d)!", excCode, hours);
+                }
+            }
+        } else if (g_log) {
+            g_log("[RouteC][TimeOfDay] SetHours(%d) skipped: g_fnSetTimeOfDay is NULL!", hours);
         }
     } else {
         // -1: Auto / follow natural time
-        if (g_fnSetUpdateTimeOfDay) {
-            __try {
+        DWORD excCode = 0;
+        __try {
+            if (g_fnSetTimeOfDayMult) {
+                g_fnSetTimeOfDayMult(1.0f); // Restore normal time scale
+            }
+            if (g_fnSetUpdateTimeOfDay) {
                 g_fnSetUpdateTimeOfDay(true);
-            } __except (EXCEPTION_EXECUTE_HANDLER) {}
+            }
+            if (g_log) {
+                g_log("[RouteC][TimeOfDay] SetHours(-1 Auto): restored timeScale=1.0, update=true");
+            }
+        } __except (excCode = GetExceptionCode(), EXCEPTION_EXECUTE_HANDLER) {
+            if (g_log) {
+                g_log("[RouteC][TimeOfDay] EXCEPTION 0x%08X during Auto time restore!", excCode);
+            }
         }
     }
 }
@@ -1709,12 +1765,17 @@ int GetTimeOfDayHours() {
     }
     EnsureEngineWeatherTimeFuncs();
     if (g_fnGetTimeOfDay) {
+        DWORD excCode = 0;
         __try {
             const float t = g_fnGetTimeOfDay();
             if (t >= 0.0f && t <= 24.0f) {
                 return static_cast<int>(std::lround(t));
             }
-        } __except (EXCEPTION_EXECUTE_HANDLER) {}
+        } __except (excCode = GetExceptionCode(), EXCEPTION_EXECUTE_HANDLER) {
+            if (g_log) {
+                g_log("[RouteC][TimeOfDay] EXCEPTION 0x%08X during GetTimeOfDay!", excCode);
+            }
+        }
     }
     return 12;
 }
@@ -1722,10 +1783,21 @@ int GetTimeOfDayHours() {
 void SetTimeOfDayLocked(bool locked) {
     g_time_of_day_locked.store(locked, std::memory_order_relaxed);
     EnsureEngineWeatherTimeFuncs();
-    if (g_fnSetUpdateTimeOfDay) {
-        __try {
-            g_fnSetUpdateTimeOfDay(!locked);
-        } __except (EXCEPTION_EXECUTE_HANDLER) {}
+    DWORD excCode = 0;
+    __try {
+        if (g_fnSetTimeOfDayMult) {
+            g_fnSetTimeOfDayMult(locked ? 0.0f : 1.0f);
+        }
+        if (g_fnSetUpdateTimeOfDay) {
+            g_fnSetUpdateTimeOfDay(true); // Must remain true so light/skybox interpolates
+        }
+        if (g_log) {
+            g_log("[RouteC][TimeOfDay] SetLocked(%d): timeScale=%.1f update=1", locked ? 1 : 0, locked ? 0.0f : 1.0f);
+        }
+    } __except (excCode = GetExceptionCode(), EXCEPTION_EXECUTE_HANDLER) {
+        if (g_log) {
+            g_log("[RouteC][TimeOfDay] EXCEPTION 0x%08X during SetTimeOfDayLocked(%d)!", excCode, locked ? 1 : 0);
+        }
     }
 }
 

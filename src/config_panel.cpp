@@ -1,8 +1,10 @@
 #include "config_panel.h"
 
 #include "phase3_scene_pipeline.h"
-#include "route_c_ao.h"
-#include "route_c_d3d11.h"
+#include "render_hook_manager.h"
+#include "game_time_weather.h"
+#include "d3d11_post_renderer.h"
+#include "d3d11_overlay_pass.h"
 
 #include <d3d11.h>
 #include <commctrl.h>

@@ -18,8 +18,9 @@
 #include "fixed_func_manual_uniforms.h"
 #include "hlsl_cbuffer_fastpath.h"
 #include "hook_utils.h"
-#include "route_c_ao.h"
-#include "route_c_d3d11.h"
+#include "render_hook_manager.h"
+#include "game_time_weather.h"
+#include "d3d11_overlay_pass.h"
 
 namespace routeb {
 

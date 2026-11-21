@@ -8,8 +8,13 @@ $SrcFiles = @(
     (Join-Path $RootDir "src\cegui_explicit_shader.cpp"),
     (Join-Path $RootDir "src\fixed_func_manual_uniforms.cpp"),
     (Join-Path $RootDir "src\phase3_scene_pipeline.cpp"),
-    (Join-Path $RootDir "src\route_c_d3d11.cpp"),
-    (Join-Path $RootDir "src\route_c_ao.cpp"),
+    (Join-Path $RootDir "src\d3d11_post_shaders.cpp"),
+    (Join-Path $RootDir "src\d3d11_post_renderer.cpp"),
+    (Join-Path $RootDir "src\d3d11_ssao_pass.cpp"),
+    (Join-Path $RootDir "src\d3d11_ssr_pass.cpp"),
+    (Join-Path $RootDir "src\d3d11_overlay_pass.cpp"),
+    (Join-Path $RootDir "src\game_time_weather.cpp"),
+    (Join-Path $RootDir "src\render_hook_manager.cpp"),
     (Join-Path $RootDir "src\config_panel.cpp"),
     (Join-Path $RootDir "src\plugin_main.cpp")
 )

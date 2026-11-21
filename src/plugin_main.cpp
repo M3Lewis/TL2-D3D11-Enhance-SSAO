@@ -14,7 +14,7 @@
 #include "hlsl_cbuffer_fastpath.h"
 #include "hook_utils.h"
 #include "phase3_scene_pipeline.h"
-#include "route_c_ao.h"
+#include "render_hook_manager.h"
 
 namespace {
 
@@ -534,7 +534,11 @@ extern "C" __declspec(dllexport) void dllStopPlugin() {
 }
 
 extern "C" __declspec(dllexport) bool RouteB_VerifyRouteCShaders() {
-    return routeb::VerifyRouteCShaders();
+    return routeb::VerifyPostShaders();
+}
+
+extern "C" __declspec(dllexport) bool RouteB_VerifyPostShaders() {
+    return routeb::VerifyPostShaders();
 }
 
 extern "C" __declspec(dllexport) void RouteB_TriggerToastForTest() {

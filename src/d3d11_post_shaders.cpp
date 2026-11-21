@@ -500,14 +500,23 @@ float4 PS_WetFloorSsr(VsOut input) : SV_Target0
     float rainStrength = saturate(gAerialFogParams.y);
     float timeHours = gAerialFogParams.z;
 
-    // 1. 亮度自适应归一化相对色度（彻底解决夜晚因环境暗淡、蓝红绝对差收窄而被当场误杀的问题）
-    // 白天 maxCh ~0.3，夜晚 maxCh ~0.025。归一化使得夜晚水面同样能够清晰识别蓝青色相
-    float normFactor = rcp(max(maxCh, 0.042f));
+    // 0. 硬门禁：既无水体网格又无雨天积水时，直接全关SSR（彻底杜绝干燥地图任何误判）
+    if (hasWaterHint < 0.5f && rainStrength <= 0.02f)
+    {
+        return float4(0.0f, 0.0f, 0.0f, 0.0f);
+    }
+
+    // 1. 亮度自适应归一化相对色度（抬高下限至 0.22f，防止暗部弱光噪点被放大 20 多倍导致误判）
+    float normFactor = rcp(max(maxCh, 0.22f));
     float relBlueDiff = (baseCol.b - baseCol.r) * normFactor;
     float relTealBand = (max(baseCol.b, baseCol.g * 0.60f + baseCol.b * 0.40f) - baseCol.r) * normFactor;
 
+    // 2. 真实水面青蓝平衡门禁：水面呈青蓝/碧绿（G 明显高于 R，且 G-R 足够接近 B-G），
+    //    排除夜间冷光照射下的干燥沙地/石板/阴影（典型死蓝紫色，G 约等于 R，B 远大于 G）
+    bool isTealBalanced = (baseCol.g > baseCol.r + 0.015f) && ((baseCol.g - baseCol.r) >= (baseCol.b - baseCol.g) * 0.45f);
+
     float minRelDiff = (hasWaterHint > 0.5f) ? 0.08f : 0.15f;
-    float isBlueOrTeal = (relBlueDiff > minRelDiff && baseCol.b >= baseCol.g * 0.72f)
+    float isBlueOrTeal = (isTealBalanced && relBlueDiff > minRelDiff && baseCol.b >= baseCol.g * 0.72f)
         ? saturate((relTealBand - minRelDiff * 0.5f) * 3.6f) : 0.0f;
     float waterMask = smoothstep(0.12f, 0.50f, isBlueOrTeal);
 

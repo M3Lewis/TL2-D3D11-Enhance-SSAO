@@ -654,7 +654,7 @@ bool ContainsAsciiInsensitive(std::string_view haystack, std::string_view needle
     return it != haystack.end();
 }
 
-bool HasWaterKeyword(std::string_view tex_name) {
+bool HasWaterSurfaceKeyword(std::string_view tex_name) {
     if (tex_name.empty()) {
         return false;
     }
@@ -664,7 +664,19 @@ bool HasWaterKeyword(std::string_view tex_name) {
         ContainsAsciiInsensitive(tex_name, "smoke") ||
         ContainsAsciiInsensitive(tex_name, "blood") ||
         ContainsAsciiInsensitive(tex_name, "icon") ||
-        ContainsAsciiInsensitive(tex_name, "ui")) {
+        ContainsAsciiInsensitive(tex_name, "ui") ||
+        ContainsAsciiInsensitive(tex_name, "particle") ||
+        ContainsAsciiInsensitive(tex_name, "glow") ||
+        ContainsAsciiInsensitive(tex_name, "lightpool") ||
+        ContainsAsciiInsensitive(tex_name, "splash") ||
+        ContainsAsciiInsensitive(tex_name, "foam") ||
+        ContainsAsciiInsensitive(tex_name, "mist") ||
+        ContainsAsciiInsensitive(tex_name, "spray") ||
+        ContainsAsciiInsensitive(tex_name, "rain") ||
+        ContainsAsciiInsensitive(tex_name, "fx") ||
+        ContainsAsciiInsensitive(tex_name, "waterfall") ||
+        ContainsAsciiInsensitive(tex_name, "cascade") ||
+        ContainsAsciiInsensitive(tex_name, "caustic")) {
         return false;
     }
     return ContainsAsciiInsensitive(tex_name, "water") ||
@@ -677,14 +689,12 @@ bool HasWaterKeyword(std::string_view tex_name) {
            ContainsAsciiInsensitive(tex_name, "fountain") ||
            ContainsAsciiInsensitive(tex_name, "marsh") ||
            ContainsAsciiInsensitive(tex_name, "swamp") ||
-           ContainsAsciiInsensitive(tex_name, "waterfall") ||
            ContainsAsciiInsensitive(tex_name, "canal") ||
            ContainsAsciiInsensitive(tex_name, "basin") ||
            ContainsAsciiInsensitive(tex_name, "brook") ||
            ContainsAsciiInsensitive(tex_name, "creek") ||
-           ContainsAsciiInsensitive(tex_name, "cascade") ||
            ContainsAsciiInsensitive(tex_name, "moat") ||
-           ContainsAsciiInsensitive(tex_name, "caustic");
+           ContainsAsciiInsensitive(tex_name, "oasis");
 }
 
 void MaybeDetectWaterPassHint(const void* pass) {
@@ -702,7 +712,7 @@ void MaybeDetectWaterPassHint(const void* pass) {
             continue;
         }
         const std::string& tex_name = g_api.tus_get_texture_name(tus);
-        if (HasWaterKeyword(tex_name)) {
+        if (HasWaterSurfaceKeyword(tex_name)) {
             g_frame_water_pass_hint.store(true, std::memory_order_relaxed);
             return;
         }

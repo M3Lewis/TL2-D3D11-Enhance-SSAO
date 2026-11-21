@@ -713,9 +713,10 @@ float4 PS_WetFloorSsr(VsOut input) : SV_Target0
 
     // 1. 视距自适应步长：无论拉近特写还是拉远俯视，屏幕步距恒定在细腻的 ~6-12px
     float stepScale = clamp(dC * 0.05f, 0.25f, 1.5f);
-    float baseStep = 0.12f * stepScale;
-    float jitter = SsrHash21(float2(pix)); // 全步长 [0, 1] 抖动，彻底打散步进条纹
-    float t = baseStep * (0.6f + jitter);
+    float baseStep = 0.10f * stepScale;
+    // 有序梯度噪点 (IGN) + 低振幅抖动：消除角色倒影轮廓的颗粒糊边，同时保持零步进条纹
+    float ign = frac(52.9829189f * frac(dot(float2(pix), float2(0.06711056f, 0.00583715f))));
+    float t = baseStep * (0.50f + ign * 0.35f);
     float prevT = max(t - baseStep, 0.02f);
 
     // 真实交点允许的最大精修残差（特写 ~0.30m，远景 ~0.42m），拦截“背后穿过”的重复鬼影
@@ -730,7 +731,7 @@ float4 PS_WetFloorSsr(VsOut input) : SV_Target0
     [loop]
     for (int i = 0; i < 32; ++i)
     {
-        float stepDist = baseStep * (1.0f + float(i) * 0.10f);
+        float stepDist = baseStep * (1.0f + float(i) * 0.12f);
         float3 sampleVS = rayOrigin + R * t;
         if (sampleVS.z >= -0.25f)
         {
@@ -806,16 +807,7 @@ float4 PS_WetFloorSsr(VsOut input) : SV_Target0
 
     float ssrStr = max(gAoParams.z, 0.0f);
 
-    // 1. 流动水网焦散
-    float baseLuma = dot(baseCol, float3(0.299f, 0.587f, 0.114f));
-    float cw1 = 1.0f - abs(sin(wx * 2.4f + gTime * 0.95f + sin(wz * 1.9f + gTime * 0.65f) * 0.8f));
-    float cw2 = 1.0f - abs(sin(wz * 2.7f - gTime * 0.85f + cos(wx * 2.1f - gTime * 0.70f) * 0.8f));
-    float caustics = pow(saturate(cw1 * cw2), 1.8f) * 0.28f * waveFade *
-                     smoothstep(0.05f, 0.26f, baseLuma) * smoothstep(0.30f, 0.75f, waterMask);
-    float caustAlpha = saturate(caustics * wetMask * saturate(ssrStr));
-    float3 caustCol = float3(0.86f, 0.96f, 1.0f);
-
-    // 2. SSR 反射采样
+    // 1. 先算 SSR 反射采样（接触硬化清晰边缘 + 防跨深度串色水波）
     float reflAlpha = 0.0f;
     float3 reflCol = float3(0.0f, 0.0f, 0.0f);
     if (hit)
@@ -826,11 +818,17 @@ float4 PS_WetFloorSsr(VsOut input) : SV_Target0
         float hitHeight = dot(hitSurfP - P, upVS);
         float heightFade = smoothstep(0.03f, 0.20f, hitHeight);
 
-        // 精修残差平滑淡出：确保越接近假命中边缘越柔和，杜绝任何硬截断或重复条纹
         float contactFade = 1.0f - smoothstep(maxAcceptDiff * 0.45f, maxAcceptDiff, hitDiff);
 
-        float2 waveUvOfs = ripRaw * invTex * (3.5f * smoothstep(0.15f, 2.2f, hitT) * waveFade);
-        float2 sampleUv = hitTexUv + waveUvOfs;
+        // 【深度防串色水波】：波纹只在同一物体表面内荡漾，绝不跨剪影把旁边的白水花/亮石板拽进人物和火炮边缘
+        float2 wavePxOfs = ripRaw * (2.6f * smoothstep(0.15f, 2.2f, hitT) * waveFade);
+        int2 wavePix = clamp(hitPix + int2(round(wavePxOfs)), gVpClamp.xy, gVpClamp.zw);
+        float waveRaw = LoadRawDepth(wavePix);
+        float2 sampleUv = hitTexUv;
+        if (waveRaw < 0.99995f && abs(RawToLinearDist(waveRaw) - (-hitSurfP.z)) < 0.35f)
+        {
+            sampleUv = hitTexUv + wavePxOfs * invTex;
+        }
 
         float2 edgeDist = min(hitVpUv, 1.0f - hitVpUv);
         float edgeFade = smoothstep(0.0f, 0.08f, min(edgeDist.x, edgeDist.y));
@@ -838,7 +836,9 @@ float4 PS_WetFloorSsr(VsOut input) : SV_Target0
         float viewGraze = 1.0f - saturate(dot(-V, Nrefl));
         float fresnel = saturate(0.55f + 0.45f * pow(viewGraze, 1.4f));
 
-        float2 bOfs = invTex * 1.15f;
+        // 【接触硬化模糊】：离水面近处（人物/紫炮）仅 0.28px 极锐利，远处自然渐进柔化到 0.95px
+        float blurPx = lerp(0.28f, 0.95f, smoothstep(0.6f, 3.2f, hitT));
+        float2 bOfs = invTex * blurPx;
         reflCol =
             gAoInputTex.SampleLevel(gAoSamp, sampleUv + float2(-bOfs.x, -bOfs.y), 0).rgb * 0.25f +
             gAoInputTex.SampleLevel(gAoSamp, sampleUv + float2( bOfs.x, -bOfs.y), 0).rgb * 0.25f +
@@ -851,6 +851,16 @@ float4 PS_WetFloorSsr(VsOut input) : SV_Target0
         reflCol *= float3(0.96f, 1.04f, 1.12f);
         reflAlpha = saturate(wetMask * fresnel * edgeFade * heightFade * contactFade * shadowGate * 0.78f * ssrStr);
     }
+
+    // 2. 再算水底流动焦散（物理层级位于倒影之下，被强倒影自然压制，彻底消除炮身上的白斑）
+    float baseLuma = dot(baseCol, float3(0.299f, 0.587f, 0.114f));
+    float cw1 = 1.0f - abs(sin(wx * 2.4f + gTime * 0.95f + sin(wz * 1.9f + gTime * 0.65f) * 0.8f));
+    float cw2 = 1.0f - abs(sin(wz * 2.7f - gTime * 0.85f + cos(wx * 2.1f - gTime * 0.70f) * 0.8f));
+    float caustics = pow(saturate(cw1 * cw2), 2.4f) * 0.16f * waveFade *
+                     smoothstep(0.05f, 0.26f, baseLuma) * smoothstep(0.30f, 0.75f, waterMask);
+    // 强倒影区域压低水底焦散穿透，只在开阔清澈水面透出细腻亮纹
+    float caustAlpha = saturate(caustics * wetMask * saturate(ssrStr) * pow(1.0f - reflAlpha, 1.5f));
+    float3 caustCol = float3(0.86f, 0.96f, 1.0f);
 
     // 3. 无暗化精确合成
     float weightSum = reflAlpha + caustAlpha;

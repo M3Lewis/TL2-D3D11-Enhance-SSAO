@@ -116,6 +116,16 @@ float3 ApplyOgreFog(float3 color, float rawFogDist, int fogMode)
     return lerp(FogColor.rgb, color, f);
 }
 
+float3 SoftHighlightClamp(float3 c)
+{
+    // Below 0.80: 100% linear pass-through to preserve native contrast.
+    // Above 0.80: smooth C1 roll-off asymptotically approaching 1.0, preventing blown-out white clipping.
+    const float knee = 0.80;
+    const float maxOver = 1.0 - knee; // 0.20
+    float3 over = max(c - knee, 0.0);
+    return min(c, knee) + over / (1.0 + over / maxOver);
+}
+
 bool PassesAlphaReject(float alpha, float threshold, int func)
 {
     if (func == 0) return false;
@@ -146,6 +156,7 @@ SurfaceDetail AnalyzeSurfaceDetail(
     float3 baseNormal,
     bool hasNormal,
     float detailWeight,
+    bool hasCompanionMaps,
     float p3Scale)
 {
     SurfaceDetail sd;
@@ -153,6 +164,15 @@ SurfaceDetail AnalyzeSurfaceDetail(
     sd.microNormal = baseNormal;
     sd.detailFade = 0.0;
     sd.reliefFade = 0.0;
+    sd.smoothness = 0.0;
+    sd.metalMask = 0.0;
+
+    // Early-exit when companion normal & spec maps are present:
+    // avoids 8 redundant texture fetches and eliminates double crevice AO darkening.
+    if (hasCompanionMaps)
+    {
+        return sd;
+    }
 
     float lenX = length(duvX);
     float lenY = length(duvY);
@@ -251,10 +271,11 @@ SurfaceDetail AnalyzeSurfaceDetail(
     float roughness = saturate(fineRough * 0.65 + macroVar * 0.35);
 
     sd.smoothness = saturate((1.0 - roughness * 0.72) * smoothstep(0.08, 0.34, lum));
+    // Heavily damp procedural metalness on environment (stone/dirt/wood is not chrome)
     sd.metalMask = (1.0 - smoothstep(0.14, 0.34, sat)) *
                    smoothstep(0.16, 0.30, lum) *
                    (1.0 - smoothstep(0.66, 0.82, lum)) *
-                   (1.0 - smoothstep(0.15, 0.45, fineRough));
+                   (1.0 - smoothstep(0.15, 0.45, fineRough)) * 0.35;
     // Non-metals (ground, rock, wood, plaster) MUST be matte; high lum != mirror
     sd.smoothness = min(sd.smoothness, lerp(0.18, 0.95, sd.metalMask));
     return sd;
@@ -293,7 +314,7 @@ void AccumulatePointLightRelief(
     float3 Nmicro,
     float3 V,
     float  specPow,
-    float  fresnel,
+    float  F0,
     float  matScale,
     float3 surfTint,
     float  reliefFade,
@@ -325,6 +346,8 @@ void AccumulatePointLightRelief(
     pointReliefSum += lightDiffuseRgb * MaterialDiffuse.rgb * (reliefDelta * atten * 1.25 * reliefFade);
 
     float3 H = normalize(L + V);
+    float HdotV = saturate(dot(H, V));
+    float fresnel = F0 + (1.0 - F0) * pow(1.0 - HdotV, 5.0);
     float ndh = max(dot(Nmicro, H), 0.0);
     float termMask = saturate(dot(Nmicro, L) * 2.5 + 0.12);
     float specScalar = pow(ndh, specPow) * matScale * fresnel * termMask * detailWeight * atten;
@@ -369,10 +392,12 @@ float4 ShadeDiffPass(VS_OUTPUT input, bool doAlphaReject)
     }
 
     float p3Scale = max(p3EnhanceFlags.z, 0.0);
-    SurfaceDetail sd = AnalyzeSurfaceDetail(input.Texcoord0.xy, duvX, duvY, albedo.rgb, N, hasNormal, detailWeight, p3Scale);
-
     bool hasNormMap = (p3Flags2.z > 0.5);
     bool hasSpecMap = (p3Flags2.w > 0.5);
+    bool hasCompanionMaps = (hasNormMap && hasSpecMap);
+
+    SurfaceDetail sd = AnalyzeSurfaceDetail(input.Texcoord0.xy, duvX, duvY, albedo.rgb, N, hasNormal, detailWeight, hasCompanionMaps, p3Scale);
+
     if (hasNormMap || hasSpecMap)
     {
         float uvFoot2 = max(length(duvX), length(duvY));
@@ -385,8 +410,9 @@ float4 ShadeDiffPass(VS_OUTPUT input, bool doAlphaReject)
             sd.smoothness = saturate(spSample.r);
             sd.metalMask = saturate(spSample.g);
             float cavityAO = saturate(spSample.b);
-            // Deepen real recessed crevices without lifting flat diffuse brightness above 1.0.
-            sd.albedo = saturate(sd.albedo * lerp(1.0, lerp(0.72, 1.00, cavityAO), saturate(sd.detailFade * p3Scale)));
+            // Single cavity AO without double-multiplying procedural crevice dip
+            float aoScale = hasCompanionMaps ? 1.0 : 0.65;
+            sd.albedo = saturate(sd.albedo * lerp(1.0, lerp(0.72, 1.00, cavityAO), saturate(sd.detailFade * p3Scale * aoScale)));
         }
 
         if (hasNormMap && hasNormal && sd.reliefFade > 0.01 && p3Scale > 0.001)
@@ -445,15 +471,16 @@ float4 ShadeDiffPass(VS_OUTPUT input, bool doAlphaReject)
         float3 Nmicro = sd.microNormal;
         float NdotV = saturate(dot(Nmicro, V));
 
-        // Preserve original lighting feel while carving multi-scale stone/brick bevels
-        float bevel = dot(Nmicro, V) - dot(N, V);
-        litEnv *= saturate(1.0 + bevel * (0.28 * sd.reliefFade * p3Scale));
+        // View-up hemisphere micro-relief replaces camera-headlight bevel
+        float3 viewUp = normalize(mul(float3(0.0, 1.0, 0.0), (float3x3)View));
+        float skyRelief = dot(Nmicro, viewUp) - dot(N, viewUp);
+        litEnv *= saturate(1.0 + skyRelief * (0.22 * sd.reliefFade * p3Scale));
 
-        float basePow = clamp((MaterialPower > 1.0) ? MaterialPower : 24.0, 14.0, 64.0);
         float specPow = lerp(36.0, 96.0, max(sd.smoothness, sd.metalMask));
-        float fresnel = lerp(0.20, 0.85, pow(1.0 - NdotV, 2.5));
-        float matScale = lerp(0.015, 0.05, sd.smoothness * sd.smoothness) + sd.metalMask * 0.22;
-        float3 surfTint = lerp(sd.albedo, float3(1.0, 1.0, 1.0), sd.metalMask * 0.40);
+        float normFactor = (specPow + 8.0) / 32.0;
+        float matScale = lerp(0.04, 0.18, sd.smoothness * sd.smoothness) * normFactor;
+        float F0 = lerp(0.04, 0.78, sd.metalMask);
+        float3 surfTint = lerp(lerp(float3(1.0, 1.0, 1.0), sd.albedo, 0.15), sd.albedo, sd.metalMask);
 
         float dirLum = dot(DirectionalLight0_Diffuse.rgb, float3(0.299, 0.587, 0.114));
         if (dirLum > 1e-4)
@@ -463,12 +490,15 @@ float4 ShadeDiffPass(VS_OUTPUT input, bool doAlphaReject)
             if (l0LenSq > 1e-6)
             {
                 float3 L0 = rawL0 * rsqrt(l0LenSq);
-                float relief = dot(Nmicro, L0) - dot(N, L0);
+                // Saturated back-face truncation eliminates ghost relief in shadow
+                float relief = saturate(dot(Nmicro, L0)) - saturate(dot(N, L0));
                 float effectiveRelief = relief * (0.35 + 0.65 * dirShadowAtten);
                 litEnv *= saturate(1.0 + effectiveRelief * (0.60 * sd.reliefFade * p3Scale));
 
                 float ndlRaw = dot(Nmicro, L0);
                 float3 H = normalize(L0 + V);
+                float HdotV = saturate(dot(H, V));
+                float fresnel = F0 + (1.0 - F0) * pow(1.0 - HdotV, 5.0);
                 float ndh = max(dot(Nmicro, H), 0.0);
                 float termMask = saturate(ndlRaw * 2.5 + 0.15);
                 float specShadowMask = smoothstep(0.25, 0.85, dirShadowAtten);
@@ -476,13 +506,19 @@ float4 ShadeDiffPass(VS_OUTPUT input, bool doAlphaReject)
 
                 specAdd = DirectionalLight0_Diffuse.rgb * MaterialDiffuse.rgb * surfTint * specScalar;
 
-                // Foliage Translucency (backlight transmission through leaves/banners)
+                // Foliage Translucency with normal perturbation, back-face masking & saturation gate
                 if (doAlphaReject)
                 {
-                    float vDotMinusL = saturate(dot(V, -L0) * 0.75 + 0.25);
-                    float backlight = pow(vDotMinusL, 4.0);
-                    float transMask = (1.0 - sd.metalMask) * saturate(sd.reliefFade * 1.5);
-                    float3 transColor = DirectionalLight0_Diffuse.rgb * sd.albedo * (backlight * 0.22 * transMask * dirShadowAtten);
+                    float3 backDir = normalize(-L0 + Nmicro * 0.35);
+                    float vDotBack = saturate(dot(V, backDir));
+                    float backlight = pow(vDotBack, 4.0);
+                    float maxC = max(sd.albedo.r, max(sd.albedo.g, sd.albedo.b));
+                    float minC = min(sd.albedo.r, min(sd.albedo.g, sd.albedo.b));
+                    float sat = (maxC > 1e-4) ? ((maxC - minC) / maxC) : 0.0;
+                    float leafSat = smoothstep(0.10, 0.30, sat);
+                    float backSide = saturate(1.0 - max(dot(N, L0), 0.0) * 0.7);
+                    float transMask = (1.0 - sd.metalMask) * leafSat * backSide * saturate(sd.reliefFade * 1.5);
+                    float3 transColor = DirectionalLight0_Diffuse.rgb * sd.albedo * (backlight * 0.24 * transMask * dirShadowAtten);
                     specAdd += transColor;
                 }
             }
@@ -497,17 +533,17 @@ float4 ShadeDiffPass(VS_OUTPUT input, bool doAlphaReject)
             AccumulatePointLightRelief(
                 PointLight0_Position, PointLight0_Diffuse.rgb, PointLight0_Specular.rgb,
                 PointLight0_Range, PointLight0_Attenuation,
-                Pview, N, Nmicro, V, specPow, fresnel, matScale, surfTint,
+                Pview, N, Nmicro, V, specPow, F0, matScale, surfTint,
                 sd.reliefFade, detailWeight, pointReliefSum, pointSpecSum);
             AccumulatePointLightRelief(
                 PointLight1_Position, PointLight1_Diffuse.rgb, PointLight1_Specular.rgb,
                 PointLight1_Range, PointLight1_Attenuation,
-                Pview, N, Nmicro, V, specPow, fresnel, matScale, surfTint,
+                Pview, N, Nmicro, V, specPow, F0, matScale, surfTint,
                 sd.reliefFade, detailWeight, pointReliefSum, pointSpecSum);
             AccumulatePointLightRelief(
                 PointLight2_Position, PointLight2_Diffuse.rgb, PointLight2_Specular.rgb,
                 PointLight2_Range, PointLight2_Attenuation,
-                Pview, N, Nmicro, V, specPow, fresnel, matScale, surfTint,
+                Pview, N, Nmicro, V, specPow, F0, matScale, surfTint,
                 sd.reliefFade, detailWeight, pointReliefSum, pointSpecSum);
             litEnv = max(litEnv + pointReliefSum * (afPointScale * 0.75), float3(0.0, 0.0, 0.0));
             specAdd += pointSpecSum * afPointScale;
@@ -528,7 +564,9 @@ float4 ShadeDiffPass(VS_OUTPUT input, bool doAlphaReject)
     }
 
     color = saturate(color + input.ColorSpec.rgb);
+    color = SoftHighlightClamp(color);
     color = ApplyOgreFog(color, input.fogDist, (int)(p3Flags.z + 0.5));
+    return float4(color, outAlpha);
     return float4(color, outAlpha);
 }
 

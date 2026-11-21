@@ -85,19 +85,29 @@ float3 ApplyTextureStageOp(float3 baseColor, float4 tSample, int op)
     return baseColor;
 }
 
-float3 CombineRim(float3 baseColor, float4 rimSample, int op)
+float3 CombineRim(float3 baseColor, float4 rimSample, float fresnelWeight, int op)
 {
     if (op == 1)
-        return baseColor * rimSample.rgb;
+        return baseColor * lerp(float3(1.0, 1.0, 1.0), rimSample.rgb, saturate(fresnelWeight));
     if (op == 2)
-        return baseColor + rimSample.rgb;
+        return baseColor + rimSample.rgb * fresnelWeight;
     if (op == 3)
-        return lerp(baseColor, rimSample.rgb, rimSample.a);
+        return lerp(baseColor, rimSample.rgb, saturate(rimSample.a * fresnelWeight));
     if (op == 4)
-        return baseColor * (rimSample.rgb * 2.0);
+        return baseColor * lerp(float3(1.0, 1.0, 1.0), rimSample.rgb * 2.0, saturate(fresnelWeight));
     if (op == 5)
-        return saturate(baseColor * (rimSample.rgb * 4.0));
-    return baseColor + rimSample.rgb;
+        return saturate(baseColor * lerp(float3(1.0, 1.0, 1.0), rimSample.rgb * 4.0, saturate(fresnelWeight)));
+    return baseColor + rimSample.rgb * fresnelWeight;
+}
+
+float3 SoftHighlightClamp(float3 c)
+{
+    // Below 0.80: 100% linear pass-through to preserve native contrast.
+    // Above 0.80: smooth C1 roll-off asymptotically approaching 1.0, preventing blown-out white clipping.
+    const float knee = 0.80;
+    const float maxOver = 1.0 - knee; // 0.20
+    float3 over = max(c - knee, 0.0);
+    return min(c, knee) + over / (1.0 + over / maxOver);
 }
 
 float3 ApplyOgreFog(float3 color, float rawFogDist, int fogMode)
@@ -177,10 +187,14 @@ SurfaceDetail AnalyzeSurfaceDetail(float2 uv, float2 duvX, float2 duvY, float3 c
         gx = dot(sXp - sXm, lumaW);
         gy = -dot(sYp - sYm, lumaW);
 
+        // Filter out DXT1 block artifacts on smooth skin/clothing
+        float fineSignal = abs(lumC - lumAvg) + max(abs(gx), abs(gy)) * 0.5;
+        float dxtGate = smoothstep(0.005, 0.022, fineSignal);
+
         // Zero-mean micro-detail clarity + subtle crevice etching
         float lumHeadroom = saturate(min(lumC, 1.0 - lumC) * 4.5);
         float3 highFreq = clamp(centerAlbedo - avg4, -0.07, 0.07);
-        float3 enhanced = saturate(centerAlbedo + highFreq * (0.42 * fade * lumHeadroom * p3Scale));
+        float3 enhanced = saturate(centerAlbedo + highFreq * (0.42 * fade * lumHeadroom * dxtGate * p3Scale));
 
         float dip = max(lumAvg - lumC, 0.0);
         float crevice = 1.0 - saturate(dip * 1.15) * saturate(0.16 * fade * p3Scale);
@@ -189,7 +203,7 @@ SurfaceDetail AnalyzeSurfaceDetail(float2 uv, float2 duvX, float2 duvY, float3 c
 
         if (hasNormal)
         {
-            float3 rawGrad = float3(gx * 1.65, gy * 1.65, 0.0);
+            float3 rawGrad = float3(gx * 1.65, gy * 1.65, 0.0) * dxtGate;
             float3 tanGrad = rawGrad - baseNormal * dot(rawGrad, baseNormal);
             float gradLen = length(tanGrad);
             if (gradLen > 1e-5)
@@ -229,7 +243,7 @@ void AccumulatePointLightRim(
     float3 Nmicro,
     float3 V,
     float  specPow,
-    float  fresnel,
+    float  F0,
     float  matScale,
     float3 surfTint,
     float  reliefFade,
@@ -260,6 +274,8 @@ void AccumulatePointLightRim(
     pointReliefSum += lightDiffuseRgb * MaterialDiffuse.rgb * (reliefDelta * atten * 1.15 * reliefFade);
 
     float3 H = normalize(L + V);
+    float HdotV = saturate(dot(H, V));
+    float fresnel = F0 + (1.0 - F0) * pow(1.0 - HdotV, 5.0);
     float ndh = max(dot(Nmicro, H), 0.0);
     float termMask = saturate(dot(Nmicro, L) * 2.5 + 0.15);
     float specScalar = pow(ndh, specPow) * matScale * fresnel * termMask * atten;
@@ -289,31 +305,42 @@ void ComputeRimLitLighting(
     float3 V = input.Texcoord7.xyz * rsqrt(vLenSq);
     float3 Nmicro = sd.microNormal;
 
+    // View-up hemisphere micro-relief replaces camera-headlight bevel
+    float3 viewUp = normalize(mul(float3(0.0, 1.0, 0.0), (float3x3)View));
+    float skyRelief = dot(Nmicro, viewUp) - dot(N, viewUp);
+
     float rimScale = max(p3EnhanceFlags.y, 0.0);
     if (rimScale <= 0.01)
     {
-        float bevel = dot(Nmicro, V) - dot(N, V);
-        litBase *= saturate(1.0 + bevel * (0.14 * sd.detailFade));
-        fresnelWeight = lerp(0.85, 1.15, pow(1.0 - saturate(dot(N, V)), 1.6));
+        litBase *= saturate(1.0 + skyRelief * (0.12 * sd.detailFade));
+        fresnelWeight = 1.0;
         return;
     }
 
-    // P0-1 Enhanced RimLit: micro-normal dynamic relief + metallic/chitin specular
+    // P0-1 Enhanced RimLit: micro-normal dynamic relief + physically-based dielectric/metal specular
     float3 litEnv = input.Color.rgb;
     float3 specAdd = float3(0.0, 0.0, 0.0);
 
     float NdotV = saturate(dot(Nmicro, V));
-    float bevel = dot(Nmicro, V) - dot(N, V);
-    litEnv *= saturate(1.0 + bevel * (0.24 * sd.detailFade * rimScale));
-    // Rim light should be a crisp silhouette contour, not a flat frontal wash
-    fresnelWeight = lerp(0.12, 1.15, pow(1.0 - NdotV, 2.6)) * (0.70 + 0.35 * rimScale);
+    litEnv *= saturate(1.0 + skyRelief * (0.20 * sd.detailFade * rimScale));
 
-    float basePow = clamp((MaterialPower > 1.0) ? MaterialPower : 24.0, 14.0, 64.0);
+    // Rim light silhouette contour with metal baseline protection
+    float baseMin = lerp(0.12, 0.50, sd.metalMask);
+    fresnelWeight = lerp(baseMin, 1.15, pow(1.0 - NdotV, 2.6)) * (0.70 + 0.35 * rimScale);
+
     float specPow = lerp(36.0, 96.0, max(sd.smoothness, sd.metalMask));
-    float fresnelSpec = lerp(0.20, 0.85, pow(1.0 - NdotV, 2.5));
-    float matScale = lerp(0.015, 0.05, sd.smoothness * sd.smoothness) + sd.metalMask * 0.22;
-    float3 surfTint = lerp(sd.albedo, float3(1.0, 1.0, 1.0), sd.metalMask * 0.40);
+    float normFactor = (specPow + 8.0) / 32.0;
+    float matScale = lerp(0.04, 0.18, sd.smoothness * sd.smoothness) * normFactor;
+    float F0 = lerp(0.04, 0.78, sd.metalMask);
+    float3 surfTint = lerp(lerp(float3(1.0, 1.0, 1.0), sd.albedo, 0.15), sd.albedo, sd.metalMask);
     float afPointScale = max(p3EnhanceFlags.x, 0.0);
+
+    float maxC = max(sd.albedo.r, max(sd.albedo.g, sd.albedo.b));
+    float minC = min(sd.albedo.r, min(sd.albedo.g, sd.albedo.b));
+    float sat = (maxC > 1e-4) ? ((maxC - minC) / maxC) : 0.0;
+    float warmHue = smoothstep(0.03, 0.14, sd.albedo.r - sd.albedo.b) *
+                    smoothstep(-0.02, 0.08, sd.albedo.r - sd.albedo.g);
+    float isFlesh = saturate(1.0 - sd.metalMask * 1.8) * smoothstep(0.12, 0.35, sat) * warmHue;
 
     if (p3Flags2.w > 0.5)
     {
@@ -322,28 +349,26 @@ void ComputeRimLitLighting(
         if (l0LenSq > 1e-6 && dot(input.Texcoord4.rgb, float3(0.299, 0.587, 0.114)) > 1e-4)
         {
             float3 L0 = input.Texcoord5.xyz * rsqrt(l0LenSq);
-            float relief0 = dot(Nmicro, L0) - dot(N, L0);
+            // Saturated back-face truncation eliminates ghost relief in shadow
+            float relief0 = saturate(dot(Nmicro, L0)) - saturate(dot(N, L0));
             litEnv *= saturate(1.0 + relief0 * (0.45 * sd.detailFade * rimScale));
 
-            // Soft organic wrapped diffuse for warm flesh / skin tones (only when saturated, not on white hair/beard)
+            // Soft organic wrapped diffuse for warm flesh / skin tones, modulated by light color
             float ndlRaw0 = dot(Nmicro, L0);
-            float maxC = max(sd.albedo.r, max(sd.albedo.g, sd.albedo.b));
-            float minC = min(sd.albedo.r, min(sd.albedo.g, sd.albedo.b));
-            float sat = (maxC > 1e-4) ? ((maxC - minC) / maxC) : 0.0;
-            float isFlesh = saturate(1.0 - sd.metalMask * 1.8) * smoothstep(0.12, 0.35, sat);
             if (isFlesh > 0.05)
             {
                 float wrapNdl0 = saturate((ndlRaw0 + 0.30) / 1.30);
                 float scatterTerm0 = pow(1.0 - abs(ndlRaw0), 2.2) * wrapNdl0;
-                float3 sssColor0 = float3(0.85, 0.35, 0.15) * (scatterTerm0 * 0.12 * isFlesh * rimScale);
+                float3 sssColor0 = input.Texcoord4.rgb * float3(0.90, 0.38, 0.16) * (scatterTerm0 * 0.16 * isFlesh * rimScale);
                 litEnv += sssColor0;
             }
 
             float3 H0 = normalize(L0 + V);
+            float HdotV0 = saturate(dot(H0, V));
+            float fresnel0 = F0 + (1.0 - F0) * pow(1.0 - HdotV0, 5.0);
             float ndh0 = max(dot(Nmicro, H0), 0.0);
             float ndlMask0 = saturate(ndlRaw0 * 2.5 + 0.18);
-            float specScalar0 = pow(ndh0, specPow) * matScale * fresnelSpec * ndlMask0;
-            // No redundant rimGlance! CombineRim already adds the material's rim texture.
+            float specScalar0 = pow(ndh0, specPow) * matScale * fresnel0 * ndlMask0;
             specAdd += input.Texcoord4.rgb * surfTint * (specScalar0 * rimScale);
         }
 
@@ -359,9 +384,11 @@ void ComputeRimLitLighting(
             litEnv = max(litEnv + l1Tint * (relief1 * l1Strength * 0.65 * sd.detailFade * rimScale), float3(0.0, 0.0, 0.0));
 
             float3 H1 = normalize(L1 + V);
+            float HdotV1 = saturate(dot(H1, V));
+            float fresnel1 = F0 + (1.0 - F0) * pow(1.0 - HdotV1, 5.0);
             float ndh1 = max(dot(Nmicro, H1), 0.0);
             float ndlMask1 = saturate(dot(Nmicro, L1) * 2.5 + 0.15);
-            float specScalar1 = pow(ndh1, specPow) * matScale * fresnelSpec * ndlMask1 * l1Strength;
+            float specScalar1 = pow(ndh1, specPow) * matScale * fresnel1 * ndlMask1 * l1Strength;
             specAdd += l1Tint * surfTint * (specScalar1 * rimScale);
         }
     }
@@ -376,26 +403,24 @@ void ComputeRimLitLighting(
             if (l0LenSq > 1e-6)
             {
                 float3 L0 = rawL0 * rsqrt(l0LenSq);
-                float relief = dot(Nmicro, L0) - dot(N, L0);
+                float relief = saturate(dot(Nmicro, L0)) - saturate(dot(N, L0));
                 litEnv *= saturate(1.0 + relief * (0.50 * sd.detailFade * rimScale));
 
                 float ndlRaw = dot(Nmicro, L0);
-                float maxC = max(sd.albedo.r, max(sd.albedo.g, sd.albedo.b));
-                float minC = min(sd.albedo.r, min(sd.albedo.g, sd.albedo.b));
-                float sat = (maxC > 1e-4) ? ((maxC - minC) / maxC) : 0.0;
-                float isFlesh = saturate(1.0 - sd.metalMask * 1.8) * smoothstep(0.12, 0.35, sat);
                 if (isFlesh > 0.05)
                 {
                     float wrapNdl = saturate((ndlRaw + 0.30) / 1.30);
                     float scatterTerm = pow(1.0 - abs(ndlRaw), 2.2) * wrapNdl;
-                    float3 sssColor = float3(0.85, 0.35, 0.15) * (scatterTerm * 0.12 * isFlesh * rimScale);
+                    float3 sssColor = DirectionalLight0_Diffuse.rgb * MaterialDiffuse.rgb * float3(0.90, 0.38, 0.16) * (scatterTerm * 0.16 * isFlesh * rimScale);
                     litEnv += sssColor;
                 }
 
                 float3 H = normalize(L0 + V);
+                float HdotV = saturate(dot(H, V));
+                float fresnel = F0 + (1.0 - F0) * pow(1.0 - HdotV, 5.0);
                 float ndh = max(dot(Nmicro, H), 0.0);
                 float termMask = saturate(ndlRaw * 2.5 + 0.15);
-                float specScalar = pow(ndh, specPow) * matScale * fresnelSpec * termMask;
+                float specScalar = pow(ndh, specPow) * matScale * fresnel * termMask;
                 specAdd += DirectionalLight0_Diffuse.rgb * MaterialDiffuse.rgb * surfTint * (specScalar * rimScale);
             }
         }
@@ -408,17 +433,17 @@ void ComputeRimLitLighting(
             AccumulatePointLightRim(
                 PointLight0_Position, PointLight0_Diffuse.rgb, PointLight0_Specular.rgb,
                 PointLight0_Range, PointLight0_Attenuation,
-                Pview, N, Nmicro, V, specPow, fresnelSpec, matScale, surfTint, sd.detailFade,
+                Pview, N, Nmicro, V, specPow, F0, matScale, surfTint, sd.detailFade,
                 pointReliefSum, pointSpecSum);
             AccumulatePointLightRim(
                 PointLight1_Position, PointLight1_Diffuse.rgb, PointLight1_Specular.rgb,
                 PointLight1_Range, PointLight1_Attenuation,
-                Pview, N, Nmicro, V, specPow, fresnelSpec, matScale, surfTint, sd.detailFade,
+                Pview, N, Nmicro, V, specPow, F0, matScale, surfTint, sd.detailFade,
                 pointReliefSum, pointSpecSum);
             AccumulatePointLightRim(
                 PointLight2_Position, PointLight2_Diffuse.rgb, PointLight2_Specular.rgb,
                 PointLight2_Range, PointLight2_Attenuation,
-                Pview, N, Nmicro, V, specPow, fresnelSpec, matScale, surfTint, sd.detailFade,
+                Pview, N, Nmicro, V, specPow, F0, matScale, surfTint, sd.detailFade,
                 pointReliefSum, pointSpecSum);
             litEnv = max(litEnv + pointReliefSum * (afPointScale * rimScale), float3(0.0, 0.0, 0.0));
             specAdd += pointSpecSum * (afPointScale * rimScale);
@@ -450,9 +475,10 @@ float4 main_2d(VS_OUTPUT input) : SV_TARGET
     float2 rimUv = input.Texcoord1.xy;
     float4 rimSample = Texture1.Sample(Sampler1, rimUv);
     int texOp = (int)(p3Flags.x + 0.5);
-    float3 color = CombineRim(base, float4(rimSample.rgb * fresnelWeight, rimSample.a), texOp);
+    float3 color = CombineRim(base, rimSample, fresnelWeight, texOp);
 
     color = saturate(color + input.ColorSpec.rgb);
+    color = SoftHighlightClamp(color);
     color = ApplyOgreFog(color, input.fogDist, (int)(p3Flags.z + 0.5));
     return float4(color, outAlpha);
 }
@@ -488,9 +514,10 @@ float4 main_cube(VS_OUTPUT input) : SV_TARGET
 
     float4 rimSample = TextureCube1.Sample(Sampler1, cubeDir);
     int texOp = (int)(p3Flags.x + 0.5);
-    float3 color = CombineRim(base, float4(rimSample.rgb * fresnelWeight, rimSample.a), texOp);
+    float3 color = CombineRim(base, rimSample, fresnelWeight, texOp);
 
     color = saturate(color + input.ColorSpec.rgb);
+    color = SoftHighlightClamp(color);
     color = ApplyOgreFog(color, input.fogDist, (int)(p3Flags.z + 0.5));
     return float4(color, outAlpha);
 }
@@ -541,9 +568,10 @@ float4 main_cube3(VS_OUTPUT input) : SV_TARGET
 
     float4 rimSample = TextureCube2.Sample(Sampler2, cubeDir);
     int texOp = (int)(p3Flags.x + 0.5);
-    float3 color = CombineRim(base, float4(rimSample.rgb * fresnelWeight, rimSample.a), texOp);
+    float3 color = CombineRim(base, rimSample, fresnelWeight, texOp);
 
     color = saturate(color + input.ColorSpec.rgb);
+    color = SoftHighlightClamp(color);
     color = ApplyOgreFog(color, input.fogDist, (int)(p3Flags.z + 0.5));
     return float4(color, outAlpha);
 }

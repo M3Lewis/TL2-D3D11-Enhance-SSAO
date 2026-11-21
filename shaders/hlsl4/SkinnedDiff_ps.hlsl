@@ -81,6 +81,16 @@ float3 ApplyOgreFog(float3 color, float rawFogDist, int fogMode)
     return lerp(FogColor.rgb, color, f);
 }
 
+float3 SoftHighlightClamp(float3 c)
+{
+    // Below 0.80: 100% linear pass-through to preserve native contrast.
+    // Above 0.80: smooth C1 roll-off asymptotically approaching 1.0, preventing blown-out white clipping.
+    const float knee = 0.80;
+    const float maxOver = 1.0 - knee; // 0.20
+    float3 over = max(c - knee, 0.0);
+    return min(c, knee) + over / (1.0 + over / maxOver);
+}
+
 bool PassesAlphaReject(float alpha, float threshold, int func)
 {
     if (func == 0) return false;
@@ -102,12 +112,29 @@ struct SurfaceDetail
     float  metalMask;
 };
 
-SurfaceDetail AnalyzeSurfaceDetail(float2 uv, float2 duvX, float2 duvY, float3 centerAlbedo, float3 baseNormal, bool hasNormal, float p3Scale)
+SurfaceDetail AnalyzeSurfaceDetail(
+    float2 uv,
+    float2 duvX,
+    float2 duvY,
+    float3 centerAlbedo,
+    float3 baseNormal,
+    bool hasNormal,
+    bool hasCompanionMaps,
+    float p3Scale)
 {
     SurfaceDetail sd;
     sd.albedo = centerAlbedo;
     sd.microNormal = baseNormal;
     sd.detailFade = 0.0;
+    sd.smoothness = 0.0;
+    sd.metalMask = 0.0;
+
+    // Early-exit when companion normal & spec maps are present:
+    // avoids 4 redundant texture fetches and eliminates double crevice AO darkening.
+    if (hasCompanionMaps)
+    {
+        return sd;
+    }
 
     float lenX = length(duvX);
     float lenY = length(duvY);
@@ -137,9 +164,13 @@ SurfaceDetail AnalyzeSurfaceDetail(float2 uv, float2 duvX, float2 duvY, float3 c
         gx = dot(sXp - sXm, lumaW);
         gy = -dot(sYp - sYm, lumaW);
 
+        // Filter out DXT1 block artifacts on smooth skin/clothing
+        float fineSignal = abs(lumC - lumAvg) + max(abs(gx), abs(gy)) * 0.5;
+        float dxtGate = smoothstep(0.005, 0.022, fineSignal);
+
         float lumHeadroom = saturate(min(lumC, 1.0 - lumC) * 4.5);
         float3 highFreq = clamp(centerAlbedo - avg4, -0.06, 0.06);
-        float3 enhanced = saturate(centerAlbedo + highFreq * (0.34 * fade * lumHeadroom * p3Scale));
+        float3 enhanced = saturate(centerAlbedo + highFreq * (0.34 * fade * lumHeadroom * dxtGate * p3Scale));
 
         float dip = max(lumAvg - lumC, 0.0);
         float crevice = 1.0 - saturate(dip * 1.05) * saturate(0.12 * fade * p3Scale);
@@ -148,7 +179,7 @@ SurfaceDetail AnalyzeSurfaceDetail(float2 uv, float2 duvX, float2 duvY, float3 c
 
         if (hasNormal)
         {
-            float3 rawGrad = float3(gx, gy, 0.0);
+            float3 rawGrad = float3(gx, gy, 0.0) * dxtGate;
             float3 tanGrad = rawGrad - baseNormal * dot(rawGrad, baseNormal);
             float gradLen = length(tanGrad);
             if (gradLen > 0.28)
@@ -226,10 +257,12 @@ float4 ShadeSkinnedDiff(VS_OUTPUT input, bool doAlphaReject)
     }
 
     float p3Scale = max(p3EnhanceFlags.z, 0.0);
-    SurfaceDetail sd = AnalyzeSurfaceDetail(input.Texcoord0.xy, duvX, duvY, albedo.rgb, N, hasNormal, p3Scale);
-
     bool hasNormMap = (p3Flags2.z > 0.5);
     bool hasSpecMap = (p3Flags2.w > 0.5);
+    bool hasCompanionMaps = (hasNormMap && hasSpecMap);
+
+    SurfaceDetail sd = AnalyzeSurfaceDetail(input.Texcoord0.xy, duvX, duvY, albedo.rgb, N, hasNormal, hasCompanionMaps, p3Scale);
+
     if (hasNormMap || hasSpecMap)
     {
         float uvFoot2 = max(length(duvX), length(duvY));
@@ -241,7 +274,9 @@ float4 ShadeSkinnedDiff(VS_OUTPUT input, bool doAlphaReject)
             sd.smoothness = saturate(spSample.r);
             sd.metalMask = saturate(spSample.g);
             float cavityAO = saturate(spSample.b);
-            sd.albedo = saturate(sd.albedo * lerp(1.0, lerp(0.75, 1.00, cavityAO), saturate(sd.detailFade * p3Scale)));
+            // Single cavity AO without double-multiplying procedural crevice dip
+            float aoScale = hasCompanionMaps ? 1.0 : 0.65;
+            sd.albedo = saturate(sd.albedo * lerp(1.0, lerp(0.75, 1.00, cavityAO), saturate(sd.detailFade * p3Scale * aoScale)));
         }
 
         if (hasNormMap && hasNormal && sd.detailFade > 0.01 && p3Scale > 0.001)
@@ -267,40 +302,50 @@ float4 ShadeSkinnedDiff(VS_OUTPUT input, bool doAlphaReject)
         float3 Nmicro = sd.microNormal;
         float NdotV = saturate(dot(Nmicro, V));
 
-        float bevel = dot(Nmicro, V) - dot(N, V);
-        litEnv *= saturate(1.0 + bevel * (0.24 * sd.detailFade * p3Scale));
+        // View-up hemisphere micro-relief replaces camera-headlight bevel
+        float3 viewUp = normalize(float3(0.0, 0.80, 0.60));
+        float skyRelief = dot(Nmicro, viewUp) - dot(N, viewUp);
+        litEnv *= saturate(1.0 + skyRelief * (0.20 * sd.detailFade * p3Scale));
 
         float specPow = lerp(36.0, 96.0, max(sd.smoothness, sd.metalMask));
-        float matSpec = lerp(0.015, 0.05, sd.smoothness) + sd.metalMask * 0.20;
-        float3 sheenTint = lerp(sd.albedo, float3(1.0, 1.0, 1.0), sd.metalMask * 0.40);
+        float normFactor = (specPow + 8.0) / 32.0;
+        float matSpec = lerp(0.04, 0.18, sd.smoothness * sd.smoothness) * normFactor;
+        float F0 = lerp(0.04, 0.78, sd.metalMask);
+        float3 sheenTint = lerp(lerp(float3(1.0, 1.0, 1.0), sd.albedo, 0.15), sd.albedo, sd.metalMask);
 
         float l0LenSq = dot(input.Texcoord5.xyz, input.Texcoord5.xyz);
         if (l0LenSq > 1e-6 && dot(input.Texcoord4.rgb, float3(0.299, 0.587, 0.114)) > 1e-4)
         {
             float3 L0 = input.Texcoord5.xyz * rsqrt(l0LenSq);
-            float relief = dot(Nmicro, L0) - dot(N, L0);
+            // Saturated back-face truncation eliminates ghost relief in shadow
+            float relief = saturate(dot(Nmicro, L0)) - saturate(dot(N, L0));
             litEnv *= saturate(1.0 + relief * (0.45 * sd.detailFade * p3Scale));
 
-            // Soft organic wrapped diffuse for flesh / skin tones (only when saturated, not on white hair/beard)
+            // Soft organic wrapped diffuse for flesh / skin tones with warm hue gate
             float ndlRaw = dot(Nmicro, L0);
             float maxC = max(sd.albedo.r, max(sd.albedo.g, sd.albedo.b));
             float minC = min(sd.albedo.r, min(sd.albedo.g, sd.albedo.b));
             float sat = (maxC > 1e-4) ? ((maxC - minC) / maxC) : 0.0;
-            float isFlesh = saturate(1.0 - sd.metalMask * 1.8) * smoothstep(0.12, 0.35, sat);
+            float warmHue = smoothstep(0.03, 0.14, sd.albedo.r - sd.albedo.b) *
+                            smoothstep(-0.02, 0.08, sd.albedo.r - sd.albedo.g);
+            float isFlesh = saturate(1.0 - sd.metalMask * 1.8) * smoothstep(0.12, 0.35, sat) * warmHue;
             if (isFlesh > 0.05)
             {
                 float wrapNdl = saturate((ndlRaw + 0.30) / 1.30);
                 float scatterTerm = pow(1.0 - abs(ndlRaw), 2.2) * wrapNdl;
-                float3 sssColor = float3(0.85, 0.35, 0.15) * (scatterTerm * 0.12 * isFlesh * p3Scale);
+                float3 sssColor = input.Texcoord4.rgb * float3(0.90, 0.38, 0.16) * (scatterTerm * 0.16 * isFlesh * p3Scale);
                 litEnv += sssColor;
             }
 
             float3 H = normalize(L0 + V);
+            float HdotV = saturate(dot(H, V));
+            float fresnel = F0 + (1.0 - F0) * pow(1.0 - HdotV, 5.0);
             float ndh = max(dot(Nmicro, H), 0.0);
             float ndlMask = saturate(ndlRaw * 2.5 + 0.18);
 
-            float specScalar = pow(ndh, specPow) * matSpec * ndlMask;
-            float rim = pow(1.0 - NdotV, 3.5) * lerp(0.02, 0.06, max(sd.smoothness, sd.metalMask));
+            float specScalar = pow(ndh, specPow) * matSpec * fresnel * ndlMask;
+            float sunGate = saturate(dot(N, L0) * 0.5 + 0.5);
+            float rim = pow(1.0 - NdotV, 3.5) * lerp(0.02, 0.06, max(sd.smoothness, sd.metalMask)) * sunGate;
 
             specAdd = input.Texcoord4.rgb * sheenTint * ((specScalar + rim) * p3Scale);
         }
@@ -318,9 +363,11 @@ float4 ShadeSkinnedDiff(VS_OUTPUT input, bool doAlphaReject)
             litEnv = max(litEnv + l1Tint * (relief1 * l1Strength * 0.65 * sd.detailFade), float3(0.0, 0.0, 0.0));
 
             float3 H1 = normalize(L1 + V);
+            float HdotV1 = saturate(dot(H1, V));
+            float fresnel1 = F0 + (1.0 - F0) * pow(1.0 - HdotV1, 5.0);
             float ndh1 = max(dot(Nmicro, H1), 0.0);
             float ndlMask1 = saturate(dot(Nmicro, L1) * 2.5 + 0.15);
-            float specScalar1 = pow(ndh1, specPow) * matSpec * ndlMask1 * l1Strength;
+            float specScalar1 = pow(ndh1, specPow) * matSpec * fresnel1 * ndlMask1 * l1Strength;
             specAdd += l1Tint * sheenTint * specScalar1;
         }
     }
@@ -340,6 +387,7 @@ float4 ShadeSkinnedDiff(VS_OUTPUT input, bool doAlphaReject)
     }
 
     color = saturate(color + input.ColorSpec.rgb);
+    color = SoftHighlightClamp(color);
     color = ApplyOgreFog(color, input.fogDist, (int)(p3Flags.z + 0.5));
     return float4(color, outAlpha);
 }

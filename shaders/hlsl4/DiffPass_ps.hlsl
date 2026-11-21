@@ -255,6 +255,8 @@ SurfaceDetail AnalyzeSurfaceDetail(
                    smoothstep(0.16, 0.30, lum) *
                    (1.0 - smoothstep(0.66, 0.82, lum)) *
                    (1.0 - smoothstep(0.15, 0.45, fineRough));
+    // Non-metals (ground, rock, wood, plaster) MUST be matte; high lum != mirror
+    sd.smoothness = min(sd.smoothness, lerp(0.18, 0.95, sd.metalMask));
     return sd;
 }
 
@@ -445,14 +447,13 @@ float4 ShadeDiffPass(VS_OUTPUT input, bool doAlphaReject)
 
         // Preserve original lighting feel while carving multi-scale stone/brick bevels
         float bevel = dot(Nmicro, V) - dot(N, V);
-        litEnv *= saturate(1.0 + bevel * (0.48 * sd.reliefFade * p3Scale));
+        litEnv *= saturate(1.0 + bevel * (0.28 * sd.reliefFade * p3Scale));
 
         float basePow = clamp((MaterialPower > 1.0) ? MaterialPower : 24.0, 14.0, 64.0);
-        float specPow = lerp(basePow * 0.85, max(basePow, 52.0), max(sd.smoothness, sd.metalMask));
-        float fresnel = lerp(0.32, 0.95, pow(1.0 - NdotV, 2.5));
-        float matScale = lerp(0.035, 0.24, sd.smoothness * sd.smoothness) + sd.metalMask * 0.16;
-        float tintWeight = lerp(0.45, 0.80, sd.metalMask);
-        float3 surfTint = lerp(float3(1.0, 1.0, 1.0), sd.albedo, tintWeight);
+        float specPow = lerp(36.0, 96.0, max(sd.smoothness, sd.metalMask));
+        float fresnel = lerp(0.20, 0.85, pow(1.0 - NdotV, 2.5));
+        float matScale = lerp(0.015, 0.05, sd.smoothness * sd.smoothness) + sd.metalMask * 0.22;
+        float3 surfTint = lerp(sd.albedo, float3(1.0, 1.0, 1.0), sd.metalMask * 0.40);
 
         float dirLum = dot(DirectionalLight0_Diffuse.rgb, float3(0.299, 0.587, 0.114));
         if (dirLum > 1e-4)
@@ -464,7 +465,7 @@ float4 ShadeDiffPass(VS_OUTPUT input, bool doAlphaReject)
                 float3 L0 = rawL0 * rsqrt(l0LenSq);
                 float relief = dot(Nmicro, L0) - dot(N, L0);
                 float effectiveRelief = relief * (0.35 + 0.65 * dirShadowAtten);
-                litEnv *= saturate(1.0 + effectiveRelief * (0.85 * sd.reliefFade * p3Scale));
+                litEnv *= saturate(1.0 + effectiveRelief * (0.60 * sd.reliefFade * p3Scale));
 
                 float ndlRaw = dot(Nmicro, L0);
                 float3 H = normalize(L0 + V);
@@ -479,9 +480,9 @@ float4 ShadeDiffPass(VS_OUTPUT input, bool doAlphaReject)
                 if (doAlphaReject)
                 {
                     float vDotMinusL = saturate(dot(V, -L0) * 0.75 + 0.25);
-                    float backlight = pow(vDotMinusL, 3.5);
-                    float transMask = (1.0 - sd.metalMask) * saturate(sd.detailFade * 1.5);
-                    float3 transColor = DirectionalLight0_Diffuse.rgb * sd.albedo * (backlight * 0.38 * transMask * dirShadowAtten);
+                    float backlight = pow(vDotMinusL, 4.0);
+                    float transMask = (1.0 - sd.metalMask) * saturate(sd.reliefFade * 1.5);
+                    float3 transColor = DirectionalLight0_Diffuse.rgb * sd.albedo * (backlight * 0.22 * transMask * dirShadowAtten);
                     specAdd += transColor;
                 }
             }
@@ -508,38 +509,22 @@ float4 ShadeDiffPass(VS_OUTPUT input, bool doAlphaReject)
                 PointLight2_Range, PointLight2_Attenuation,
                 Pview, N, Nmicro, V, specPow, fresnel, matScale, surfTint,
                 sd.reliefFade, detailWeight, pointReliefSum, pointSpecSum);
-            litEnv = max(litEnv + pointReliefSum * afPointScale, float3(0.0, 0.0, 0.0));
+            litEnv = max(litEnv + pointReliefSum * (afPointScale * 0.75), float3(0.0, 0.0, 0.0));
             specAdd += pointSpecSum * afPointScale;
         }
     }
 
     float3 color = saturate(sd.albedo * litEnv + specAdd);
 
-    // Apply texture stages (with subtle cool skylight tint in projective shadow regions)
+    // Apply texture stages cleanly without washing out deep shadows
     if (op1 > 0)
     {
-        float4 stage1Sample = tSample1;
-        if (isProj1 && op1 == 1)
-        {
-            float shadowDeep = saturate((0.85 - dirShadowAtten) / 0.85);
-            float fogLum = dot(FogColor.rgb, float3(0.299, 0.587, 0.114));
-            float3 skyAmbient = (fogLum > 0.03) ? normalize(FogColor.rgb + float3(0.12, 0.15, 0.20)) : float3(0.90, 0.95, 1.06);
-            stage1Sample.rgb = lerp(stage1Sample.rgb, stage1Sample.rgb * skyAmbient, shadowDeep * 0.35);
-        }
-        color = ApplyTextureStageOp(color, stage1Sample, op1);
+        color = ApplyTextureStageOp(color, tSample1, op1);
     }
 
     if (op2 > 0)
     {
-        float4 stage2Sample = tSample2;
-        if (isProj2 && op2 == 1)
-        {
-            float shadowDeep = saturate((0.85 - dirShadowAtten) / 0.85);
-            float fogLum = dot(FogColor.rgb, float3(0.299, 0.587, 0.114));
-            float3 skyAmbient = (fogLum > 0.03) ? normalize(FogColor.rgb + float3(0.12, 0.15, 0.20)) : float3(0.90, 0.95, 1.06);
-            stage2Sample.rgb = lerp(stage2Sample.rgb, stage2Sample.rgb * skyAmbient, shadowDeep * 0.35);
-        }
-        color = ApplyTextureStageOp(color, stage2Sample, op2);
+        color = ApplyTextureStageOp(color, tSample2, op2);
     }
 
     color = saturate(color + input.ColorSpec.rgb);

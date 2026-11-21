@@ -213,6 +213,8 @@ SurfaceDetail AnalyzeSurfaceDetail(float2 uv, float2 duvX, float2 duvY, float3 c
                    smoothstep(0.14, 0.28, lum) *
                    (1.0 - smoothstep(0.72, 0.88, lum)) *
                    saturate(1.0 - localNoise * 0.45);
+    // Non-metals (skin, beard, fabric, wood, stone) MUST be matte; high lum != polished mirror
+    sd.smoothness = min(sd.smoothness, lerp(0.18, 0.95, sd.metalMask));
     return sd;
 }
 
@@ -302,15 +304,15 @@ void ComputeRimLitLighting(
 
     float NdotV = saturate(dot(Nmicro, V));
     float bevel = dot(Nmicro, V) - dot(N, V);
-    litEnv *= saturate(1.0 + bevel * (0.36 * sd.detailFade * rimScale));
-    fresnelWeight = lerp(max(1.0 - 0.22 * rimScale, 0.45), 1.0 + 0.28 * rimScale, pow(1.0 - NdotV, 1.80));
+    litEnv *= saturate(1.0 + bevel * (0.24 * sd.detailFade * rimScale));
+    // Rim light should be a crisp silhouette contour, not a flat frontal wash
+    fresnelWeight = lerp(0.12, 1.15, pow(1.0 - NdotV, 2.6)) * (0.70 + 0.35 * rimScale);
 
     float basePow = clamp((MaterialPower > 1.0) ? MaterialPower : 24.0, 14.0, 64.0);
-    float specPow = lerp(basePow * 0.85, max(basePow, 48.0), max(sd.smoothness, sd.metalMask));
-    float fresnelSpec = lerp(0.36, 1.05, pow(1.0 - NdotV, 2.35));
-    float matScale = lerp(0.06, 0.24, sd.smoothness * sd.smoothness) + sd.metalMask * 0.16;
-    float tintWeight = lerp(0.38, 0.78, sd.metalMask);
-    float3 surfTint = lerp(float3(1.0, 1.0, 1.0), sd.albedo, tintWeight);
+    float specPow = lerp(36.0, 96.0, max(sd.smoothness, sd.metalMask));
+    float fresnelSpec = lerp(0.20, 0.85, pow(1.0 - NdotV, 2.5));
+    float matScale = lerp(0.015, 0.05, sd.smoothness * sd.smoothness) + sd.metalMask * 0.22;
+    float3 surfTint = lerp(sd.albedo, float3(1.0, 1.0, 1.0), sd.metalMask * 0.40);
     float afPointScale = max(p3EnhanceFlags.x, 0.0);
 
     if (p3Flags2.w > 0.5)
@@ -321,16 +323,19 @@ void ComputeRimLitLighting(
         {
             float3 L0 = input.Texcoord5.xyz * rsqrt(l0LenSq);
             float relief0 = dot(Nmicro, L0) - dot(N, L0);
-            litEnv *= saturate(1.0 + relief0 * (0.68 * sd.detailFade * rimScale));
+            litEnv *= saturate(1.0 + relief0 * (0.45 * sd.detailFade * rimScale));
 
-            // Soft organic wrapped diffuse & warm terminator scatter for skin / cloth / flesh
+            // Soft organic wrapped diffuse for warm flesh / skin tones (only when saturated, not on white hair/beard)
             float ndlRaw0 = dot(Nmicro, L0);
-            float isOrganic = saturate(1.0 - sd.metalMask * 1.8);
-            if (isOrganic > 0.05)
+            float maxC = max(sd.albedo.r, max(sd.albedo.g, sd.albedo.b));
+            float minC = min(sd.albedo.r, min(sd.albedo.g, sd.albedo.b));
+            float sat = (maxC > 1e-4) ? ((maxC - minC) / maxC) : 0.0;
+            float isFlesh = saturate(1.0 - sd.metalMask * 1.8) * smoothstep(0.12, 0.35, sat);
+            if (isFlesh > 0.05)
             {
-                float wrapNdl0 = saturate((ndlRaw0 + 0.35) / 1.35);
+                float wrapNdl0 = saturate((ndlRaw0 + 0.30) / 1.30);
                 float scatterTerm0 = pow(1.0 - abs(ndlRaw0), 2.2) * wrapNdl0;
-                float3 sssColor0 = float3(0.85, 0.35, 0.15) * (scatterTerm0 * 0.16 * isOrganic * rimScale);
+                float3 sssColor0 = float3(0.85, 0.35, 0.15) * (scatterTerm0 * 0.12 * isFlesh * rimScale);
                 litEnv += sssColor0;
             }
 
@@ -338,8 +343,8 @@ void ComputeRimLitLighting(
             float ndh0 = max(dot(Nmicro, H0), 0.0);
             float ndlMask0 = saturate(ndlRaw0 * 2.5 + 0.18);
             float specScalar0 = pow(ndh0, specPow) * matScale * fresnelSpec * ndlMask0;
-            float rimGlance = pow(1.0 - NdotV, 2.8) * lerp(0.05, 0.12, max(sd.smoothness, sd.metalMask));
-            specAdd += input.Texcoord4.rgb * surfTint * ((specScalar0 + rimGlance) * rimScale);
+            // No redundant rimGlance! CombineRim already adds the material's rim texture.
+            specAdd += input.Texcoord4.rgb * surfTint * (specScalar0 * rimScale);
         }
 
         float l1LenSq = dot(input.Texcoord3.xyz, input.Texcoord3.xyz);
@@ -351,7 +356,7 @@ void ComputeRimLitLighting(
             float3 envTint = input.Color.rgb / max(max(input.Color.r, max(input.Color.g, input.Color.b)), 0.05);
             float3 l1Tint = lerp(float3(1.0, 0.92, 0.82), saturate(envTint), 0.65);
 
-            litEnv = max(litEnv + l1Tint * (relief1 * l1Strength * 0.85 * sd.detailFade * rimScale), float3(0.0, 0.0, 0.0));
+            litEnv = max(litEnv + l1Tint * (relief1 * l1Strength * 0.65 * sd.detailFade * rimScale), float3(0.0, 0.0, 0.0));
 
             float3 H1 = normalize(L1 + V);
             float ndh1 = max(dot(Nmicro, H1), 0.0);
@@ -372,16 +377,18 @@ void ComputeRimLitLighting(
             {
                 float3 L0 = rawL0 * rsqrt(l0LenSq);
                 float relief = dot(Nmicro, L0) - dot(N, L0);
-                litEnv *= saturate(1.0 + relief * (0.78 * sd.detailFade * rimScale));
+                litEnv *= saturate(1.0 + relief * (0.50 * sd.detailFade * rimScale));
 
-                // Soft organic wrapped diffuse & warm terminator scatter
                 float ndlRaw = dot(Nmicro, L0);
-                float isOrganic = saturate(1.0 - sd.metalMask * 1.8);
-                if (isOrganic > 0.05)
+                float maxC = max(sd.albedo.r, max(sd.albedo.g, sd.albedo.b));
+                float minC = min(sd.albedo.r, min(sd.albedo.g, sd.albedo.b));
+                float sat = (maxC > 1e-4) ? ((maxC - minC) / maxC) : 0.0;
+                float isFlesh = saturate(1.0 - sd.metalMask * 1.8) * smoothstep(0.12, 0.35, sat);
+                if (isFlesh > 0.05)
                 {
-                    float wrapNdl = saturate((ndlRaw + 0.35) / 1.35);
+                    float wrapNdl = saturate((ndlRaw + 0.30) / 1.30);
                     float scatterTerm = pow(1.0 - abs(ndlRaw), 2.2) * wrapNdl;
-                    float3 sssColor = float3(0.85, 0.35, 0.15) * (scatterTerm * 0.16 * isOrganic * rimScale);
+                    float3 sssColor = float3(0.85, 0.35, 0.15) * (scatterTerm * 0.12 * isFlesh * rimScale);
                     litEnv += sssColor;
                 }
 

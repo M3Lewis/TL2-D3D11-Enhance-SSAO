@@ -169,6 +169,8 @@ SurfaceDetail AnalyzeSurfaceDetail(float2 uv, float2 duvX, float2 duvY, float3 c
                    smoothstep(0.14, 0.28, lum) *
                    (1.0 - smoothstep(0.68, 0.85, lum)) *
                    saturate(1.0 - localNoise * 0.5);
+    // Non-metals (skin, beard, fabric, wood, stone) MUST be matte; high lum != mirror!
+    sd.smoothness = min(sd.smoothness, lerp(0.18, 0.95, sd.metalMask));
     return sd;
 }
 
@@ -266,28 +268,30 @@ float4 ShadeSkinnedDiff(VS_OUTPUT input, bool doAlphaReject)
         float NdotV = saturate(dot(Nmicro, V));
 
         float bevel = dot(Nmicro, V) - dot(N, V);
-        litEnv *= saturate(1.0 + bevel * (0.34 * sd.detailFade * p3Scale));
+        litEnv *= saturate(1.0 + bevel * (0.24 * sd.detailFade * p3Scale));
 
-        float specPow = lerp(20.0, 48.0, max(sd.smoothness, sd.metalMask));
-        float matSpec = lerp(0.05, 0.16, sd.smoothness) + sd.metalMask * 0.07;
-        float tintWeight = lerp(0.45, 0.80, sd.metalMask);
-        float3 sheenTint = lerp(float3(1.0, 1.0, 1.0), sd.albedo, tintWeight);
+        float specPow = lerp(36.0, 96.0, max(sd.smoothness, sd.metalMask));
+        float matSpec = lerp(0.015, 0.05, sd.smoothness) + sd.metalMask * 0.20;
+        float3 sheenTint = lerp(sd.albedo, float3(1.0, 1.0, 1.0), sd.metalMask * 0.40);
 
         float l0LenSq = dot(input.Texcoord5.xyz, input.Texcoord5.xyz);
         if (l0LenSq > 1e-6 && dot(input.Texcoord4.rgb, float3(0.299, 0.587, 0.114)) > 1e-4)
         {
             float3 L0 = input.Texcoord5.xyz * rsqrt(l0LenSq);
             float relief = dot(Nmicro, L0) - dot(N, L0);
-            litEnv *= saturate(1.0 + relief * (0.62 * sd.detailFade * p3Scale));
+            litEnv *= saturate(1.0 + relief * (0.45 * sd.detailFade * p3Scale));
 
-            // Soft organic wrapped diffuse & warm terminator scatter for skin / cloth
+            // Soft organic wrapped diffuse for flesh / skin tones (only when saturated, not on white hair/beard)
             float ndlRaw = dot(Nmicro, L0);
-            float isOrganic = saturate(1.0 - sd.metalMask * 1.8);
-            if (isOrganic > 0.05)
+            float maxC = max(sd.albedo.r, max(sd.albedo.g, sd.albedo.b));
+            float minC = min(sd.albedo.r, min(sd.albedo.g, sd.albedo.b));
+            float sat = (maxC > 1e-4) ? ((maxC - minC) / maxC) : 0.0;
+            float isFlesh = saturate(1.0 - sd.metalMask * 1.8) * smoothstep(0.12, 0.35, sat);
+            if (isFlesh > 0.05)
             {
-                float wrapNdl = saturate((ndlRaw + 0.35) / 1.35);
+                float wrapNdl = saturate((ndlRaw + 0.30) / 1.30);
                 float scatterTerm = pow(1.0 - abs(ndlRaw), 2.2) * wrapNdl;
-                float3 sssColor = float3(0.85, 0.35, 0.15) * (scatterTerm * 0.16 * isOrganic * p3Scale);
+                float3 sssColor = float3(0.85, 0.35, 0.15) * (scatterTerm * 0.12 * isFlesh * p3Scale);
                 litEnv += sssColor;
             }
 
@@ -296,7 +300,7 @@ float4 ShadeSkinnedDiff(VS_OUTPUT input, bool doAlphaReject)
             float ndlMask = saturate(ndlRaw * 2.5 + 0.18);
 
             float specScalar = pow(ndh, specPow) * matSpec * ndlMask;
-            float rim = pow(1.0 - NdotV, 3.2) * lerp(0.05, 0.11, max(sd.smoothness, sd.metalMask));
+            float rim = pow(1.0 - NdotV, 3.5) * lerp(0.02, 0.06, max(sd.smoothness, sd.metalMask));
 
             specAdd = input.Texcoord4.rgb * sheenTint * ((specScalar + rim) * p3Scale);
         }
@@ -311,7 +315,7 @@ float4 ShadeSkinnedDiff(VS_OUTPUT input, bool doAlphaReject)
             float3 envTint = input.Color.rgb / max(max(input.Color.r, max(input.Color.g, input.Color.b)), 0.05);
             float3 l1Tint = lerp(float3(1.0, 0.92, 0.82), saturate(envTint), 0.65);
 
-            litEnv = max(litEnv + l1Tint * (relief1 * l1Strength * 0.85 * sd.detailFade), float3(0.0, 0.0, 0.0));
+            litEnv = max(litEnv + l1Tint * (relief1 * l1Strength * 0.65 * sd.detailFade), float3(0.0, 0.0, 0.0));
 
             float3 H1 = normalize(L1 + V);
             float ndh1 = max(dot(Nmicro, H1), 0.0);

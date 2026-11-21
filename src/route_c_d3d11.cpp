@@ -707,8 +707,21 @@ float4 PS_WetFloorSsr(VsOut input) : SV_Target0
         return float4(0.0f, 0.0f, 0.0f, 0.0f);
     }
 
+    // 【自发光/半透明水晶防穿帮保护】
+    // 防止 depth_write off 的青色水晶、传送门、技能光效把背后平地的湿地/水面倒影画到自己脸上
+    float minC = min(baseCol.r, min(baseCol.g, baseCol.b));
+    float baseSat = (maxCh > 1e-4f) ? ((maxCh - minC) / maxCh) : 0.0f;
+    float baseLuma0 = baseLuma;
+
+    // 1) 同时满足高饱和 (>0.42) + 中高亮度 (>0.38)：精准排除青水晶(含暗棱面)、传送门、魔法特效
+    //    真实河水 maxCh < 0.38、湿石板 baseSat < 0.38，两者均不受影响
+    float emissiveNeon = smoothstep(0.42f, 0.68f, baseSat) * smoothstep(0.38f, 0.58f, maxCh);
+    // 2) 极高亮自发光核心（如水晶白青高光棱面、传送门中心）同样禁止覆盖暗倒影
+    float emissiveCore = smoothstep(0.76f, 0.94f, baseLuma0);
+    float nonEmissiveMask = 1.0f - saturate(max(emissiveNeon, emissiveCore));
+
     float distFade = saturate((gProjZAndFade.z - dC) * gProjZAndFade.w);
-    float wetMask = saturate(effectiveWaterMask * (hasWaterHint > 0.5f ? 1.0f : 0.88f)) * horizMask * flatMask * distFade;
+    float wetMask = saturate(effectiveWaterMask * (hasWaterHint > 0.5f ? 1.0f : 0.88f)) * horizMask * flatMask * distFade * nonEmissiveMask;
     if (wetMask <= 0.025f)
     {
         return float4(0.0f, 0.0f, 0.0f, 0.0f);
@@ -885,8 +898,11 @@ float4 PS_WetFloorSsr(VsOut input) : SV_Target0
         float minGate = lerp(0.015f, 0.038f, smoothstep(0.02f, 0.12f, baseLuma));
         float shadowGate = smoothstep(minGate, minGate + 0.09f, reflLuma);
 
+        // 当前像素本身很亮且明显亮于暗倒影时，平滑压低暗倒影覆盖，防止在发光边缘留下脏黑印
+        float darkOverBright = 1.0f - smoothstep(0.20f, 0.55f, baseLuma0 - reflLuma) * smoothstep(0.45f, 0.75f, baseLuma0);
+
         reflCol *= float3(0.96f, 1.04f, 1.12f);
-        reflAlpha = saturate(wetMask * fresnel * edgeFade * heightFade * contactFade * shadowGate * 0.78f * ssrStr);
+        reflAlpha = saturate(wetMask * fresnel * edgeFade * heightFade * contactFade * shadowGate * 0.78f * ssrStr) * darkOverBright;
     }
 
     // 2. 再算水底流动焦散（物理层级位于倒影之下，被强倒影自然压制，彻底消除炮身上的白斑）

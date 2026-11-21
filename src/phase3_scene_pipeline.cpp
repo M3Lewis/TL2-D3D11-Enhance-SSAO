@@ -1339,11 +1339,15 @@ void ApplyPassFogAndAlphaToExplicitPs(
                 : 0.0f;
         const float p3_scale =
             static_cast<float>((std::clamp)(g_phase3_strength_pct.load(std::memory_order_relaxed), 0, 200)) * 0.01f;
+        const float rain_wetness =
+            IsWeatherRainEnabled()
+                ? (static_cast<float>((std::clamp)(GetWeatherRainStrengthPct(), 0, 200)) * 0.01f)
+                : 0.0f;
         const float enhance_flags[4] = {
             af_scale,
             rim_scale,
             p3_scale,
-            0.0f,
+            rain_wetness,
         };
         WriteExplicitPsNamedFloat4(ps_params, "p3EnhanceFlags", enhance_flags);
     }

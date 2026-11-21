@@ -68,6 +68,7 @@ float4 p3Flags2 = float4(0.0, 0.0, 0.0, 0.0);
 //   x = F11 AF+PointLight scale (0..2)
 //   y = P0-1 RimLit dynamic relief, metallic specular & 3-stage _GLO boost scale (0..2)
 //   z = Phase 3 material clarity & micro-normal slope scale (0..2)
+//   w = Dynamic weather rain wetness scale (0..1)
 float4 p3EnhanceFlags = float4(1.0, 1.0, 1.0, 0.0);
 
 float3 ApplyTextureStageOp(float3 baseColor, float4 tSample, int op)
@@ -345,6 +346,11 @@ void ComputeRimLitLighting(
 
     float NdotV = saturate(dot(Nmicro, V));
     litEnv *= saturate(1.0 + skyRelief * (0.20 * sd.detailFade * rimScale));
+
+    // Rain weather global surface wetness linkage:
+    float rainMask = saturate(p3EnhanceFlags.w) * smoothstep(0.20, 0.75, worldUpY);
+    sd.albedo *= lerp(1.0, 0.82, rainMask * (1.0 - sd.metalMask));
+    sd.smoothness = lerp(sd.smoothness, max(sd.smoothness, 0.80), rainMask);
 
     // Dual-hemisphere ambient modulation (luminance neutral ~ 1.0):
     // Cool sky (0.96, 1.00, 1.06) on skyward surfaces, warm earth bounce (1.06, 0.99, 0.93) on groundward surfaces

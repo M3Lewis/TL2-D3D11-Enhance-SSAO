@@ -40,8 +40,9 @@ float4 p3Flags = float4(0.0, 1.0, 0.0, 1.0);
 float4 p3Flags2 = float4(0.0, 0.0, 0.0, 0.0);
 
 // p3EnhanceFlags:
-//   x = F11 dynamic PointLight micro-normal relief + Blinn-Phong specular scale (0..2)
+//   x = F11 dynamic PointLight micro-normal relief + GGX specular scale (0..2)
 //   z = Phase 3 material clarity, micro-normal relief & directional specular scale (0..2)
+//   w = Dynamic weather rain wetness scale (0..1)
 float4 p3EnhanceFlags = float4(0.0, 0.0, 1.0, 0.0);
 
 float3 ApplyStage1Op(float3 baseColor, float2 uv, int op)
@@ -327,6 +328,12 @@ float4 ShadeSkinnedDiff(VS_OUTPUT input, bool doAlphaReject)
         float worldUpY = dot(Nmicro, viewUp);
         float skyRelief = worldUpY - dot(N, viewUp);
         litEnv *= saturate(1.0 + skyRelief * (0.20 * sd.detailFade * p3Scale));
+
+        // Rain weather global surface wetness linkage:
+        // Rain falls from the sky, wetting upward-facing character/armor/monster surfaces.
+        float rainMask = saturate(p3EnhanceFlags.w) * smoothstep(0.20, 0.75, worldUpY);
+        sd.albedo *= lerp(1.0, 0.82, rainMask * (1.0 - sd.metalMask));
+        sd.smoothness = lerp(sd.smoothness, max(sd.smoothness, 0.80), rainMask);
 
         // Dual-hemisphere ambient modulation (luminance neutral ~ 1.0):
         // Cool sky (0.96, 1.00, 1.06) on skyward surfaces, warm earth bounce (1.06, 0.99, 0.93) on groundward surfaces

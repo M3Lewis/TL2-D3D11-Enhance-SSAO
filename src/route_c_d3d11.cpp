@@ -1041,63 +1041,52 @@ struct VS_OUT {
     float4 pos : SV_Position;
 };
 
-uint GetToastChar(int idx, bool dllOn, bool aoOn, int fxMode, bool apOn) {
-    // Format (45 chars): "[F8]DL:ON  [F9]AO:ON  [F10]FX:HOB [F11]AP:ON "
-    if (idx == 0 || idx == 11 || idx == 22 || idx == 34) return 91u;   // '['
-    if (idx == 3 || idx == 14 || idx == 26 || idx == 38) return 93u;   // ']'
-    if (idx == 1 || idx == 12 || idx == 23 || idx == 27 || idx == 35) return 70u;  // 'F'
-    if (idx == 2) return 56u;                                          // '8'
-    if (idx == 13) return 57u;                                         // '9'
-    if (idx == 24 || idx == 36 || idx == 37) return 49u;               // '1'
-    if (idx == 25) return 48u;                                         // '0'
-    if (idx == 4) return 68u;                                          // 'D'
-    if (idx == 5) return 76u;                                          // 'L'
-    if (idx == 6 || idx == 17 || idx == 29 || idx == 41) return 58u;   // ':'
-    if (idx == 7 || idx == 16 || idx == 18 || idx == 42) return 79u;   // 'O'
-    if (idx == 8) return dllOn ? 78u : 70u;                            // 'N' : 'F'
-    if (idx == 9) return dllOn ? 32u : 70u;                            // ' ' : 'F'
-    if (idx == 15 || idx == 39) return 65u;                            // 'A'
-    if (idx == 19) return aoOn ? 78u : 70u;                            // 'N' : 'F'
-    if (idx == 20) return aoOn ? 32u : 70u;                            // ' ' : 'F'
-    if (idx == 28) return 88u;                                         // 'X'
-    if (idx == 30) {
-        if (fxMode == 1) return 72u;                                   // 'H'
-        if (fxMode == 2) return 68u;                                   // 'D'
-        return 79u;                                                    // 'O'
-    }
-    if (idx == 31) {
-        if (fxMode == 1) return 79u;                                   // 'O'
-        if (fxMode == 2) return 82u;                                   // 'R'
-        return 70u;                                                    // 'F'
-    }
-    if (idx == 32) {
-        if (fxMode == 1) return 66u;                                   // 'B'
-        if (fxMode == 2) return 75u;                                   // 'K'
-        return 70u;                                                    // 'F'
-    }
-    if (idx == 40) return 80u;                                         // 'P'
-    if (idx == 43) return apOn ? 78u : 70u;                            // 'N' : 'F'
-    if (idx == 44) return apOn ? 32u : 70u;                            // ' ' : 'F'
+uint GetToastChar(int idx, bool dllOn) {
+    // Format (45 chars): "[F8] GRAPHICS PANEL: READY - PRESS F8 TO OPEN"
+    if (idx == 0) return 91u;                                          // '['
+    if (idx == 3) return 93u;                                          // ']'
+    if (idx == 1 || idx == 35) return 70u;                             // 'F'
+    if (idx == 2 || idx == 36) return 56u;                             // '8'
+    if (idx == 5) return 71u;                                          // 'G'
+    if (idx == 6 || idx == 30) return 82u;                             // 'R'
+    if (idx == 7 || idx == 15) return 65u;                             // 'A'
+    if (idx == 8 || idx == 14 || idx == 29 || idx == 42) return 80u;   // 'P'
+    if (idx == 9) return 72u;                                          // 'H'
+    if (idx == 10) return 73u;                                         // 'I'
+    if (idx == 11) return 67u;                                         // 'C'
+    if (idx == 12 || idx == 32 || idx == 33) return 83u;               // 'S'
+    if (idx == 16 || idx == 44) return 78u;                            // 'N'
+    if (idx == 17 || idx == 31 || idx == 43) return 69u;               // 'E'
+    if (idx == 18) return 76u;                                         // 'L'
+    if (idx == 19) return 58u;                                         // ':'
+    if (idx == 21) return dllOn ? 82u : 79u;                           // 'R' : 'O'
+    if (idx == 22) return dllOn ? 69u : 70u;                           // 'E' : 'F'
+    if (idx == 23) return dllOn ? 65u : 70u;                           // 'A' : 'F'
+    if (idx == 24) return dllOn ? 68u : 32u;                           // 'D' : ' '
+    if (idx == 25) return dllOn ? 89u : 32u;                           // 'Y' : ' '
+    if (idx == 27) return 45u;                                         // '-'
+    if (idx == 38) return 84u;                                         // 'T'
+    if (idx == 39 || idx == 41) return 79u;                            // 'O'
     return 32u;                                                        // ' '
 }
 
 uint GetGlyph5x7Row(uint ch, uint row) {
-    if (ch == 91u) { return (row == 0u || row == 6u) ? 14u : 8u; }                         // '['
-    if (ch == 93u) { return (row == 0u || row == 6u) ? 14u : 2u; }                         // ']'
-    if (ch == 58u) { return (row == 1u || row == 2u || row == 4u || row == 5u) ? 4u : 0u; }// ':'
-    if (ch == 48u) {                                                                       // '0'
+    if (ch == 91u) { return (row == 0u || row == 6u) ? 14u : 8u; }                          // '['
+    if (ch == 93u) { return (row == 0u || row == 6u) ? 14u : 2u; }                          // ']'
+    if (ch == 58u) { return (row == 1u || row == 2u || row == 4u || row == 5u) ? 4u : 0u; } // ':'
+    if (ch == 45u) { return (row == 3u) ? 14u : 0u; }                                       // '-'
+    if (ch == 48u) {                                                                        // '0'
         if (row == 0u || row == 6u) return 14u;
         if (row == 2u || row == 3u) return 21u;
         return 17u;
     }
-    if (ch == 49u) {                                                                       // '1'
+    if (ch == 49u) {                                                                        // '1'
         if (row == 1u) return 12u;
         if (row == 6u) return 14u;
         return 4u;
     }
-    if (ch == 70u) { return (row == 0u) ? 31u : ((row == 3u) ? 30u : 16u); }               // 'F'
-    if (ch == 56u) { return (row == 0u || row == 3u || row == 6u) ? 14u : 17u; }           // '8'
-    if (ch == 57u) {                                                                       // '9'
+    if (ch == 56u) { return (row == 0u || row == 3u || row == 6u) ? 14u : 17u; }            // '8'
+    if (ch == 57u) {                                                                        // '9'
         if (row == 0u) return 14u;
         if (row == 1u || row == 2u) return 17u;
         if (row == 3u) return 15u;
@@ -1105,43 +1094,49 @@ uint GetGlyph5x7Row(uint ch, uint row) {
         if (row == 5u) return 2u;
         return 12u;
     }
-    if (ch == 68u) { return (row == 0u || row == 6u) ? 30u : 17u; }                        // 'D'
-    if (ch == 76u) { return (row == 6u) ? 31u : 16u; }                                     // 'L'
-    if (ch == 79u) { return (row == 0u || row == 6u) ? 14u : 17u; }                        // 'O'
-    if (ch == 78u) {                                                                       // 'N'
+    if (ch == 65u) { return (row == 0u) ? 14u : ((row == 3u) ? 31u : 17u); }                // 'A'
+    if (ch == 67u) { return (row == 0u || row == 6u) ? 14u : ((row == 1u || row == 5u) ? 17u : 16u); } // 'C'
+    if (ch == 68u) { return (row == 0u || row == 6u) ? 30u : 17u; }                         // 'D'
+    if (ch == 69u) { return (row == 0u || row == 6u) ? 31u : ((row == 3u) ? 30u : 16u); } // 'E'
+    if (ch == 70u) { return (row == 0u) ? 31u : ((row == 3u) ? 30u : 16u); }                // 'F'
+    if (ch == 71u) {                                                                        // 'G'
+        if (row == 0u || row == 6u) return 14u;
+        if (row == 3u) return 23u;
+        if (row == 2u) return 16u;
+        return 17u;
+    }
+    if (ch == 72u) { return (row == 3u) ? 31u : 17u; }                                      // 'H'
+    if (ch == 73u) { return (row == 0u || row == 6u) ? 14u : 4u; }                          // 'I'
+    if (ch == 76u) { return (row == 6u) ? 31u : 16u; }                                      // 'L'
+    if (ch == 78u) {                                                                        // 'N'
         if (row == 1u) return 25u;
         if (row == 2u) return 21u;
         if (row == 3u) return 19u;
         return 17u;
     }
-    if (ch == 65u) {                                                                       // 'A'
-        if (row == 0u) return 14u;
-        if (row == 3u) return 31u;
-        return 17u;
+    if (ch == 79u) { return (row == 0u || row == 6u) ? 14u : 17u; }                         // 'O'
+    if (ch == 80u) {                                                                        // 'P'
+        if (row == 0u || row == 3u) return 30u;
+        if (row <= 2u) return 17u;
+        return 16u;
     }
-    if (ch == 88u) {                                                                       // 'X'
-        if (row == 2u || row == 4u) return 10u;
-        if (row == 3u) return 4u;
-        return 17u;
-    }
-    if (ch == 72u) { return (row == 3u) ? 31u : 17u; }                                     // 'H'
-    if (ch == 66u) { return (row == 0u || row == 3u || row == 6u) ? 30u : 17u; }           // 'B'
-    if (ch == 82u) {                                                                       // 'R'
+    if (ch == 82u) {                                                                        // 'R'
         if (row == 0u || row == 3u) return 30u;
         if (row == 4u) return 20u;
         if (row == 5u) return 18u;
         return 17u;
     }
-    if (ch == 75u) {                                                                       // 'K'
-        if (row == 1u || row == 5u) return 18u;
-        if (row == 2u || row == 4u) return 20u;
-        if (row == 3u) return 24u;
+    if (ch == 83u) {                                                                        // 'S'
+        if (row == 0u || row == 3u || row == 6u) return 14u;
+        if (row == 2u) return 16u;
+        if (row == 4u) return 1u;
         return 17u;
     }
-    if (ch == 80u) {                                                                       // 'P'
-        if (row == 0u || row == 3u) return 30u;
-        if (row <= 2u) return 17u;
-        return 16u;
+    if (ch == 84u) { return (row == 0u) ? 31u : 4u; }                                       // 'T'
+    if (ch == 89u) {                                                                        // 'Y'
+        if (row <= 1u) return 17u;
+        if (row == 2u) return 10u;
+        return 4u;
     }
     return 0u;
 }
@@ -1153,8 +1148,6 @@ float4 PS_ToastOverlay(VS_OUT input) : SV_Target0 {
     float scale = max(gToastParams.w, 1.0f);
     float2 textPos = local - float2(12.0f, 8.0f);
     int2 cell = int2(floor(textPos / scale));
-    int fxMode = (int)round(gToastExtra.x);
-    bool apOn = (gToastExtra.y > 0.5f);
 
     bool hit = false;
     int charIdx = -1;
@@ -1162,7 +1155,7 @@ float4 PS_ToastOverlay(VS_OUT input) : SV_Target0 {
         charIdx = cell.x / 6;
         int gx = cell.x - charIdx * 6;
         if (charIdx >= 0 && charIdx < 45 && gx >= 0 && gx < 5) {
-            uint ch = GetToastChar(charIdx, gToastParams.x > 0.5f, gToastParams.y > 0.5f, fxMode, apOn);
+            uint ch = GetToastChar(charIdx, gToastParams.x > 0.5f);
             uint bits = GetGlyph5x7Row(ch, (uint)cell.y);
             hit = ((bits >> (4u - (uint)gx)) & 1u) != 0u;
         }
@@ -1171,22 +1164,19 @@ float4 PS_ToastOverlay(VS_OUT input) : SV_Target0 {
     float fade = saturate(gToastParams.z);
     if (hit) {
         bool dllOn = (gToastParams.x > 0.5f);
-        bool aoOn = (gToastParams.y > 0.5f);
-        float3 fg = float3(0.95f, 0.96f, 0.98f);
-        if (charIdx >= 7 && charIdx <= 9) {
+        float3 fg = float3(0.96f, 0.97f, 1.00f);
+        if (charIdx <= 3 || (charIdx >= 35 && charIdx <= 36)) {
+            // "[F8]" or "F8" in amber gold
+            fg = float3(1.00f, 0.82f, 0.32f);
+        } else if (charIdx >= 21 && charIdx <= 25) {
+            // "READY" in emerald green / "OFF" in warm red
             fg = dllOn ? float3(0.38f, 0.96f, 0.58f) : float3(1.00f, 0.44f, 0.42f);
-        } else if (charIdx >= 18 && charIdx <= 20) {
-            fg = aoOn ? float3(0.38f, 0.96f, 0.58f) : float3(1.00f, 0.44f, 0.42f);
-        } else if (charIdx >= 30 && charIdx <= 32) {
-            if (fxMode == 1) {
-                fg = float3(1.00f, 0.84f, 0.36f);
-            } else if (fxMode == 2) {
-                fg = float3(0.72f, 0.68f, 1.00f);
-            } else {
-                fg = float3(1.00f, 0.44f, 0.42f);
-            }
-        } else if (charIdx >= 42 && charIdx <= 44) {
-            fg = apOn ? float3(0.38f, 0.96f, 0.58f) : float3(1.00f, 0.44f, 0.42f);
+        } else if (charIdx == 27) {
+            // "-" in muted slate
+            fg = float3(0.55f, 0.62f, 0.72f);
+        } else if (charIdx >= 29) {
+            // "PRESS F8 TO OPEN" secondary text in soft silver
+            fg = float3(0.82f, 0.86f, 0.92f);
         }
         return float4(fg, fade);
     }

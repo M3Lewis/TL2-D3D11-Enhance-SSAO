@@ -116,14 +116,19 @@ float3 ApplyOgreFog(float3 color, float rawFogDist, int fogMode)
     return lerp(FogColor.rgb, color, f);
 }
 
-float3 SoftHighlightClamp(float3 c)
+float3 CombineDiffuseAndSpec(float3 diff, float3 spec)
 {
-    // Below 0.80: 100% linear pass-through to preserve native contrast.
-    // Above 0.80: smooth C1 roll-off asymptotically approaching 1.0, preventing blown-out white clipping.
-    const float knee = 0.80;
-    const float maxOver = 1.0 - knee; // 0.20
-    float3 over = max(c - knee, 0.0);
-    return min(c, knee) + over / (1.0 + over / maxOver);
+    float3 baseDiff = max(diff, 0.0);
+    float3 raw = baseDiff + max(spec, 0.0);
+
+    const float knee = 0.90;
+    const float headroom = 1.0 - knee; // 0.10
+    float3 over = max(raw - knee, 0.0);
+    // Asymptotic compression: as over -> inf, compressed -> knee + headroom = 1.0
+    float3 compressed = min(raw, knee) + (over * headroom) / (headroom + over);
+
+    // Critical protection: lantern cores, white hair, bright diffuse retain full brightness to trigger Bloom
+    return saturate(max(compressed, min(baseDiff, 1.0)));
 }
 
 bool PassesAlphaReject(float alpha, float threshold, int func)
@@ -550,7 +555,7 @@ float4 ShadeDiffPass(VS_OUTPUT input, bool doAlphaReject)
         }
     }
 
-    float3 color = saturate(sd.albedo * litEnv + specAdd);
+    float3 color = CombineDiffuseAndSpec(sd.albedo * litEnv, specAdd);
 
     // Apply texture stages cleanly without washing out deep shadows
     if (op1 > 0)
@@ -564,9 +569,7 @@ float4 ShadeDiffPass(VS_OUTPUT input, bool doAlphaReject)
     }
 
     color = saturate(color + input.ColorSpec.rgb);
-    color = SoftHighlightClamp(color);
     color = ApplyOgreFog(color, input.fogDist, (int)(p3Flags.z + 0.5));
-    return float4(color, outAlpha);
     return float4(color, outAlpha);
 }
 

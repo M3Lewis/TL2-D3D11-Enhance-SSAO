@@ -1630,6 +1630,7 @@ using FnEditorSetUpdateTimeOfDay = void (__fastcall *)(bool);
 using FnEditorSetTimeOfDayMult = void (__fastcall *)(float);
 using FnEditorSetShowWeatherEffects = void (__fastcall *)(bool);
 using FnEditorGetShowWeatherEffects = bool (__fastcall *)();
+using FnGetActiveLevel = void* (__fastcall *)();
 
 static FnEditorSetTimeOfDay g_fnSetTimeOfDay = nullptr;
 static FnEditorGetTimeOfDay g_fnGetTimeOfDay = nullptr;
@@ -1637,7 +1638,141 @@ static FnEditorSetUpdateTimeOfDay g_fnSetUpdateTimeOfDay = nullptr;
 static FnEditorSetTimeOfDayMult g_fnSetTimeOfDayMult = nullptr;
 static FnEditorSetShowWeatherEffects g_fnSetShowWeather = nullptr;
 static FnEditorGetShowWeatherEffects g_fnGetShowWeather = nullptr;
+static FnGetActiveLevel g_fnGetActiveLevel = nullptr;
+static int32_t g_offTimeOfDay = -1;       // Expected 0x278C from machine code
+static int32_t g_offTimeOfDayMult = -1;   // Expected from SetTimeOfDayMult
+static int32_t g_offUpdateTimeOfDay = -1; // Expected from SetUpdateTimeOfDay
 static std::atomic<bool> g_engine_funcs_inited{false};
+
+static void DumpBytes(const char* tag, const void* addr, size_t len) {
+    if (!addr || !g_log) return;
+    const auto* p = static_cast<const uint8_t*>(addr);
+    char buf[256] = {};
+    size_t pos = 0;
+    for (size_t i = 0; i < len && pos + 4 < sizeof(buf); ++i) {
+        pos += snprintf(buf + pos, sizeof(buf) - pos, "%02X ", p[i]);
+    }
+    g_log("[RouteC][TimeOfDay] %s (%p): %s", tag, addr, buf);
+}
+
+// Expert advice 10 (Scheme C): dynamically extract g_fnGetActiveLevel and +0x278C from EditorGetTimeOfDay
+static bool ResolveDirectLevelTimeAccess() {
+    if (g_fnGetActiveLevel && g_offTimeOfDay >= 0) {
+        return true;
+    }
+    if (!g_fnGetTimeOfDay && !g_fnSetTimeOfDay) {
+        return false;
+    }
+
+    // Pattern in EditorGetTimeOfDay: E8 <rel32> F3 0F 10 80 <disp32>
+    if (g_fnGetTimeOfDay) {
+        const auto* code = reinterpret_cast<const uint8_t*>(g_fnGetTimeOfDay);
+        for (size_t i = 0; i < 64; ++i) {
+            if (code[i] == 0xE8 &&
+                code[i + 5] == 0xF3 && code[i + 6] == 0x0F &&
+                code[i + 7] == 0x10 && code[i + 8] == 0x80)
+            {
+                int32_t rel32 = 0;
+                int32_t disp32 = 0;
+                memcpy(&rel32,  code + i + 1, sizeof(rel32));
+                memcpy(&disp32, code + i + 9, sizeof(disp32));
+
+                const uint8_t* target = code + i + 5 + rel32;
+                g_fnGetActiveLevel = reinterpret_cast<FnGetActiveLevel>(const_cast<uint8_t*>(target));
+                g_offTimeOfDay = disp32;
+
+                if (g_log) {
+                    g_log("[RouteC][TimeOfDay] Resolved GetActiveLevel=%p, offTimeOfDay=0x%X",
+                          g_fnGetActiveLevel, g_offTimeOfDay);
+                    DumpBytes("GetActiveLevel 64B", (void*)g_fnGetActiveLevel, 64);
+                    DumpBytes("SetTimeOfDayMult 64B", (void*)g_fnSetTimeOfDayMult, 64);
+                    DumpBytes("SetUpdateTimeOfDay 64B", (void*)g_fnSetUpdateTimeOfDay, 64);
+                }
+                return true;
+            }
+        }
+    }
+
+    // Fallback pattern in EditorSetTimeOfDay: E8 <rel32> F3 0F 11 ... <disp32>
+    if (g_fnSetTimeOfDay) {
+        const auto* code = reinterpret_cast<const uint8_t*>(g_fnSetTimeOfDay);
+        for (size_t i = 0; i < 64; ++i) {
+            if (code[i] == 0xE8 &&
+                code[i + 5] == 0xF3 && code[i + 6] == 0x0F &&
+                code[i + 7] == 0x11 && (code[i + 8] == 0x80 || code[i + 8] == 0xB0))
+            {
+                int32_t rel32 = 0;
+                int32_t disp32 = 0;
+                memcpy(&rel32,  code + i + 1, sizeof(rel32));
+                memcpy(&disp32, code + i + 9, sizeof(disp32));
+
+                const uint8_t* target = code + i + 5 + rel32;
+                g_fnGetActiveLevel = reinterpret_cast<FnGetActiveLevel>(const_cast<uint8_t*>(target));
+                g_offTimeOfDay = disp32;
+
+                if (g_log) {
+                    g_log("[RouteC][TimeOfDay] Fallback resolved GetActiveLevel=%p, offTimeOfDay=0x%X",
+                          g_fnGetActiveLevel, g_offTimeOfDay);
+                    DumpBytes("GetActiveLevel 64B", (void*)g_fnGetActiveLevel, 64);
+                    DumpBytes("SetTimeOfDayMult 64B", (void*)g_fnSetTimeOfDayMult, 64);
+                    DumpBytes("SetUpdateTimeOfDay 64B", (void*)g_fnSetUpdateTimeOfDay, 64);
+                }
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+static bool DirectSetTimeOfDay(float hours) {
+    if (!ResolveDirectLevelTimeAccess() || !g_fnGetActiveLevel || g_offTimeOfDay < 0) {
+        return false;
+    }
+    DWORD excCode = 0;
+    __try {
+        void* level = g_fnGetActiveLevel();
+        if (!level) {
+            if (g_log) {
+                g_log("[RouteC][TimeOfDay] GetActiveLevel() returned NULL (in menu or loading?)");
+            }
+            return false;
+        }
+        auto* pTime = reinterpret_cast<float*>(static_cast<uint8_t*>(level) + g_offTimeOfDay);
+        float before = *pTime;
+        *pTime = hours;
+        float after = *pTime;
+        if (g_log) {
+            g_log("[RouteC][TimeOfDay] DirectWrite level=%p off=0x%X: %.3f -> %.3f",
+                  level, g_offTimeOfDay, before, after);
+        }
+        return true;
+    } __except (excCode = GetExceptionCode(), EXCEPTION_EXECUTE_HANDLER) {
+        if (g_log) {
+            g_log("[RouteC][TimeOfDay] DirectSetTimeOfDay EXCEPTION 0x%08X", excCode);
+        }
+        return false;
+    }
+}
+
+static float DirectGetTimeOfDay() {
+    if (!ResolveDirectLevelTimeAccess() || !g_fnGetActiveLevel || g_offTimeOfDay < 0) {
+        return -999.0f;
+    }
+    DWORD excCode = 0;
+    __try {
+        void* level = g_fnGetActiveLevel();
+        if (!level) {
+            return -999.0f;
+        }
+        const auto* pTime = reinterpret_cast<const float*>(static_cast<const uint8_t*>(level) + g_offTimeOfDay);
+        return *pTime;
+    } __except (excCode = GetExceptionCode(), EXCEPTION_EXECUTE_HANDLER) {
+        if (g_log) {
+            g_log("[RouteC][TimeOfDay] DirectGetTimeOfDay EXCEPTION 0x%08X", excCode);
+        }
+        return -999.0f;
+    }
+}
 
 static void EnsureEngineWeatherTimeFuncs() {
     if (g_engine_funcs_inited.load(std::memory_order_relaxed)) {
@@ -1672,6 +1807,7 @@ static void EnsureEngineWeatherTimeFuncs() {
                 g_log("[RouteC][TimeOfDay] GetTimeOfDay 48B: %s", hexbuf);
             }
         }
+        ResolveDirectLevelTimeAccess();
     }
     g_engine_funcs_inited.store(true, std::memory_order_relaxed);
 }
@@ -1716,37 +1852,38 @@ void SetTimeOfDayHours(int hours) {
     g_time_of_day_hours.store(hours, std::memory_order_relaxed);
     EnsureEngineWeatherTimeFuncs();
     if (hours >= 0 && hours <= 24) {
-        if (g_fnSetTimeOfDay) {
+        // Scheme C: Direct Write to ActiveLevel + 0x278C
+        const bool direct_ok = DirectSetTimeOfDay(static_cast<float>(hours));
+        if (!direct_ok && g_fnSetTimeOfDay) {
             DWORD excCode = 0;
-            float before = -999.0f;
-            float after = -999.0f;
             __try {
-                if (g_fnGetTimeOfDay) {
-                    before = g_fnGetTimeOfDay();
-                }
                 g_fnSetTimeOfDay(static_cast<float>(hours));
-                // Expert advice 9: Use timeScale (EditorSetTimeOfDayMult) = 0.0f to lock progression,
-                // while keeping EditorSetUpdateTimeOfDay = true so lighting, skybox and sun angles interpolate
-                if (g_fnSetTimeOfDayMult) {
-                    g_fnSetTimeOfDayMult(g_time_of_day_locked.load(std::memory_order_relaxed) ? 0.0f : 1.0f);
-                }
-                if (g_fnSetUpdateTimeOfDay) {
-                    g_fnSetUpdateTimeOfDay(true);
-                }
-                if (g_fnGetTimeOfDay) {
-                    after = g_fnGetTimeOfDay();
-                }
-                if (g_log) {
-                    g_log("[RouteC][TimeOfDay] SetHours: before=%.3f -> set=%d -> after=%.3f (locked=%d)",
-                          before, hours, after, g_time_of_day_locked.load(std::memory_order_relaxed) ? 1 : 0);
-                }
             } __except (excCode = GetExceptionCode(), EXCEPTION_EXECUTE_HANDLER) {
                 if (g_log) {
                     g_log("[RouteC][TimeOfDay] EXCEPTION 0x%08X during SetTimeOfDay(%d)!", excCode, hours);
                 }
             }
-        } else if (g_log) {
-            g_log("[RouteC][TimeOfDay] SetHours(%d) skipped: g_fnSetTimeOfDay is NULL!", hours);
+        }
+        // Time scale control: 0.0f when locked to freeze natural progression, while keep update tick alive
+        if (g_fnSetTimeOfDayMult) {
+            DWORD excCode = 0;
+            __try {
+                g_fnSetTimeOfDayMult(g_time_of_day_locked.load(std::memory_order_relaxed) ? 0.0f : 1.0f);
+            } __except (excCode = GetExceptionCode(), EXCEPTION_EXECUTE_HANDLER) {
+                if (g_log) {
+                    g_log("[RouteC][TimeOfDay] EXCEPTION 0x%08X during SetTimeOfDayMult!", excCode);
+                }
+            }
+        }
+        if (g_fnSetUpdateTimeOfDay) {
+            DWORD excCode = 0;
+            __try {
+                g_fnSetUpdateTimeOfDay(true);
+            } __except (excCode = GetExceptionCode(), EXCEPTION_EXECUTE_HANDLER) {
+                if (g_log) {
+                    g_log("[RouteC][TimeOfDay] EXCEPTION 0x%08X during SetUpdateTimeOfDay!", excCode);
+                }
+            }
         }
     } else {
         // -1: Auto / follow natural time
@@ -1775,6 +1912,10 @@ int GetTimeOfDayHours() {
         return val;
     }
     EnsureEngineWeatherTimeFuncs();
+    const float dt = DirectGetTimeOfDay();
+    if (dt >= 0.0f && dt <= 24.0f) {
+        return static_cast<int>(std::lround(dt));
+    }
     if (g_fnGetTimeOfDay) {
         DWORD excCode = 0;
         __try {

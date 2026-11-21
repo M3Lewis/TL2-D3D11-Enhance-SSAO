@@ -19,7 +19,7 @@ struct alignas(16) CbAoParams {
     float blur_and_mode[4];        // (invVpW, invVpH, depthEdgeScale, debugMode)
     float sscs_params[4];          // (sscsEnabled, sscsStrength, tintStrength, aerialMode: 0=off, 1=Hob/neutral, 2=DarkFilm)
     float sscs_key_and_range[4];   // (keyDirX, keyDirY, aerialStart, invAerialSpan)
-    float aerial_fog_params[4];    // (hazeR, hazeG, hazeB, maxAerialAlpha)
+    float aerial_fog_params[4];    // (hazeR/gTimeSsr, hazeG, hazeB, maxAerialAlpha)
     float view_up_and_water[4];    // (worldUpVs.xyz, waterHint)
     float inv_view_row0[4];        // (worldXBasisVs.xyz, camPosVsToWorldOffsetX)
     float inv_view_row2[4];        // (worldZBasisVs.xyz, camPosVsToWorldOffsetZ)

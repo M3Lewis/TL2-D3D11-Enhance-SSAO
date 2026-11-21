@@ -691,24 +691,41 @@ float4 PS_WetFloorSsr(VsOut input) : SV_Target0
     gAoInputTex.GetDimensions(texW, texH);
     float2 invTex = rcp(float2(max(texW, 1u), max(texH, 1u)));
 
-    // Use planar worldUp normal so bumpy underwater riverbeds never fracture reflections into double ghosts.
-    float ripScale = 0.0045f * (1.0f - smoothstep(10.0f, 34.0f, dC));
-    float2 rip = float2(sin(wx * 2.4f + wz * 1.3f), cos(wz * 2.6f - wx * 1.1f)) * ripScale;
-    float3 Nrefl = normalize(upVS + float3(rip.x, 0.0f, rip.y));
+    // Use planar worldUp normal with dual-frequency waves and height-gated reflection
+    float gTime = gAerialFogParams.x;
+    float waveFade = 1.0f - smoothstep(12.0f, 36.0f, dC);
+
+    // 构造严格正交于 upVS 的水平切空间基向量（避免 View-Z 投影畸变）
+    float3 refAxis = (abs(upVS.z) < 0.9f) ? float3(0.0f, 0.0f, 1.0f) : float3(1.0f, 0.0f, 0.0f);
+    float3 tX = normalize(cross(upVS, refAxis));
+    float3 tZ = cross(tX, upVS);
+
+    // 双频正交动态波纹（归一化到 [-1, 1]）
+    float2 wuv1 = float2(wx * 2.2f + gTime * 0.55f, wz * 1.7f - gTime * 0.45f);
+    float2 wuv2 = float2(wz * 3.1f - gTime * 0.75f, wx * 2.6f + gTime * 0.60f);
+    float2 ripRaw = float2(sin(wuv1.x + wuv1.y), cos(wuv1.y - wuv1.x)) * 0.6f +
+                    float2(sin(wuv2.x - wuv2.y), cos(wuv2.x + wuv2.y)) * 0.4f;
+
+    // 步进法线只加极微量扰动（杜绝倒影闪烁和脚底撕裂），主要波纹留到命中后按距离扭曲 UV
+    float3 Nrefl = normalize(upVS + (tX * ripRaw.x + tZ * ripRaw.y) * (0.0015f * waveFade));
     float3 V = normalize(P);
     float3 R = reflect(V, Nrefl);
 
+    // 将光线起点沿垂直向上轻微抬升 0.06m，跳过水底河床与脚底阴影贴花的自相交
+    float3 rayOrigin = P + upVS * 0.06f;
+
     float jitter = SsrHash21(float2(pix)) * 0.15f;
-    float t = 0.32f + jitter * 0.18f;
+    float t = 0.28f + jitter * 0.16f;
     bool hit = false;
     float2 hitTexUv = float2(0.0f, 0.0f);
     float2 hitVpUv = float2(0.5f, 0.5f);
-    float prevT = 0.12f;
+    float prevT = 0.10f;
+    float hitT = 0.0f;
 
     [loop]
     for (int i = 0; i < 20; ++i)
     {
-        float3 sampleVS = P + R * t;
+        float3 sampleVS = rayOrigin + R * t;
         if (sampleVS.z >= -0.25f)
         {
             break;
@@ -731,11 +748,12 @@ float4 PS_WetFloorSsr(VsOut input) : SV_Target0
                 float lo = prevT;
                 float hi = t;
                 float2 bestVpUv = vpUv;
+                float bestT = t;
                 [unroll]
                 for (int rStep = 0; rStep < 2; ++rStep)
                 {
                     float midT = 0.5f * (lo + hi);
-                    float3 midVS = P + R * midT;
+                    float3 midVS = rayOrigin + R * midT;
                     float2 midVpUv = ProjectViewToVpUv(midVS);
                     int2 mpix = clamp(int2(gVpRect.xy + midVpUv * gVpRect.zw), gVpClamp.xy, gVpClamp.zw);
                     float mSceneD = RawToLinearDist(LoadRawDepth(mpix));
@@ -744,12 +762,14 @@ float4 PS_WetFloorSsr(VsOut input) : SV_Target0
                     {
                         hi = midT;
                         bestVpUv = midVpUv;
+                        bestT = midT;
                     }
                     else
                     {
                         lo = midT;
                     }
                 }
+                hitT = bestT;
                 hitVpUv = bestVpUv;
                 hitTexUv = (gVpRect.xy + bestVpUv * gVpRect.zw) * invTex;
                 hit = true;
@@ -760,23 +780,63 @@ float4 PS_WetFloorSsr(VsOut input) : SV_Target0
         t += 0.22f + float(i) * 0.08f;
     }
 
-    if (!hit)
+    float ssrStr = max(gAoParams.z, 0.0f);
+
+    // 1. 锐利交织波光焦散（1 - |sin| 形成水网亮纹，而非大块模糊光斑）
+    //    受水面原亮度与水体掩码调制：照进阳光的浅水有微光，纯黑阴影水底不强行发荧光
+    float baseLuma = dot(baseCol, float3(0.299f, 0.587f, 0.114f));
+    float cw1 = 1.0f - abs(sin(wx * 2.5f + gTime * 0.95f + sin(wz * 2.0f + gTime * 0.65f) * 0.8f));
+    float cw2 = 1.0f - abs(sin(wz * 2.8f - gTime * 0.85f + cos(wx * 2.2f - gTime * 0.70f) * 0.8f));
+    float caustics = pow(saturate(cw1 * cw2), 2.5f) * 0.12f * waveFade * smoothstep(0.06f, 0.32f, baseLuma) * smoothstep(0.30f, 0.75f, waterMask);
+    float caustAlpha = saturate(caustics * wetMask * saturate(ssrStr));
+    float3 caustCol = float3(0.84f, 0.95f, 1.0f);
+
+    // 2. SSR 反射采样（仅在命中时执行）
+    float reflAlpha = 0.0f;
+    float3 reflCol = float3(0.0f, 0.0f, 0.0f);
+    if (hit)
+    {
+        // 几何高度门禁：用真实命中深度判断命中物是否立在水面之上，根治河床/地面阴影自反射
+        int2 hitPix = clamp(int2(gVpRect.xy + hitVpUv * gVpRect.zw), gVpClamp.xy, gVpClamp.zw);
+        float hitRaw = 0.0f;
+        float3 hitSurfP = ReconstructPosVS(hitPix, hitRaw);
+        float hitHeight = dot(hitSurfP - P, upVS);
+        float heightFade = smoothstep(0.06f, 0.32f, hitHeight);
+
+        // 命中后 UV 水波荡漾：根部 (hitT 小) 锁死不撕裂，远处自然荡漾
+        float2 waveUvOfs = ripRaw * invTex * (3.2f * smoothstep(0.15f, 2.5f, hitT) * waveFade);
+        float2 sampleUv = hitTexUv + waveUvOfs;
+
+        float2 edgeDist = min(hitVpUv, 1.0f - hitVpUv);
+        float edgeFade = smoothstep(0.0f, 0.10f, min(edgeDist.x, edgeDist.y));
+        float viewGraze = 1.0f - saturate(dot(-V, Nrefl));
+        float fresnel = 0.30f + 0.58f * pow(viewGraze, 2.0f);
+
+        float2 bOfs = invTex * 1.25f;
+        reflCol =
+            gAoInputTex.SampleLevel(gAoSamp, sampleUv + float2(-bOfs.x, -bOfs.y), 0).rgb * 0.25f +
+            gAoInputTex.SampleLevel(gAoSamp, sampleUv + float2( bOfs.x, -bOfs.y), 0).rgb * 0.25f +
+            gAoInputTex.SampleLevel(gAoSamp, sampleUv + float2(-bOfs.x,  bOfs.y), 0).rgb * 0.25f +
+            gAoInputTex.SampleLevel(gAoSamp, sampleUv + float2( bOfs.x,  bOfs.y), 0).rgb * 0.25f;
+
+        // 暗部阴影倒影软抑制（搭配 heightFade 双保险，阈值放低至 0.04~0.16 保护暗色石柱/铠甲）
+        float reflLuma = dot(reflCol, float3(0.299f, 0.587f, 0.114f));
+        float shadowGate = smoothstep(0.04f, 0.16f, reflLuma);
+
+        reflCol *= float3(0.92f, 0.97f, 1.03f);
+        reflAlpha = saturate(wetMask * fresnel * edgeFade * heightFade * shadowGate * 0.45f * ssrStr);
+    }
+
+    // 3. 兼容 SRC_ALPHA / INV_SRC_ALPHA 的精确无暗化合成
+    float weightSum = reflAlpha + caustAlpha;
+    if (weightSum <= 1e-4f)
     {
         return float4(0.0f, 0.0f, 0.0f, 0.0f);
     }
 
-    float2 edgeDist = min(hitVpUv, 1.0f - hitVpUv);
-    float edgeFade = smoothstep(0.0f, 0.10f, min(edgeDist.x, edgeDist.y));
-    float viewGraze = 1.0f - saturate(dot(-V, Nrefl));
-    float fresnel = 0.34f + 0.56f * pow(viewGraze, 1.9f);
-    float2 bOfs = invTex * 1.25f;
-    float3 reflCol =
-        gAoInputTex.SampleLevel(gAoSamp, hitTexUv + float2(-bOfs.x, -bOfs.y), 0).rgb * 0.25f +
-        gAoInputTex.SampleLevel(gAoSamp, hitTexUv + float2( bOfs.x, -bOfs.y), 0).rgb * 0.25f +
-        gAoInputTex.SampleLevel(gAoSamp, hitTexUv + float2(-bOfs.x,  bOfs.y), 0).rgb * 0.25f +
-        gAoInputTex.SampleLevel(gAoSamp, hitTexUv + float2( bOfs.x,  bOfs.y), 0).rgb * 0.25f;
-    float alpha = saturate(wetMask * fresnel * edgeFade * 0.44f * max(gAoParams.z, 0.0f));
-    return float4(saturate(reflCol * float3(0.92f, 0.97f, 1.03f)), alpha);
+    float outA = saturate(weightSum);
+    float3 outRgb = (reflCol * reflAlpha + caustCol * caustAlpha) / weightSum;
+    return float4(saturate(outRgb), outA);
 }
 )HLSL";
 
@@ -3173,6 +3233,7 @@ bool ExecuteRouteCPostWorldPass(const RouteCPostWorldRequest& req, RouteCD3DLogF
             std::memcpy(g_st.post_world_cb_bytes, &cb_ssr, sizeof(cb_ssr));
         }
         cb_ssr.ao_params[2] = (std::clamp)(req.ssr_strength_scale, 0.0f, 2.0f);
+        cb_ssr.aerial_fog_params[0] = static_cast<float>(::GetTickCount64() % 3600000ULL) * 0.001f;
         D3D11_MAPPED_SUBRESOURCE mapped_ao{};
         if (SUCCEEDED(req.ctx->Map(g_st.cb_params, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped_ao)) && mapped_ao.pData) {
             std::memcpy(mapped_ao.pData, &cb_ssr, sizeof(cb_ssr));

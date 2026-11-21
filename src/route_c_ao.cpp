@@ -1657,8 +1657,19 @@ static void EnsureEngineWeatherTimeFuncs() {
                   hExe, g_fnSetTimeOfDay, g_fnGetTimeOfDay, g_fnSetUpdateTimeOfDay, g_fnSetTimeOfDayMult, g_fnSetShowWeather);
             if (g_fnSetTimeOfDay) {
                 const auto* b = reinterpret_cast<const uint8_t*>(g_fnSetTimeOfDay);
-                g_log("[RouteC][TimeOfDay] SetTimeOfDay OpCodes (16B): %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X",
-                      b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7], b[8], b[9], b[10], b[11], b[12], b[13], b[14], b[15]);
+                char hexbuf[256]{};
+                for (int i = 0; i < 48; ++i) {
+                    snprintf(hexbuf + i * 3, sizeof(hexbuf) - i * 3, "%02X ", b[i]);
+                }
+                g_log("[RouteC][TimeOfDay] SetTimeOfDay 48B: %s", hexbuf);
+            }
+            if (g_fnGetTimeOfDay) {
+                const auto* b = reinterpret_cast<const uint8_t*>(g_fnGetTimeOfDay);
+                char hexbuf[256]{};
+                for (int i = 0; i < 48; ++i) {
+                    snprintf(hexbuf + i * 3, sizeof(hexbuf) - i * 3, "%02X ", b[i]);
+                }
+                g_log("[RouteC][TimeOfDay] GetTimeOfDay 48B: %s", hexbuf);
             }
         }
     }

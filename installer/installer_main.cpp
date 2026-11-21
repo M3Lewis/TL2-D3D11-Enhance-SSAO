@@ -41,6 +41,13 @@ constexpr const wchar_t* kRequiredPeModules[] = {
     L"OgreGUIRenderer.dll",
 };
 
+constexpr wchar_t kAppVersion[] = L"v1.27";
+constexpr wchar_t kAppBuildDate[] = L"2026.11.21";
+constexpr wchar_t kWindowTitleZh[] = L"火炬之光 2 D3D11 画质增强 & SSAO 安装器 v1.27 (2026.11.21)";
+constexpr wchar_t kWindowTitleEn[] = L"Torchlight II D3D11 Graphics & SSAO Setup v1.27 (2026.11.21)";
+constexpr wchar_t kHeaderTitleZh[] = L"D3D11 画质增强 & SSAO 安装器 v1.27 (2026.11.21)";
+constexpr wchar_t kHeaderTitleEn[] = L"D3D11 Graphics & SSAO Setup v1.27 (2026.11.21)";
+
 constexpr wchar_t kBackupDirName[] = L"TL2_DX11_Enhance_Backup";
 constexpr wchar_t kGithubUrl[] = L"https://github.com/M3Lewis";
 
@@ -1007,15 +1014,13 @@ void BuildBackdropBitmap(HWND hwnd) {
 
         // Header right: Title & complete 2-line subtitle (auto-fit font so title never clips before [中]/[EN])
         Gdiplus::FontFamily ff(L"Microsoft YaHei UI");
-        const wchar_t* main_title_text = T(
-            L"D3D11 画质增强 & SSAO 安装器 (x64)",
-            L"D3D11 Graphics & SSAO Setup (x64)");
+        const wchar_t* main_title_text = T(kHeaderTitleZh, kHeaderTitleEn);
         const Gdiplus::RectF title_rect(Sf(220), Sf(22), Sf(414), Sf(28));
         float chosen_title_px = 19.0f;
         {
             Gdiplus::StringFormat measure_fmt(Gdiplus::StringFormat::GenericTypographic());
             measure_fmt.SetHotkeyPrefix(Gdiplus::HotkeyPrefixNone);
-            for (const float cand : {19.0f, 17.5f, 16.5f, 15.5f, 14.5f}) {
+            for (const float cand : {19.0f, 17.5f, 16.5f, 15.5f, 14.5f, 13.5f, 12.0f}) {
                 Gdiplus::Font test_f(&ff, Sf(cand), Gdiplus::FontStyleBold, Gdiplus::UnitPixel);
                 Gdiplus::RectF bounds;
                 g.MeasureString(main_title_text, -1, &test_f, Gdiplus::PointF(0.0f, 0.0f), &measure_fmt, &bounds);
@@ -1403,8 +1408,7 @@ void RefreshUiLanguage(HWND hwnd) {
     if (!hwnd) {
         return;
     }
-    ::SetWindowTextW(hwnd, T(L"火炬之光 2 D3D11 画质增强 & SSAO 安装器",
-                             L"Torchlight II D3D11 Graphics & SSAO Setup"));
+    ::SetWindowTextW(hwnd, T(kWindowTitleZh, kWindowTitleEn));
     if (g_ui.lang_zh_btn) ::InvalidateRect(g_ui.lang_zh_btn, nullptr, FALSE);
     if (g_ui.lang_en_btn) ::InvalidateRect(g_ui.lang_en_btn, nullptr, FALSE);
     if (g_ui.browse_btn) ::SetWindowTextW(g_ui.browse_btn, T(L"浏览...", L"Browse..."));
@@ -1471,6 +1475,9 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
 
             const std::wstring detected = DetectTorchlight2Directory();
             g_gui_log.Clear();
+            g_gui_log.AppendBi(
+                std::wstring(L"[版本] ") + kWindowTitleZh,
+                std::wstring(L"[Version] ") + kWindowTitleEn);
             if (!detected.empty()) {
                 ::SetWindowTextW(g_ui.path_edit, detected.c_str());
                 g_gui_log.AppendBi(
@@ -1646,8 +1653,7 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
                     ok ? T(L"安装成功！\n已自动备份原版配置与着色器。\n\n游戏内按 F8 弹出交互式配置面板：支持中英双语切换、10 项效果独立强度滑块、水面 SSR、3D LUT 调色、全开/全关对比，并保存多达 10 组预设。\n\n外部 .cube 调色说明：\n将自定义 3D .cube 文件重命名为 TL2_CustomLUT.cube 并放入游戏根目录（Torchlight2.exe 同级目录），即可在 F8 面板选择「外部 .cube」加载（支持热重载）。",
                            L"Installation successful!\nOriginal configs and shaders were backed up automatically.\n\nPress F8 in-game to open the live panel: toggle ZH/EN UI, tune 10 effect strength sliders, switch Water SSR / 3D LUT / Enable-Disable All, and save up to 10 custom presets.\n\nCustom .cube LUT usage:\nRename any 3D .cube file to TL2_CustomLUT.cube inside the game root (next to Torchlight2.exe), then pick 'Custom .cube' in F8 (hot-reload supported).")
                        : err_msg,
-                    T(L"火炬之光 2 D3D11 画质增强 & SSAO 安装器",
-                      L"Torchlight II D3D11 Graphics & SSAO Setup"),
+                    T(kWindowTitleZh, kWindowTitleEn),
                     ok ? (MB_OK | MB_ICONINFORMATION) : (MB_OK | MB_ICONERROR));
                 return 0;
             }
@@ -1667,8 +1673,7 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
                            L"Plugin removed and original vanilla files restored!")
                        : T(L"卸载过程中出现错误，请查看日志窗口。",
                            L"Errors occurred during uninstall. Please check the log console."),
-                    T(L"火炬之光 2 D3D11 画质增强 & SSAO 安装器",
-                      L"Torchlight II D3D11 Graphics & SSAO Setup"),
+                    T(kWindowTitleZh, kWindowTitleEn),
                     ok ? (MB_OK | MB_ICONINFORMATION) : (MB_OK | MB_ICONWARNING));
                 return 0;
             }
@@ -1787,8 +1792,7 @@ int WINAPI wWinMain(HINSTANCE hinst, HINSTANCE, PWSTR, int nCmdShow) {
     HWND hwnd = ::CreateWindowExW(
         0,
         wc.lpszClassName,
-        T(L"火炬之光 2 D3D11 画质增强 & SSAO 安装器",
-          L"Torchlight II D3D11 Graphics & SSAO Setup"),
+        T(kWindowTitleZh, kWindowTitleEn),
         style,
         win_x,
         win_y,

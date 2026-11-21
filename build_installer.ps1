@@ -15,10 +15,18 @@ New-Item -ItemType Directory -Path $ObjDir -Force | Out-Null
 
 # --- HLSL Shader Pre-compilation Validation ---
 $fxcCandidates = @(
+    "C:\Program Files (x86)\Windows Kits\10\bin\10.0.26100.0\x64\fxc.exe",
     "C:\Program Files (x86)\Windows Kits\10\bin\10.0.22621.0\x64\fxc.exe",
+    "C:\Program Files (x86)\Windows Kits\10\bin\10.0.22000.0\x64\fxc.exe",
+    "C:\Program Files (x86)\Windows Kits\10\bin\10.0.20348.0\x64\fxc.exe",
+    "C:\Program Files (x86)\Windows Kits\10\bin\10.0.19041.0\x64\fxc.exe",
     "C:\Program Files (x86)\Windows Kits\10\bin\10.0.18362.0\x64\fxc.exe"
 )
 $fxcPath = $fxcCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+if (-not $fxcPath) {
+    $fxcFound = Get-ChildItem -Path "C:\Program Files (x86)\Windows Kits\10\bin" -Filter "fxc.exe" -Recurse -Depth 3 -ErrorAction SilentlyContinue | Where-Object { $_.FullName -like "*\x64\fxc.exe" } | Select-Object -First 1
+    if ($fxcFound) { $fxcPath = $fxcFound.FullName }
+}
 if ($fxcPath) {
     Write-Host "[Validating Shaders] Running fxc pre-compilation check..." -ForegroundColor Cyan
     $testShaders = @(

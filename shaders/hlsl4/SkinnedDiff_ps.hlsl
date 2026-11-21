@@ -92,6 +92,11 @@ float3 CombineDiffuseAndSpec(float3 diff, float3 spec)
     // Asymptotic compression: as over -> inf, compressed -> knee + headroom = 1.0
     float3 compressed = min(raw, knee) + (over * headroom) / (headroom + over);
 
+    // AgX-style highlight desaturation towards bright white core on extreme highlights (> 0.90)
+    float rawLum = dot(raw, float3(0.299, 0.587, 0.114));
+    float desat = saturate((rawLum - knee) * 2.8);
+    compressed = lerp(compressed, float3(1.0, 1.0, 1.0), desat * 0.65);
+
     // Critical protection: lantern cores, white hair, bright diffuse retain full brightness to trigger Bloom
     return saturate(max(compressed, min(baseDiff, 1.0)));
 }
@@ -232,6 +237,16 @@ float3 PerturbNormalFromMap(float3 N, float3 V_unnorm, float2 uv, float3 tsNorma
     return normalize(mul(scaled, tbn));
 }
 
+// Stylized microfacet GGX distribution with normalized peak and physical heavy tail
+float EvaluateGgxLobe(float ndh, float smoothness)
+{
+    float alpha = lerp(0.48, 0.10, smoothness);
+    float alpha2 = alpha * alpha;
+    float denom = ndh * ndh * (alpha2 - 1.0) + 1.0;
+    float ratio = alpha2 / max(denom, 1e-4);
+    return ratio * ratio;
+}
+
 float4 ShadeSkinnedDiff(VS_OUTPUT input, bool doAlphaReject)
 {
     float2 duvX = ddx(input.Texcoord0.xy);
@@ -309,12 +324,18 @@ float4 ShadeSkinnedDiff(VS_OUTPUT input, bool doAlphaReject)
 
         // View-up hemisphere micro-relief replaces camera-headlight bevel
         float3 viewUp = normalize(float3(0.0, 0.80, 0.60));
-        float skyRelief = dot(Nmicro, viewUp) - dot(N, viewUp);
+        float worldUpY = dot(Nmicro, viewUp);
+        float skyRelief = worldUpY - dot(N, viewUp);
         litEnv *= saturate(1.0 + skyRelief * (0.20 * sd.detailFade * p3Scale));
 
-        float specPow = lerp(36.0, 96.0, max(sd.smoothness, sd.metalMask));
-        float normFactor = (specPow + 8.0) / 32.0;
-        float matSpec = lerp(0.04, 0.18, sd.smoothness * sd.smoothness) * normFactor;
+        // Dual-hemisphere ambient modulation (luminance neutral ~ 1.0):
+        // Cool sky (0.96, 1.00, 1.06) on skyward surfaces, warm earth bounce (1.06, 0.99, 0.93) on groundward surfaces
+        float hemiT = worldUpY * 0.5 + 0.5;
+        float3 hemiTint = lerp(float3(1.06, 0.99, 0.93), float3(0.96, 1.00, 1.06), hemiT);
+        float shadowWeight = 1.0;
+
+        float effSmoothness = max(sd.smoothness, sd.metalMask);
+        float matSpec = lerp(0.22, 0.88, sd.smoothness * sd.smoothness);
         float F0 = lerp(0.04, 0.78, sd.metalMask);
         float3 sheenTint = lerp(lerp(float3(1.0, 1.0, 1.0), sd.albedo, 0.15), sd.albedo, sd.metalMask);
 
@@ -322,8 +343,11 @@ float4 ShadeSkinnedDiff(VS_OUTPUT input, bool doAlphaReject)
         if (l0LenSq > 1e-6 && dot(input.Texcoord4.rgb, float3(0.299, 0.587, 0.114)) > 1e-4)
         {
             float3 L0 = input.Texcoord5.xyz * rsqrt(l0LenSq);
+            float ndl0 = saturate(dot(Nmicro, L0));
+            shadowWeight = saturate(1.0 - ndl0);
+
             // Saturated back-face truncation eliminates ghost relief in shadow
-            float relief = saturate(dot(Nmicro, L0)) - saturate(dot(N, L0));
+            float relief = ndl0 - saturate(dot(N, L0));
             litEnv *= saturate(1.0 + relief * (0.45 * sd.detailFade * p3Scale));
 
             // Soft organic wrapped diffuse for flesh / skin tones with warm hue gate
@@ -346,14 +370,19 @@ float4 ShadeSkinnedDiff(VS_OUTPUT input, bool doAlphaReject)
             float HdotV = saturate(dot(H, V));
             float fresnel = F0 + (1.0 - F0) * pow(1.0 - HdotV, 5.0);
             float ndh = max(dot(Nmicro, H), 0.0);
+            float ggx = EvaluateGgxLobe(ndh, effSmoothness);
             float ndlMask = saturate(ndlRaw * 2.5 + 0.18);
 
-            float specScalar = pow(ndh, specPow) * matSpec * fresnel * ndlMask;
+            float specScalar = ggx * matSpec * fresnel * ndlMask;
             float sunGate = saturate(dot(N, L0) * 0.5 + 0.5);
-            float rim = pow(1.0 - NdotV, 3.5) * lerp(0.02, 0.06, max(sd.smoothness, sd.metalMask)) * sunGate;
+            float rim = pow(1.0 - NdotV, 3.5) * lerp(0.02, 0.06, effSmoothness) * sunGate;
 
             specAdd = input.Texcoord4.rgb * sheenTint * ((specScalar + rim) * p3Scale);
         }
+
+        // Dual-hemisphere ambient weighting: higher in shadow/ambient crevices, subtler on direct sunlit surfaces
+        float hemiWeight = lerp(0.50, 0.95, shadowWeight) * saturate(p3Scale);
+        litEnv *= lerp(float3(1.0, 1.0, 1.0), hemiTint, hemiWeight * 0.70);
 
         float l1LenSq = dot(input.Texcoord3.xyz, input.Texcoord3.xyz);
         float afPointScale = max(p3EnhanceFlags.x, 0.0);
@@ -371,8 +400,9 @@ float4 ShadeSkinnedDiff(VS_OUTPUT input, bool doAlphaReject)
             float HdotV1 = saturate(dot(H1, V));
             float fresnel1 = F0 + (1.0 - F0) * pow(1.0 - HdotV1, 5.0);
             float ndh1 = max(dot(Nmicro, H1), 0.0);
+            float ggx1 = EvaluateGgxLobe(ndh1, effSmoothness);
             float ndlMask1 = saturate(dot(Nmicro, L1) * 2.5 + 0.15);
-            float specScalar1 = pow(ndh1, specPow) * matSpec * fresnel1 * ndlMask1 * l1Strength;
+            float specScalar1 = ggx1 * matSpec * fresnel1 * ndlMask1 * l1Strength;
             specAdd += l1Tint * sheenTint * specScalar1;
         }
     }

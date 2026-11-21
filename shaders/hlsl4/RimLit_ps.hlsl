@@ -111,6 +111,11 @@ float3 CombineDiffuseAndSpec(float3 diff, float3 spec)
     // Asymptotic compression: as over -> inf, compressed -> knee + headroom = 1.0
     float3 compressed = min(raw, knee) + (over * headroom) / (headroom + over);
 
+    // AgX-style highlight desaturation towards bright white core on extreme highlights (> 0.90)
+    float rawLum = dot(raw, float3(0.299, 0.587, 0.114));
+    float desat = saturate((rawLum - knee) * 2.8);
+    compressed = lerp(compressed, float3(1.0, 1.0, 1.0), desat * 0.65);
+
     // Critical protection: lantern cores, white hair, bright diffuse retain full brightness to trigger Bloom
     return saturate(max(compressed, min(baseDiff, 1.0)));
 }
@@ -237,6 +242,16 @@ SurfaceDetail AnalyzeSurfaceDetail(float2 uv, float2 duvX, float2 duvY, float3 c
     return sd;
 }
 
+// Stylized microfacet GGX distribution with normalized peak and physical heavy tail
+float EvaluateGgxLobe(float ndh, float smoothness)
+{
+    float alpha = lerp(0.48, 0.10, smoothness);
+    float alpha2 = alpha * alpha;
+    float denom = ndh * ndh * (alpha2 - 1.0) + 1.0;
+    float ratio = alpha2 / max(denom, 1e-4);
+    return ratio * ratio;
+}
+
 void AccumulatePointLightRim(
     float3 lightWorldPos,
     float3 lightDiffuseRgb,
@@ -247,7 +262,7 @@ void AccumulatePointLightRim(
     float3 N,
     float3 Nmicro,
     float3 V,
-    float  specPow,
+    float  smoothness,
     float  F0,
     float  matScale,
     float3 surfTint,
@@ -282,8 +297,9 @@ void AccumulatePointLightRim(
     float HdotV = saturate(dot(H, V));
     float fresnel = F0 + (1.0 - F0) * pow(1.0 - HdotV, 5.0);
     float ndh = max(dot(Nmicro, H), 0.0);
+    float ggx = EvaluateGgxLobe(ndh, smoothness);
     float termMask = saturate(dot(Nmicro, L) * 2.5 + 0.15);
-    float specScalar = pow(ndh, specPow) * matScale * fresnel * termMask * atten;
+    float specScalar = ggx * matScale * fresnel * termMask * atten;
     float specLum = dot(lightSpecularRgb, float3(0.299, 0.587, 0.114));
     float3 effSpecCol = (specLum > 1e-4) ? lightSpecularRgb : (lightDiffuseRgb * 0.90);
     specAdd += effSpecCol * MaterialDiffuse.rgb * surfTint * specScalar;
@@ -312,7 +328,8 @@ void ComputeRimLitLighting(
 
     // View-up hemisphere micro-relief replaces camera-headlight bevel
     float3 viewUp = normalize(mul(float3(0.0, 1.0, 0.0), (float3x3)View));
-    float skyRelief = dot(Nmicro, viewUp) - dot(N, viewUp);
+    float worldUpY = dot(Nmicro, viewUp);
+    float skyRelief = worldUpY - dot(N, viewUp);
 
     float rimScale = max(p3EnhanceFlags.y, 0.0);
     if (rimScale <= 0.01)
@@ -329,13 +346,18 @@ void ComputeRimLitLighting(
     float NdotV = saturate(dot(Nmicro, V));
     litEnv *= saturate(1.0 + skyRelief * (0.20 * sd.detailFade * rimScale));
 
+    // Dual-hemisphere ambient modulation (luminance neutral ~ 1.0):
+    // Cool sky (0.96, 1.00, 1.06) on skyward surfaces, warm earth bounce (1.06, 0.99, 0.93) on groundward surfaces
+    float hemiT = worldUpY * 0.5 + 0.5;
+    float3 hemiTint = lerp(float3(1.06, 0.99, 0.93), float3(0.96, 1.00, 1.06), hemiT);
+    float shadowWeight = 1.0;
+
     // Rim light silhouette contour with metal baseline protection
     float baseMin = lerp(0.12, 0.50, sd.metalMask);
     fresnelWeight = lerp(baseMin, 1.15, pow(1.0 - NdotV, 2.6)) * (0.70 + 0.35 * rimScale);
 
-    float specPow = lerp(36.0, 96.0, max(sd.smoothness, sd.metalMask));
-    float normFactor = (specPow + 8.0) / 32.0;
-    float matScale = lerp(0.04, 0.18, sd.smoothness * sd.smoothness) * normFactor;
+    float effSmoothness = max(sd.smoothness, sd.metalMask);
+    float matScale = lerp(0.22, 0.88, sd.smoothness * sd.smoothness);
     float F0 = lerp(0.04, 0.78, sd.metalMask);
     float3 surfTint = lerp(lerp(float3(1.0, 1.0, 1.0), sd.albedo, 0.15), sd.albedo, sd.metalMask);
     float afPointScale = max(p3EnhanceFlags.x, 0.0);
@@ -354,12 +376,14 @@ void ComputeRimLitLighting(
         if (l0LenSq > 1e-6 && dot(input.Texcoord4.rgb, float3(0.299, 0.587, 0.114)) > 1e-4)
         {
             float3 L0 = input.Texcoord5.xyz * rsqrt(l0LenSq);
+            float ndlRaw0 = dot(Nmicro, L0);
+            shadowWeight = saturate(1.0 - saturate(ndlRaw0));
+
             // Saturated back-face truncation eliminates ghost relief in shadow
-            float relief0 = saturate(dot(Nmicro, L0)) - saturate(dot(N, L0));
+            float relief0 = saturate(ndlRaw0) - saturate(dot(N, L0));
             litEnv *= saturate(1.0 + relief0 * (0.45 * sd.detailFade * rimScale));
 
             // Soft organic wrapped diffuse for warm flesh / skin tones, modulated by light color
-            float ndlRaw0 = dot(Nmicro, L0);
             if (isFlesh > 0.05)
             {
                 float wrapNdl0 = saturate((ndlRaw0 + 0.30) / 1.30);
@@ -372,8 +396,9 @@ void ComputeRimLitLighting(
             float HdotV0 = saturate(dot(H0, V));
             float fresnel0 = F0 + (1.0 - F0) * pow(1.0 - HdotV0, 5.0);
             float ndh0 = max(dot(Nmicro, H0), 0.0);
+            float ggx0 = EvaluateGgxLobe(ndh0, effSmoothness);
             float ndlMask0 = saturate(ndlRaw0 * 2.5 + 0.18);
-            float specScalar0 = pow(ndh0, specPow) * matScale * fresnel0 * ndlMask0;
+            float specScalar0 = ggx0 * matScale * fresnel0 * ndlMask0;
             specAdd += input.Texcoord4.rgb * surfTint * (specScalar0 * rimScale);
         }
 
@@ -392,8 +417,9 @@ void ComputeRimLitLighting(
             float HdotV1 = saturate(dot(H1, V));
             float fresnel1 = F0 + (1.0 - F0) * pow(1.0 - HdotV1, 5.0);
             float ndh1 = max(dot(Nmicro, H1), 0.0);
+            float ggx1 = EvaluateGgxLobe(ndh1, effSmoothness);
             float ndlMask1 = saturate(dot(Nmicro, L1) * 2.5 + 0.15);
-            float specScalar1 = pow(ndh1, specPow) * matScale * fresnel1 * ndlMask1 * l1Strength;
+            float specScalar1 = ggx1 * matScale * fresnel1 * ndlMask1 * l1Strength;
             specAdd += l1Tint * surfTint * (specScalar1 * rimScale);
         }
     }
@@ -408,10 +434,12 @@ void ComputeRimLitLighting(
             if (l0LenSq > 1e-6)
             {
                 float3 L0 = rawL0 * rsqrt(l0LenSq);
-                float relief = saturate(dot(Nmicro, L0)) - saturate(dot(N, L0));
+                float ndlRaw = dot(Nmicro, L0);
+                shadowWeight = saturate(1.0 - saturate(ndlRaw));
+
+                float relief = saturate(ndlRaw) - saturate(dot(N, L0));
                 litEnv *= saturate(1.0 + relief * (0.50 * sd.detailFade * rimScale));
 
-                float ndlRaw = dot(Nmicro, L0);
                 if (isFlesh > 0.05)
                 {
                     float wrapNdl = saturate((ndlRaw + 0.30) / 1.30);
@@ -424,8 +452,9 @@ void ComputeRimLitLighting(
                 float HdotV = saturate(dot(H, V));
                 float fresnel = F0 + (1.0 - F0) * pow(1.0 - HdotV, 5.0);
                 float ndh = max(dot(Nmicro, H), 0.0);
+                float ggx = EvaluateGgxLobe(ndh, effSmoothness);
                 float termMask = saturate(ndlRaw * 2.5 + 0.15);
-                float specScalar = pow(ndh, specPow) * matScale * fresnel * termMask;
+                float specScalar = ggx * matScale * fresnel * termMask;
                 specAdd += DirectionalLight0_Diffuse.rgb * MaterialDiffuse.rgb * surfTint * (specScalar * rimScale);
             }
         }
@@ -438,22 +467,26 @@ void ComputeRimLitLighting(
             AccumulatePointLightRim(
                 PointLight0_Position, PointLight0_Diffuse.rgb, PointLight0_Specular.rgb,
                 PointLight0_Range, PointLight0_Attenuation,
-                Pview, N, Nmicro, V, specPow, F0, matScale, surfTint, sd.detailFade,
+                Pview, N, Nmicro, V, effSmoothness, F0, matScale, surfTint, sd.detailFade,
                 pointReliefSum, pointSpecSum);
             AccumulatePointLightRim(
                 PointLight1_Position, PointLight1_Diffuse.rgb, PointLight1_Specular.rgb,
                 PointLight1_Range, PointLight1_Attenuation,
-                Pview, N, Nmicro, V, specPow, F0, matScale, surfTint, sd.detailFade,
+                Pview, N, Nmicro, V, effSmoothness, F0, matScale, surfTint, sd.detailFade,
                 pointReliefSum, pointSpecSum);
             AccumulatePointLightRim(
                 PointLight2_Position, PointLight2_Diffuse.rgb, PointLight2_Specular.rgb,
                 PointLight2_Range, PointLight2_Attenuation,
-                Pview, N, Nmicro, V, specPow, F0, matScale, surfTint, sd.detailFade,
+                Pview, N, Nmicro, V, effSmoothness, F0, matScale, surfTint, sd.detailFade,
                 pointReliefSum, pointSpecSum);
             litEnv = max(litEnv + pointReliefSum * (afPointScale * rimScale), float3(0.0, 0.0, 0.0));
             specAdd += pointSpecSum * (afPointScale * rimScale);
         }
     }
+
+    // Dual-hemisphere ambient weighting: higher in shadow/ambient crevices, subtler on direct sunlit surfaces
+    float hemiWeight = lerp(0.50, 0.95, shadowWeight) * saturate(rimScale);
+    litEnv *= lerp(float3(1.0, 1.0, 1.0), hemiTint, hemiWeight * 0.70);
 
     litBase = CombineDiffuseAndSpec(sd.albedo * litEnv, specAdd);
 }

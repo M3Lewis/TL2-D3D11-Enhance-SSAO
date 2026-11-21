@@ -127,6 +127,11 @@ float3 CombineDiffuseAndSpec(float3 diff, float3 spec)
     // Asymptotic compression: as over -> inf, compressed -> knee + headroom = 1.0
     float3 compressed = min(raw, knee) + (over * headroom) / (headroom + over);
 
+    // AgX-style highlight desaturation towards bright white core on extreme highlights (> 0.90)
+    float rawLum = dot(raw, float3(0.299, 0.587, 0.114));
+    float desat = saturate((rawLum - knee) * 2.8);
+    compressed = lerp(compressed, float3(1.0, 1.0, 1.0), desat * 0.65);
+
     // Critical protection: lantern cores, white hair, bright diffuse retain full brightness to trigger Bloom
     return saturate(max(compressed, min(baseDiff, 1.0)));
 }
@@ -308,6 +313,16 @@ float3 PerturbNormalFromMap(float3 N, float3 V_unnorm, float2 uv, float3 tsNorma
     return normalize(mul(scaled, tbn));
 }
 
+// Stylized microfacet GGX distribution with normalized peak and physical heavy tail
+float EvaluateGgxLobe(float ndh, float smoothness)
+{
+    float alpha = lerp(0.48, 0.10, smoothness);
+    float alpha2 = alpha * alpha;
+    float denom = ndh * ndh * (alpha2 - 1.0) + 1.0;
+    float ratio = alpha2 / max(denom, 1e-4);
+    return ratio * ratio;
+}
+
 void AccumulatePointLightRelief(
     float3 lightWorldPos,
     float3 lightDiffuseRgb,
@@ -318,7 +333,7 @@ void AccumulatePointLightRelief(
     float3 N,
     float3 Nmicro,
     float3 V,
-    float  specPow,
+    float  smoothness,
     float  F0,
     float  matScale,
     float3 surfTint,
@@ -354,8 +369,9 @@ void AccumulatePointLightRelief(
     float HdotV = saturate(dot(H, V));
     float fresnel = F0 + (1.0 - F0) * pow(1.0 - HdotV, 5.0);
     float ndh = max(dot(Nmicro, H), 0.0);
+    float ggx = EvaluateGgxLobe(ndh, smoothness);
     float termMask = saturate(dot(Nmicro, L) * 2.5 + 0.12);
-    float specScalar = pow(ndh, specPow) * matScale * fresnel * termMask * detailWeight * atten;
+    float specScalar = ggx * matScale * fresnel * termMask * detailWeight * atten;
     float specLum = dot(lightSpecularRgb, float3(0.299, 0.587, 0.114));
     float3 effSpecCol = (specLum > 1e-4) ? lightSpecularRgb : (lightDiffuseRgb * 0.90);
     specAdd += effSpecCol * MaterialDiffuse.rgb * surfTint * specScalar;
@@ -478,12 +494,18 @@ float4 ShadeDiffPass(VS_OUTPUT input, bool doAlphaReject)
 
         // View-up hemisphere micro-relief replaces camera-headlight bevel
         float3 viewUp = normalize(mul(float3(0.0, 1.0, 0.0), (float3x3)View));
-        float skyRelief = dot(Nmicro, viewUp) - dot(N, viewUp);
+        float worldUpY = dot(Nmicro, viewUp);
+        float skyRelief = worldUpY - dot(N, viewUp);
         litEnv *= saturate(1.0 + skyRelief * (0.22 * sd.reliefFade * p3Scale));
 
-        float specPow = lerp(36.0, 96.0, max(sd.smoothness, sd.metalMask));
-        float normFactor = (specPow + 8.0) / 32.0;
-        float matScale = lerp(0.04, 0.18, sd.smoothness * sd.smoothness) * normFactor;
+        // Dual-hemisphere ambient modulation (luminance neutral ~ 1.0):
+        // Cool sky (0.96, 1.00, 1.06) on skyward surfaces, warm earth bounce (1.06, 0.99, 0.93) on groundward surfaces
+        float hemiT = worldUpY * 0.5 + 0.5;
+        float3 hemiTint = lerp(float3(1.06, 0.99, 0.93), float3(0.96, 1.00, 1.06), hemiT);
+        float shadowWeight = 1.0;
+
+        float effSmoothness = max(sd.smoothness, sd.metalMask);
+        float matScale = lerp(0.22, 0.88, sd.smoothness * sd.smoothness);
         float F0 = lerp(0.04, 0.78, sd.metalMask);
         float3 surfTint = lerp(lerp(float3(1.0, 1.0, 1.0), sd.albedo, 0.15), sd.albedo, sd.metalMask);
 
@@ -495,8 +517,11 @@ float4 ShadeDiffPass(VS_OUTPUT input, bool doAlphaReject)
             if (l0LenSq > 1e-6)
             {
                 float3 L0 = rawL0 * rsqrt(l0LenSq);
+                float ndl0 = saturate(dot(Nmicro, L0));
+                shadowWeight = saturate(1.0 - ndl0 * (0.35 + 0.65 * dirShadowAtten));
+
                 // Saturated back-face truncation eliminates ghost relief in shadow
-                float relief = saturate(dot(Nmicro, L0)) - saturate(dot(N, L0));
+                float relief = ndl0 - saturate(dot(N, L0));
                 float effectiveRelief = relief * (0.35 + 0.65 * dirShadowAtten);
                 litEnv *= saturate(1.0 + effectiveRelief * (0.60 * sd.reliefFade * p3Scale));
 
@@ -505,9 +530,10 @@ float4 ShadeDiffPass(VS_OUTPUT input, bool doAlphaReject)
                 float HdotV = saturate(dot(H, V));
                 float fresnel = F0 + (1.0 - F0) * pow(1.0 - HdotV, 5.0);
                 float ndh = max(dot(Nmicro, H), 0.0);
+                float ggx = EvaluateGgxLobe(ndh, effSmoothness);
                 float termMask = saturate(ndlRaw * 2.5 + 0.15);
                 float specShadowMask = smoothstep(0.25, 0.85, dirShadowAtten);
-                float specScalar = pow(ndh, specPow) * matScale * fresnel * termMask * detailWeight * p3Scale * specShadowMask;
+                float specScalar = ggx * matScale * fresnel * termMask * detailWeight * p3Scale * specShadowMask;
 
                 specAdd = DirectionalLight0_Diffuse.rgb * MaterialDiffuse.rgb * surfTint * specScalar;
 
@@ -529,6 +555,10 @@ float4 ShadeDiffPass(VS_OUTPUT input, bool doAlphaReject)
             }
         }
 
+        // Dual-hemisphere ambient weighting: higher in shadow/ambient crevices, subtler on direct sunlit surfaces
+        float hemiWeight = lerp(0.50, 0.95, shadowWeight) * saturate(p3Scale);
+        litEnv *= lerp(float3(1.0, 1.0, 1.0), hemiTint, hemiWeight * 0.70);
+
         float afPointScale = max(p3EnhanceFlags.x, 0.0);
         if (afPointScale > 0.01)
         {
@@ -538,17 +568,17 @@ float4 ShadeDiffPass(VS_OUTPUT input, bool doAlphaReject)
             AccumulatePointLightRelief(
                 PointLight0_Position, PointLight0_Diffuse.rgb, PointLight0_Specular.rgb,
                 PointLight0_Range, PointLight0_Attenuation,
-                Pview, N, Nmicro, V, specPow, F0, matScale, surfTint,
+                Pview, N, Nmicro, V, effSmoothness, F0, matScale, surfTint,
                 sd.reliefFade, detailWeight, pointReliefSum, pointSpecSum);
             AccumulatePointLightRelief(
                 PointLight1_Position, PointLight1_Diffuse.rgb, PointLight1_Specular.rgb,
                 PointLight1_Range, PointLight1_Attenuation,
-                Pview, N, Nmicro, V, specPow, F0, matScale, surfTint,
+                Pview, N, Nmicro, V, effSmoothness, F0, matScale, surfTint,
                 sd.reliefFade, detailWeight, pointReliefSum, pointSpecSum);
             AccumulatePointLightRelief(
                 PointLight2_Position, PointLight2_Diffuse.rgb, PointLight2_Specular.rgb,
                 PointLight2_Range, PointLight2_Attenuation,
-                Pview, N, Nmicro, V, specPow, F0, matScale, surfTint,
+                Pview, N, Nmicro, V, effSmoothness, F0, matScale, surfTint,
                 sd.reliefFade, detailWeight, pointReliefSum, pointSpecSum);
             litEnv = max(litEnv + pointReliefSum * (afPointScale * 0.75), float3(0.0, 0.0, 0.0));
             specAdd += pointSpecSum * afPointScale;

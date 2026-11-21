@@ -1325,7 +1325,7 @@ void ApplyPassFogAndAlphaToExplicitPs(
         const float synced_flags2[4] = {
             flags2[0],
             flags2[1],
-            flags2[2],
+            is_rim ? ((flags2[2] > 0.5f ? 1.0f : 0.0f) + (flags2[3] > 0.5f ? 2.0f : 0.0f)) : flags2[2],
             is_rim ? (is_ff_vs ? 0.0f : 1.0f) : flags2[3],
         };
         WriteExplicitPsNamedFloat4(ps_params, "p3Flags2", synced_flags2);
@@ -1515,7 +1515,8 @@ void ResolveCompanionMapsForPass(
 
     const bool supports_companion =
         (arch == PassArchetype::DiffPassOpaque || arch == PassArchetype::DiffPassAlpha ||
-         arch == PassArchetype::SkinnedDiffOpaque || arch == PassArchetype::SkinnedDiffAlpha);
+         arch == PassArchetype::SkinnedDiffOpaque || arch == PassArchetype::SkinnedDiffAlpha ||
+         arch == PassArchetype::RimLit2D || arch == PassArchetype::RimLitCube || arch == PassArchetype::RimLit3Cube);
     if (!supports_companion || !pass || !g_api.pass_get_tus || !g_api.tus_get_texture_name) {
         return;
     }

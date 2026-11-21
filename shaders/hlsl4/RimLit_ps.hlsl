@@ -21,6 +21,8 @@ TextureCube  TextureCube1 : register(t1);
 SamplerState Sampler1     : register(s1);
 TextureCube  TextureCube2 : register(t2);
 SamplerState Sampler2     : register(s2);
+Texture2D    Texture3     : register(t3); // Optional companion _tl2n.dds (DXT5nm: A = nx, G = ny)
+Texture2D    Texture4     : register(t4); // Optional companion _tl2s.dds (DXT1: R = smoothness, G = metal, B = cavityAO)
 
 float4x4 View;
 float4 BaseLightAmbient;
@@ -60,7 +62,7 @@ float4 p3Flags = float4(2.0, 1.0, 0.0, 1.0);
 // p3Flags2:
 //   x = stage1 blend op in 3-stage RimLit (0=none, 1=modulate, 2=add, 3=alpha_blend, 4=modulate_x2, 5=modulate_x4)
 //   y = enviro coord swap in 3-stage RimLit (0: tc1=uv2D, tc2=cubeDir; 1: tc1=cubeDir, tc2=uv2D)
-//   z = unused
+//   z = companion map mode (0=none, 1=norm only, 2=spec only, 3=both _tl2n and _tl2s)
 //   w = isSkinned VS (0=fixed-func VS using FFP light uniforms, 1=HardwareSkinning* using Texcoord3..5)
 float4 p3Flags2 = float4(0.0, 0.0, 0.0, 0.0);
 
@@ -163,12 +165,29 @@ struct SurfaceDetail
     float  metalMask;
 };
 
-SurfaceDetail AnalyzeSurfaceDetail(float2 uv, float2 duvX, float2 duvY, float3 centerAlbedo, float3 baseNormal, bool hasNormal, float p3Scale)
+SurfaceDetail AnalyzeSurfaceDetail(
+    float2 uv,
+    float2 duvX,
+    float2 duvY,
+    float3 centerAlbedo,
+    float3 baseNormal,
+    bool hasNormal,
+    bool hasCompanionMaps,
+    float p3Scale)
 {
     SurfaceDetail sd;
     sd.albedo = centerAlbedo;
     sd.microNormal = baseNormal;
     sd.detailFade = 0.0;
+    sd.smoothness = 0.0;
+    sd.metalMask = 0.0;
+
+    // Early-exit when companion normal & spec maps are present:
+    // avoids 4 redundant texture fetches and eliminates double crevice AO darkening.
+    if (hasCompanionMaps)
+    {
+        return sd;
+    }
 
     float lenX = length(duvX);
     float lenY = length(duvY);
@@ -241,6 +260,28 @@ SurfaceDetail AnalyzeSurfaceDetail(float2 uv, float2 duvX, float2 duvY, float3 c
     // Non-metals (skin, beard, fabric, wood, stone) MUST be matte; high lum != polished mirror
     sd.smoothness = min(sd.smoothness, lerp(0.18, 0.95, sd.metalMask));
     return sd;
+}
+
+float3 PerturbNormalFromMap(float3 N, float3 V_unnorm, float2 uv, float3 tsNormal, float bumpScale)
+{
+    float3 dp1 = ddx(-V_unnorm);
+    float3 dp2 = ddy(-V_unnorm);
+    float2 duv1 = ddx(uv);
+    float2 duv2 = ddy(uv);
+
+    float3 dp2perp = cross(N, dp2);
+    float3 dp1perp = cross(dp1, N);
+    float3 T = dp2perp * duv1.x + dp1perp * duv2.x;
+    float3 B = dp2perp * duv1.y + dp1perp * duv2.y;
+
+    float maxSq = max(dot(T, T), dot(B, B));
+    if (maxSq < 1e-10)
+        return N;
+
+    float invmax = rsqrt(maxSq);
+    float3x3 tbn = float3x3(T * invmax, B * invmax, N);
+    float3 scaled = float3(tsNormal.x * bumpScale, tsNormal.y * bumpScale, max(tsNormal.z, 0.05));
+    return normalize(mul(scaled, tbn));
 }
 
 // Stylized microfacet GGX distribution with normalized peak and physical heavy tail
@@ -497,10 +538,61 @@ void ComputeRimLitLighting(
     litBase = CombineDiffuseAndSpec(sd.albedo * litEnv, specAdd);
 }
 
-float4 main_2d(VS_OUTPUT input) : SV_TARGET
+void PrepareRimLitSurface(
+    VS_OUTPUT input,
+    float4 albedo,
+    out SurfaceDetail sd,
+    out float3 N,
+    out bool hasNormal,
+    out float3 base,
+    out float fresnelWeight)
 {
     float2 duvX = ddx(input.Texcoord0.xy);
     float2 duvY = ddy(input.Texcoord0.xy);
+
+    hasNormal = (input.Texcoord6.w > 0.5 && dot(input.Texcoord6.xyz, input.Texcoord6.xyz) > 1e-6);
+    N = hasNormal ? normalize(input.Texcoord6.xyz) : float3(0.0, 0.0, 1.0);
+
+    float p3Scale = max(p3EnhanceFlags.z, 0.0);
+    int compCode = (int)(p3Flags2.z + 0.5);
+    bool hasNormMap = (compCode == 1 || compCode == 3);
+    bool hasSpecMap = (compCode == 2 || compCode == 3);
+    bool hasCompanionMaps = (hasNormMap && hasSpecMap);
+
+    sd = AnalyzeSurfaceDetail(input.Texcoord0.xy, duvX, duvY, albedo.rgb, N, hasNormal, hasCompanionMaps, p3Scale);
+
+    if (hasNormMap || hasSpecMap)
+    {
+        float uvFoot2 = max(length(duvX), length(duvY));
+        sd.detailFade = 1.0 - smoothstep(0.012, 0.048, uvFoot2);
+
+        if (hasSpecMap)
+        {
+            float3 spSample = Texture4.SampleGrad(Sampler0, input.Texcoord0.xy, duvX, duvY).rgb;
+            sd.smoothness = saturate(spSample.r);
+            sd.metalMask = saturate(spSample.g);
+            float cavityAO = saturate(spSample.b);
+            // Single cavity AO without double-multiplying procedural crevice dip
+            float aoScale = hasCompanionMaps ? 1.0 : 0.65;
+            sd.albedo = saturate(sd.albedo * lerp(1.0, lerp(0.75, 1.00, cavityAO), saturate(sd.detailFade * p3Scale * aoScale)));
+        }
+
+        if (hasNormMap && hasNormal && sd.detailFade > 0.01 && p3Scale > 0.001)
+        {
+            float4 nSample = Texture3.SampleGrad(Sampler0, input.Texcoord0.xy, duvX, duvY);
+            float2 xy = float2(nSample.a, nSample.g) * 2.0 - 1.0;
+            float nz = sqrt(saturate(1.0 - dot(xy, xy)));
+            sd.microNormal = PerturbNormalFromMap(N, input.Texcoord7.xyz, input.Texcoord0.xy, float3(xy, nz), 1.35 * sd.detailFade * p3Scale);
+        }
+    }
+
+    base = 0.0;
+    fresnelWeight = 1.0;
+    ComputeRimLitLighting(input, sd, N, hasNormal, base, fresnelWeight);
+}
+
+float4 main_2d(VS_OUTPUT input) : SV_TARGET
+{
     float4 albedo = Texture0.Sample(Sampler0, input.Texcoord0.xy);
     float outAlpha = saturate(albedo.a * input.Color.a);
 
@@ -508,13 +600,12 @@ float4 main_2d(VS_OUTPUT input) : SV_TARGET
     if (!PassesAlphaReject(outAlpha, AlphaRejectValue, cmpFunc))
         discard;
 
-    bool hasNormal = (input.Texcoord6.w > 0.5 && dot(input.Texcoord6.xyz, input.Texcoord6.xyz) > 1e-6);
-    float3 N = hasNormal ? normalize(input.Texcoord6.xyz) : float3(0.0, 0.0, 1.0);
-    SurfaceDetail sd = AnalyzeSurfaceDetail(input.Texcoord0.xy, duvX, duvY, albedo.rgb, N, hasNormal, max(p3EnhanceFlags.z, 0.0));
-
-    float3 base = 0.0;
-    float fresnelWeight = 1.0;
-    ComputeRimLitLighting(input, sd, N, hasNormal, base, fresnelWeight);
+    SurfaceDetail sd;
+    float3 N;
+    bool hasNormal;
+    float3 base;
+    float fresnelWeight;
+    PrepareRimLitSurface(input, albedo, sd, N, hasNormal, base, fresnelWeight);
 
     float2 rimUv = input.Texcoord1.xy;
     float4 rimSample = Texture1.Sample(Sampler1, rimUv);
@@ -528,8 +619,6 @@ float4 main_2d(VS_OUTPUT input) : SV_TARGET
 
 float4 main_cube(VS_OUTPUT input) : SV_TARGET
 {
-    float2 duvX = ddx(input.Texcoord0.xy);
-    float2 duvY = ddy(input.Texcoord0.xy);
     float4 albedo = Texture0.Sample(Sampler0, input.Texcoord0.xy);
     float outAlpha = saturate(albedo.a * input.Color.a);
 
@@ -537,13 +626,12 @@ float4 main_cube(VS_OUTPUT input) : SV_TARGET
     if (!PassesAlphaReject(outAlpha, AlphaRejectValue, cmpFunc))
         discard;
 
-    bool hasNormal = (input.Texcoord6.w > 0.5 && dot(input.Texcoord6.xyz, input.Texcoord6.xyz) > 1e-6);
-    float3 N = hasNormal ? normalize(input.Texcoord6.xyz) : float3(0.0, 0.0, 1.0);
-    SurfaceDetail sd = AnalyzeSurfaceDetail(input.Texcoord0.xy, duvX, duvY, albedo.rgb, N, hasNormal, max(p3EnhanceFlags.z, 0.0));
-
-    float3 base = 0.0;
-    float fresnelWeight = 1.0;
-    ComputeRimLitLighting(input, sd, N, hasNormal, base, fresnelWeight);
+    SurfaceDetail sd;
+    float3 N;
+    bool hasNormal;
+    float3 base;
+    float fresnelWeight;
+    PrepareRimLitSurface(input, albedo, sd, N, hasNormal, base, fresnelWeight);
 
     float3 cubeDir = input.Texcoord1.xyz;
     float rimScale = max(p3EnhanceFlags.y, 0.0);
@@ -566,8 +654,6 @@ float4 main_cube(VS_OUTPUT input) : SV_TARGET
 
 float4 main_cube3(VS_OUTPUT input) : SV_TARGET
 {
-    float2 duvX = ddx(input.Texcoord0.xy);
-    float2 duvY = ddy(input.Texcoord0.xy);
     float4 albedo = Texture0.Sample(Sampler0, input.Texcoord0.xy);
     float outAlpha = saturate(albedo.a * input.Color.a);
 
@@ -575,13 +661,12 @@ float4 main_cube3(VS_OUTPUT input) : SV_TARGET
     if (!PassesAlphaReject(outAlpha, AlphaRejectValue, cmpFunc))
         discard;
 
-    bool hasNormal = (input.Texcoord6.w > 0.5 && dot(input.Texcoord6.xyz, input.Texcoord6.xyz) > 1e-6);
-    float3 N = hasNormal ? normalize(input.Texcoord6.xyz) : float3(0.0, 0.0, 1.0);
-    SurfaceDetail sd = AnalyzeSurfaceDetail(input.Texcoord0.xy, duvX, duvY, albedo.rgb, N, hasNormal, max(p3EnhanceFlags.z, 0.0));
-
-    float3 base = 0.0;
-    float fresnelWeight = 1.0;
-    ComputeRimLitLighting(input, sd, N, hasNormal, base, fresnelWeight);
+    SurfaceDetail sd;
+    float3 N;
+    bool hasNormal;
+    float3 base;
+    float fresnelWeight;
+    PrepareRimLitSurface(input, albedo, sd, N, hasNormal, base, fresnelWeight);
 
     bool enviroSwap = (p3Flags2.y > 0.5);
     float2 stage1Uv = enviroSwap ? input.Texcoord2.xy : input.Texcoord1.xy;

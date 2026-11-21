@@ -476,7 +476,7 @@ float4 ShadeDiffPass(VS_OUTPUT input, bool doAlphaReject)
                 specAdd = DirectionalLight0_Diffuse.rgb * MaterialDiffuse.rgb * surfTint * specScalar;
 
                 // Foliage Translucency (backlight transmission through leaves/banners)
-                if (isAlpha)
+                if (doAlphaReject)
                 {
                     float vDotMinusL = saturate(dot(V, -L0) * 0.75 + 0.25);
                     float backlight = pow(vDotMinusL, 3.5);

@@ -711,18 +711,26 @@ float4 PS_WetFloorSsr(VsOut input) : SV_Target0
 
     float3 rayOrigin = P + upVS * 0.06f;
 
-    float jitter = SsrHash21(float2(pix)) * 0.15f;
-    float t = 0.22f + jitter * 0.12f;
+    // 1. 视距自适应步长：无论拉近特写还是拉远俯视，屏幕步距恒定在细腻的 ~6-12px
+    float stepScale = clamp(dC * 0.05f, 0.25f, 1.5f);
+    float baseStep = 0.12f * stepScale;
+    float jitter = SsrHash21(float2(pix)); // 全步长 [0, 1] 抖动，彻底打散步进条纹
+    float t = baseStep * (0.6f + jitter);
+    float prevT = max(t - baseStep, 0.02f);
+
+    // 真实交点允许的最大精修残差（特写 ~0.30m，远景 ~0.42m），拦截“背后穿过”的重复鬼影
+    float maxAcceptDiff = clamp(0.26f + dC * 0.006f, 0.28f, 0.42f);
+
     bool hit = false;
     float2 hitTexUv = float2(0.0f, 0.0f);
     float2 hitVpUv = float2(0.5f, 0.5f);
-    float prevT = 0.08f;
     float hitT = 0.0f;
+    float hitDiff = 0.0f;
 
-    // 28 步更细腻步进 + 更稳健厚度容差，消除图 2 中反射被水平蓝条切碎的现象
     [loop]
-    for (int i = 0; i < 28; ++i)
+    for (int i = 0; i < 32; ++i)
     {
+        float stepDist = baseStep * (1.0f + float(i) * 0.10f);
         float3 sampleVS = rayOrigin + R * t;
         if (sampleVS.z >= -0.25f)
         {
@@ -740,47 +748,65 @@ float4 PS_WetFloorSsr(VsOut input) : SV_Target0
             float sceneD = RawToLinearDist(zRaw);
             float rayD = -sampleVS.z;
             float diff = rayD - sceneD;
-            float thickLimit = 1.15f + sceneD * 0.045f;
-            if (diff > 0.05f && diff < thickLimit)
+            // 粗步进容差仅略大于当前步长，既防薄墙漏检，又不轻易误吸 1m 外的前景物体
+            float thickLimit = clamp(0.28f + stepDist * 1.4f, 0.35f, 0.90f);
+            if (diff > 0.03f && diff < thickLimit)
             {
                 float lo = prevT;
                 float hi = t;
                 float2 bestVpUv = vpUv;
                 float bestT = t;
+                float bestDiff = diff;
                 [unroll]
-                for (int rStep = 0; rStep < 3; ++rStep)
+                for (int rStep = 0; rStep < 5; ++rStep)
                 {
                     float midT = 0.5f * (lo + hi);
                     float3 midVS = rayOrigin + R * midT;
                     float2 midVpUv = ProjectViewToVpUv(midVS);
                     int2 mpix = clamp(int2(gVpRect.xy + midVpUv * gVpRect.zw), gVpClamp.xy, gVpClamp.zw);
-                    float mSceneD = RawToLinearDist(LoadRawDepth(mpix));
-                    float midDiff = (-midVS.z) - mSceneD;
-                    if (midDiff > 0.03f && midDiff < thickLimit)
+                    float mRaw = LoadRawDepth(mpix);
+                    if (mRaw < 0.99995f)
                     {
-                        hi = midT;
-                        bestVpUv = midVpUv;
-                        bestT = midT;
+                        float mSceneD = RawToLinearDist(mRaw);
+                        float midDiff = (-midVS.z) - mSceneD;
+                        if (midDiff > 0.01f && midDiff < thickLimit)
+                        {
+                            hi = midT;
+                            bestVpUv = midVpUv;
+                            bestT = midT;
+                            bestDiff = midDiff;
+                        }
+                        else
+                        {
+                            lo = midT;
+                        }
                     }
                     else
                     {
                         lo = midT;
                     }
                 }
-                hitT = bestT;
-                hitVpUv = bestVpUv;
-                hitTexUv = (gVpRect.xy + bestVpUv * gVpRect.zw) * invTex;
-                hit = true;
-                break;
+
+                // 【关键防重影校验】：只有精修后真正贴近表面 (bestDiff 小) 才确认命中；
+                // 若 bestDiff 依然很大，说明是悬空前景的假命中，不 break，继续追踪后方真实景物！
+                if (bestDiff < maxAcceptDiff)
+                {
+                    hitT = bestT;
+                    hitDiff = bestDiff;
+                    hitVpUv = bestVpUv;
+                    hitTexUv = (gVpRect.xy + bestVpUv * gVpRect.zw) * invTex;
+                    hit = true;
+                    break;
+                }
             }
         }
         prevT = t;
-        t += 0.16f + float(i) * 0.045f;
+        t += stepDist;
     }
 
     float ssrStr = max(gAoParams.z, 0.0f);
 
-    // 1. 清晰可见的流动水网焦散（仅在受光浅水/湖面微光律动）
+    // 1. 流动水网焦散
     float baseLuma = dot(baseCol, float3(0.299f, 0.587f, 0.114f));
     float cw1 = 1.0f - abs(sin(wx * 2.4f + gTime * 0.95f + sin(wz * 1.9f + gTime * 0.65f) * 0.8f));
     float cw2 = 1.0f - abs(sin(wz * 2.7f - gTime * 0.85f + cos(wx * 2.1f - gTime * 0.70f) * 0.8f));
@@ -789,7 +815,7 @@ float4 PS_WetFloorSsr(VsOut input) : SV_Target0
     float caustAlpha = saturate(caustics * wetMask * saturate(ssrStr));
     float3 caustCol = float3(0.86f, 0.96f, 1.0f);
 
-    // 2. SSR 反射采样（清晰倒影 + 根部锁定动态水波 + 严防双层黑影）
+    // 2. SSR 反射采样
     float reflAlpha = 0.0f;
     float3 reflCol = float3(0.0f, 0.0f, 0.0f);
     if (hit)
@@ -800,13 +826,15 @@ float4 PS_WetFloorSsr(VsOut input) : SV_Target0
         float hitHeight = dot(hitSurfP - P, upVS);
         float heightFade = smoothstep(0.03f, 0.20f, hitHeight);
 
+        // 精修残差平滑淡出：确保越接近假命中边缘越柔和，杜绝任何硬截断或重复条纹
+        float contactFade = 1.0f - smoothstep(maxAcceptDiff * 0.45f, maxAcceptDiff, hitDiff);
+
         float2 waveUvOfs = ripRaw * invTex * (3.5f * smoothstep(0.15f, 2.2f, hitT) * waveFade);
         float2 sampleUv = hitTexUv + waveUvOfs;
 
         float2 edgeDist = min(hitVpUv, 1.0f - hitVpUv);
         float edgeFade = smoothstep(0.0f, 0.08f, min(edgeDist.x, edgeDist.y));
 
-        // 适配 45° 俯视角的菲涅尔：正面倒影清晰可见 (~0.64)，掠射角平滑逼近 1.0
         float viewGraze = 1.0f - saturate(dot(-V, Nrefl));
         float fresnel = saturate(0.55f + 0.45f * pow(viewGraze, 1.4f));
 
@@ -820,9 +848,8 @@ float4 PS_WetFloorSsr(VsOut input) : SV_Target0
         float reflLuma = dot(reflCol, float3(0.299f, 0.587f, 0.114f));
         float shadowGate = smoothstep(0.04f, 0.15f, reflLuma);
 
-        // 轻度提亮并附带冷青水色，避免倒影发暗沉闷
         reflCol *= float3(0.96f, 1.04f, 1.12f);
-        reflAlpha = saturate(wetMask * fresnel * edgeFade * heightFade * shadowGate * 0.78f * ssrStr);
+        reflAlpha = saturate(wetMask * fresnel * edgeFade * heightFade * contactFade * shadowGate * 0.78f * ssrStr);
     }
 
     // 3. 无暗化精确合成

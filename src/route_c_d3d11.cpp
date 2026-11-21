@@ -762,14 +762,14 @@ float4 PS_WetFloorSsr(VsOut input) : SV_Target0
     // 1. 视距自适应步长：无论拉近特写还是拉远俯视，屏幕步距恒定在细腻的 ~6-12px
     float stepScale = clamp(dC * 0.05f, 0.25f, 1.5f);
     float baseStep = 0.085f * stepScale;
-    // 有序梯度噪点 (IGN) + 低振幅抖动：消除角色倒影轮廓的颗粒糊边，同时保持零步进条纹
-    float ign = frac(52.9829189f * frac(dot(float2(pix), float2(0.06711056f, 0.00583715f))));
-    float t = baseStep * (0.45f + ign * 0.15f);
+    // 有序梯度噪点 (IGN) 抖动关掉，使用固定步进初值，彻底杜绝相邻像素由于抖动导致一边命中、一边穿透
+    float t = baseStep * 0.50f;
     float prevT = max(t - baseStep, 0.02f);
 
     // 真实交点允许的最大精修残差（特写 ~0.30m，远景 ~0.45m），拦截“背后穿过”的重复鬼影
     float maxAcceptDiff = clamp(0.28f + dC * 0.007f, 0.30f, 0.45f);
 
+    float occAtten = 1.0f;
     bool hit = false;
     float2 hitTexUv = float2(0.0f, 0.0f);
     float2 hitVpUv = float2(0.5f, 0.5f);
@@ -837,7 +837,7 @@ float4 PS_WetFloorSsr(VsOut input) : SV_Target0
                 }
 
                 // 【关键防重影校验】：只有精修后真正贴近表面 (bestDiff 小) 才确认命中；
-                // 若 bestDiff 依然很大，说明是悬空前景的假命中，不 break，继续追踪后方真实景物！
+                // 若 bestDiff 依然很大，说明是悬空前景的假命中，记录遮挡穿透衰减，继续追踪后方真实景物！
                 if (bestDiff < maxAcceptDiff)
                 {
                     hitT = bestT;
@@ -846,6 +846,11 @@ float4 PS_WetFloorSsr(VsOut input) : SV_Target0
                     hitTexUv = (gVpRect.xy + bestVpUv * gVpRect.zw) * invTex;
                     hit = true;
                     break;
+                }
+                else
+                {
+                    // 光线穿透了悬空前景物体（如紫炮），压制后方背景反射，防止刺眼白石台碎块钻入倒影
+                    occAtten *= 0.25f;
                 }
             }
         }
@@ -905,7 +910,7 @@ float4 PS_WetFloorSsr(VsOut input) : SV_Target0
 
         // 当前像素本身很亮且明显亮于暗倒影时，平滑压低暗倒影覆盖，防止在发光边缘留下脏黑印
         float darkOverBright = 1.0f - smoothstep(0.20f, 0.55f, baseLuma0 - reflLuma) * smoothstep(0.45f, 0.75f, baseLuma0);
-        reflAlpha = saturate(wetMask * fresnel * edgeFade * heightFade * contactFade * shadowGate * darkOverBright * 0.72f * ssrStr);
+        reflAlpha = saturate(wetMask * fresnel * edgeFade * heightFade * contactFade * shadowGate * darkOverBright * 0.72f * ssrStr) * occAtten;
     }
 
     // 2. 再算水底流动焦散（强倒影区用 2.5 次方彻底让位给倒影，杜绝焦散白丝混在炮身上）
@@ -927,6 +932,61 @@ float4 PS_WetFloorSsr(VsOut input) : SV_Target0
     float outA = saturate(weightSum);
     float3 outRgb = (reflCol * reflAlpha + caustCol * caustAlpha) / weightSum;
     return float4(saturate(outRgb), outA);
+}
+)HLSL";
+
+constexpr const char kSsrResolveShaderSource[] = R"HLSL(
+// 【SSR 后置跨像素双边空间滤波 Pass】
+// 解决 1x 深度图硬边与相邻光线穿透跳变造成的硬锯齿，以预乘 Alpha 还原滤波消除黑边，双边深度限制防岸上溢出
+float4 PS_SsrSpatialResolve(VsOut input) : SV_Target0
+{
+    int2 pix = clamp(int2(input.pos.xy), gVpClamp.xy, gVpClamp.zw);
+    float rawC = LoadRawDepth(pix);
+    if (rawC >= 0.99998f)
+    {
+        return float4(0.0f, 0.0f, 0.0f, 0.0f);
+    }
+    float dC = RawToLinearDist(rawC);
+
+    float3 sumPremulRgb = float3(0.0f, 0.0f, 0.0f);
+    float sumAlpha = 0.0f;
+    float sumWeight = 0.0f;
+
+    // 3x3 空间与双边深度滤波核（对角 45° 权重 0.75，中心权重 1.40，严格抚平 1x 深度图斜边锯齿）
+    [unroll]
+    for (int dy = -1; dy <= 1; ++dy)
+    {
+        [unroll]
+        for (int dx = -1; dx <= 1; ++dx)
+        {
+            int2 spix = clamp(pix + int2(dx, dy), gVpClamp.xy, gVpClamp.zw);
+            float rawN = LoadRawDepth(spix);
+            if (rawN >= 0.99998f)
+            {
+                continue;
+            }
+            float dN = RawToLinearDist(rawN);
+            float depthDiff = abs(dN - dC);
+
+            // 深度双边阈值收紧在 ~0.14m，严防倒影溢到石台岸上
+            float bilateralW = exp(-depthDiff * 14.0f);
+            float spatialW = (dx == 0 && dy == 0) ? 1.40f : ((dx != 0 && dy != 0) ? 0.75f : 1.0f);
+            float w = spatialW * bilateralW;
+
+            float4 s = gAoInputTex.Load(int3(spix, 0));
+            sumPremulRgb += s.rgb * (s.a * w);
+            sumAlpha += s.a * w;
+            sumWeight += w;
+        }
+    }
+
+    float outA = sumAlpha / max(sumWeight, 1e-4f);
+    if (outA <= 1e-4f)
+    {
+        return float4(0.0f, 0.0f, 0.0f, 0.0f);
+    }
+    float3 outRgb = sumPremulRgb / max(sumAlpha, 1e-4f);
+    return float4(saturate(outRgb), saturate(outA));
 }
 )HLSL";
 
@@ -1487,6 +1547,7 @@ struct DepthVariantShaders {
     ID3D11PixelShader* ps_comp_dual = nullptr;
     ID3D11PixelShader* ps_aerial = nullptr;
     ID3D11PixelShader* ps_ssr = nullptr;
+    ID3D11PixelShader* ps_ssr_resolve = nullptr;
 };
 
 struct BenchSlot {
@@ -1565,6 +1626,12 @@ struct RouteCD3DState {
     ID3D11RenderTargetView* ao_blur_rtv = nullptr;
     ID3D11ShaderResourceView* ao_blur_srv = nullptr;
 
+    ID3D11Texture2D* ssr_rt_tex = nullptr;
+    ID3D11RenderTargetView* ssr_rt_rtv = nullptr;
+    ID3D11ShaderResourceView* ssr_rt_srv = nullptr;
+    uint32_t ssr_rt_w = 0;
+    uint32_t ssr_rt_h = 0;
+
     uint32_t depth_w = 0;
     uint32_t depth_h = 0;
     DXGI_FORMAT depth_tex_fmt = DXGI_FORMAT_UNKNOWN;
@@ -1614,6 +1681,7 @@ double g_sum_comp_ms = 0.0;
 double g_sum_total_ms = 0.0;
 
 void ReleaseDepthVariantShaders(DepthVariantShaders& s) {
+    SafeRelease(s.ps_ssr_resolve);
     SafeRelease(s.ps_ssr);
     SafeRelease(s.ps_aerial);
     SafeRelease(s.ps_comp_dual);
@@ -1654,6 +1722,11 @@ void ReleaseTargets() {
     SafeRelease(g_st.ao_rt_srv);
     SafeRelease(g_st.ao_rt_rtv);
     SafeRelease(g_st.ao_rt_tex);
+    SafeRelease(g_st.ssr_rt_srv);
+    SafeRelease(g_st.ssr_rt_rtv);
+    SafeRelease(g_st.ssr_rt_tex);
+    g_st.ssr_rt_w = 0;
+    g_st.ssr_rt_h = 0;
     SafeRelease(g_st.depth_resolve_srv);
     SafeRelease(g_st.depth_resolve_rtv);
     SafeRelease(g_st.depth_resolve_tex);
@@ -1760,7 +1833,7 @@ bool CompileShaderBlob(
     const D3D_SHADER_MACRO* defines,
     ID3DBlob** out_blob,
     RouteCD3DLogFn logger) {
-    static const std::string kCombined = std::string(kAoShaderSource) + kAoSsrTailSource;
+    static const std::string kCombined = std::string(kAoShaderSource) + kAoSsrTailSource + kSsrResolveShaderSource;
     return CompileShaderBlobFromSource(
         compile_fn, kCombined.data(), kCombined.size(), "route_c_ao.hlsl",
         entry, target, defines, out_blob, logger);
@@ -1818,7 +1891,8 @@ bool CreateDepthVariantShaders(
         CompileAndCreatePixelShader(dev, compile_fn, "PS_AoComposite", ps_profile, defines, &out.ps_composite, logger) &&
         CompileAndCreatePixelShader(dev, compile_fn, "PS_AoCompositeDual", ps_profile, defines, &out.ps_comp_dual, logger) &&
         CompileAndCreatePixelShader(dev, compile_fn, "PS_AerialPerspective", ps_profile, defines, &out.ps_aerial, logger) &&
-        CompileAndCreatePixelShader(dev, compile_fn, "PS_WetFloorSsr", ps_profile, defines, &out.ps_ssr, logger);
+        CompileAndCreatePixelShader(dev, compile_fn, "PS_WetFloorSsr", ps_profile, defines, &out.ps_ssr, logger) &&
+        CompileAndCreatePixelShader(dev, compile_fn, "PS_SsrSpatialResolve", ps_profile, defines, &out.ps_ssr_resolve, logger);
     if (!ok) {
         ReleaseDepthVariantShaders(out);
     }
@@ -1837,6 +1911,7 @@ bool EnsurePipelineObjects(ID3D11Device* dev, RouteCD3DLogFn logger) {
     }
     if (g_st.vs_fullscreen && g_st.shaders_single.ps_ao_raw && g_st.shaders_single.ps_composite &&
         g_st.shaders_single.ps_comp_dual && g_st.shaders_single.ps_aerial && g_st.shaders_single.ps_ssr &&
+        g_st.shaders_single.ps_ssr_resolve &&
         g_st.ps_lut_grade && g_st.cb_bloom_lut &&
         g_st.ps_toast && g_st.cb_toast && g_st.blend_toast_alpha &&
         g_st.ps_panel && g_st.ps_cursor && g_st.cb_panel && g_st.samp_linear &&
@@ -2193,6 +2268,49 @@ bool EnsureDepthResolveTarget(ID3D11Device* dev, uint32_t width, uint32_t height
     }
     g_st.depth_resolve_w = width;
     g_st.depth_resolve_h = height;
+    return true;
+}
+
+bool EnsureSsrTarget(ID3D11Device* dev, uint32_t width, uint32_t height) {
+    if (g_st.ssr_rt_tex && g_st.ssr_rt_rtv && g_st.ssr_rt_srv &&
+        g_st.ssr_rt_w == width && g_st.ssr_rt_h == height) {
+        return true;
+    }
+    SafeRelease(g_st.ssr_rt_srv);
+    SafeRelease(g_st.ssr_rt_rtv);
+    SafeRelease(g_st.ssr_rt_tex);
+    g_st.ssr_rt_w = 0;
+    g_st.ssr_rt_h = 0;
+
+    D3D11_TEXTURE2D_DESC td{};
+    td.Width = width;
+    td.Height = height;
+    td.MipLevels = 1;
+    td.ArraySize = 1;
+    td.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    td.SampleDesc.Count = 1;
+    td.SampleDesc.Quality = 0;
+    td.Usage = D3D11_USAGE_DEFAULT;
+    td.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
+    if (FAILED(dev->CreateTexture2D(&td, nullptr, &g_st.ssr_rt_tex)) || !g_st.ssr_rt_tex) {
+        return false;
+    }
+    if (FAILED(dev->CreateRenderTargetView(g_st.ssr_rt_tex, nullptr, &g_st.ssr_rt_rtv)) || !g_st.ssr_rt_rtv) {
+        SafeRelease(g_st.ssr_rt_tex);
+        return false;
+    }
+    D3D11_SHADER_RESOURCE_VIEW_DESC srvd{};
+    srvd.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    srvd.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
+    srvd.Texture2D.MipLevels = 1;
+    srvd.Texture2D.MostDetailedMip = 0;
+    if (FAILED(dev->CreateShaderResourceView(g_st.ssr_rt_tex, &srvd, &g_st.ssr_rt_srv)) || !g_st.ssr_rt_srv) {
+        SafeRelease(g_st.ssr_rt_rtv);
+        SafeRelease(g_st.ssr_rt_tex);
+        return false;
+    }
+    g_st.ssr_rt_w = width;
+    g_st.ssr_rt_h = height;
     return true;
 }
 
@@ -3313,7 +3431,8 @@ bool ExecuteRouteCPostWorldPass(const RouteCPostWorldRequest& req, RouteCD3DLogF
     // Item 5: Post-water SSR using depth snapshot from Ended86 and post-translucent color buffer (queues 0..94).
     const DepthVariantShaders* ds = g_st.post_world_msaa ? &g_st.shaders_msaa : &g_st.shaders_single;
     if (req.ssr_enabled && g_st.post_world_depth_valid && g_st.depth_copy_srv &&
-        ds->ps_ssr && g_st.cb_params && g_st.blend_toast_alpha &&
+        ds->ps_ssr && ds->ps_ssr_resolve && g_st.cb_params && g_st.blend_toast_alpha &&
+        EnsureSsrTarget(dev, rt_desc.Width, rt_desc.Height) &&
         CopyRtvTextureToP2Copy(dev, req.ctx, src_rt_tex, rt_desc, rtv_desc)) {
         CbAoParams cb_ssr{};
         std::memcpy(&cb_ssr, g_st.post_world_cb_bytes, sizeof(cb_ssr));
@@ -3333,11 +3452,24 @@ bool ExecuteRouteCPostWorldPass(const RouteCPostWorldRequest& req, RouteCD3DLogF
         }
         req.ctx->PSSetConstantBuffers(0, 1, &g_st.cb_params);
         req.ctx->RSSetViewports(1, &ao_vp);
-        req.ctx->OMSetRenderTargets(1, &target_rtv, nullptr);
-        req.ctx->OMSetBlendState(g_st.blend_toast_alpha, nullptr, 0xFFFFFFFFU);
+
+        // Pass 1: Raymarch SSR to offscreen target (ssr_rt_rtv) with overwrite blend
+        const float clear_zero[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+        req.ctx->ClearRenderTargetView(g_st.ssr_rt_rtv, clear_zero);
+        req.ctx->OMSetRenderTargets(1, &g_st.ssr_rt_rtv, nullptr);
+        req.ctx->OMSetBlendState(nullptr, nullptr, 0xFFFFFFFFU);
         req.ctx->PSSetShader(ds->ps_ssr, nullptr, 0);
         ID3D11ShaderResourceView* srvs_ssr[2] = {g_st.depth_copy_srv, g_st.p2_copy_srv};
         req.ctx->PSSetShaderResources(0, 2, srvs_ssr);
+        req.ctx->Draw(3, 0);
+
+        // Pass 2: 3x3 Bilateral Spatial Resolve & Composite to target_rtv
+        // Unbind ssr_rt_rtv by setting target_rtv FIRST to avoid D3D11 hazard
+        req.ctx->OMSetRenderTargets(1, &target_rtv, nullptr);
+        req.ctx->OMSetBlendState(g_st.blend_toast_alpha, nullptr, 0xFFFFFFFFU);
+        req.ctx->PSSetShader(ds->ps_ssr_resolve, nullptr, 0);
+        ID3D11ShaderResourceView* srvs_resolve[2] = {g_st.depth_copy_srv, g_st.ssr_rt_srv};
+        req.ctx->PSSetShaderResources(0, 2, srvs_resolve);
         req.ctx->Draw(3, 0);
         req.ctx->PSSetShaderResources(0, 2, null_srvs);
         did_any = true;
@@ -3770,6 +3902,8 @@ bool VerifyRouteCShadersCompile(RouteCD3DLogFn logger) {
         {"PS_AerialPerspective", "ps_4_1", macro_msaa},
         {"PS_WetFloorSsr", "ps_4_0", macro_single},
         {"PS_WetFloorSsr", "ps_4_1", macro_msaa},
+        {"PS_SsrSpatialResolve", "ps_4_0", macro_single},
+        {"PS_SsrSpatialResolve", "ps_4_1", macro_msaa},
         {"PS_C1DepthNormalDebug", "ps_4_0", macro_single},
         {"PS_C1DepthNormalDebug", "ps_4_1", macro_msaa},
         {"PS_AoRaw", "ps_4_0", macro_single},

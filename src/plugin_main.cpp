@@ -18,21 +18,6 @@
 
 namespace {
 
-struct ExpectedModule {
-    const wchar_t* module_name;
-    const std::uint32_t* valid_timestamps;
-    size_t timestamp_count;
-    std::uint32_t expected_size_of_image;
-};
-
-constexpr std::uint32_t kD3D11Timestamps[] = {0x6af5fabfU, 0x6aff34cbU};
-constexpr std::uint32_t kGuiTimestamps[]   = {0x6af5fab0U, 0x6aff34b0U};
-constexpr std::uint32_t kOgreTimestamps[]  = {0x6af5faa0U, 0x6aff34acU};
-
-constexpr ExpectedModule kModD3D11 = {L"RenderSystem_Direct3D11.dll", kD3D11Timestamps, sizeof(kD3D11Timestamps) / sizeof(kD3D11Timestamps[0]), 0x0008a000U};
-constexpr ExpectedModule kModGui   = {L"OgreGUIRenderer.dll",         kGuiTimestamps,   sizeof(kGuiTimestamps) / sizeof(kGuiTimestamps[0]),     0x00014000U};
-constexpr ExpectedModule kModOgre  = {L"OgreMain.dll",                kOgreTimestamps,  sizeof(kOgreTimestamps) / sizeof(kOgreTimestamps[0]),   0x006b6000U};
-
 FILE* g_log = nullptr;
 bool g_phase1_installed = false;
 PVOID g_veh_handle = nullptr;
@@ -364,46 +349,42 @@ void RemoveCrashLogger() {
     }
 }
 
-void* ValidateModulePe(const ExpectedModule& spec, bool* out_matched) {
+void* ValidateModulePe(const wchar_t* module_name, bool* out_matched) {
     *out_matched = false;
-    HMODULE mod = ::GetModuleHandleW(spec.module_name);
+    HMODULE mod = ::GetModuleHandleW(module_name);
     if (!mod) {
-        LogLine("[RouteB] Module not loaded yet: %ls", spec.module_name);
+        LogLine("[RouteB] Module not loaded yet: %ls", module_name);
         return nullptr;
     }
 
     const auto base = reinterpret_cast<std::uintptr_t>(mod);
     const auto* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(base);
     if (dos->e_magic != IMAGE_DOS_SIGNATURE) {
-        LogLine("[RouteB] Invalid DOS header on %ls", spec.module_name);
+        LogLine("[RouteB] Invalid DOS header on %ls", module_name);
         return nullptr;
     }
 
     const auto* nt = reinterpret_cast<const IMAGE_NT_HEADERS64*>(base + dos->e_lfanew);
     if (nt->Signature != IMAGE_NT_SIGNATURE) {
-        LogLine("[RouteB] Invalid NT header on %ls", spec.module_name);
+        LogLine("[RouteB] Invalid NT header on %ls", module_name);
+        return nullptr;
+    }
+
+    if (nt->FileHeader.Machine != IMAGE_FILE_MACHINE_AMD64) {
+        LogLine("[RouteB] %ls is not 64-bit AMD64 (Machine=0x%04x)", module_name, nt->FileHeader.Machine);
         return nullptr;
     }
 
     const std::uint32_t ts = nt->FileHeader.TimeDateStamp;
     const std::uint32_t img_size = nt->OptionalHeader.SizeOfImage;
-    bool ts_matched = false;
-    for (size_t i = 0; i < spec.timestamp_count; ++i) {
-        if (ts == spec.valid_timestamps[i]) {
-            ts_matched = true;
-            break;
-        }
-    }
-    const bool matched = ts_matched && (img_size == spec.expected_size_of_image);
-    *out_matched = matched;
+    *out_matched = true;
 
     LogLine(
-        "[RouteB] %ls base=0x%llx TimeDateStamp=0x%08x SizeOfImage=0x%x match=%s",
-        spec.module_name,
+        "[RouteB] %ls base=0x%llx TimeDateStamp=0x%08x SizeOfImage=0x%x (x64 validated)",
+        module_name,
         static_cast<unsigned long long>(base),
         ts,
-        img_size,
-        matched ? "OK" : "MISMATCH");
+        img_size);
 
     return reinterpret_cast<void*>(base);
 }
@@ -510,9 +491,9 @@ extern "C" __declspec(dllexport) void dllStartPlugin() {
     bool ok_d3d = false;
     bool ok_ogre = false;
     bool ok_gui = false;
-    void* d3d_base = ValidateModulePe(kModD3D11, &ok_d3d);
-    void* ogre_base = ValidateModulePe(kModOgre, &ok_ogre);
-    (void)ValidateModulePe(kModGui, &ok_gui);
+    void* d3d_base = ValidateModulePe(L"RenderSystem_Direct3D11.dll", &ok_d3d);
+    void* ogre_base = ValidateModulePe(L"OgreMain.dll", &ok_ogre);
+    (void)ValidateModulePe(L"OgreGUIRenderer.dll", &ok_gui);
 
     if (ok_d3d && ok_ogre) {
         g_mem_stream_clamps.store(0, std::memory_order_relaxed);

@@ -34,21 +34,11 @@ struct PayloadEntry {
 
 #include "installer_payload_table.inc"
 
-struct ExpectedPeModule {
-    const wchar_t* filename;
-    const uint32_t* valid_timestamps;
-    size_t timestamp_count;
-    uint32_t expected_image_size;
-};
-
-constexpr uint32_t kOgreTimestamps[]  = {0x6af5faa0U, 0x6aff34acU};
-constexpr uint32_t kD3D11Timestamps[] = {0x6af5fabfU, 0x6aff34cbU};
-constexpr uint32_t kGuiTimestamps[]   = {0x6af5fab0U, 0x6aff34b0U};
-
-constexpr ExpectedPeModule kRequiredPeModules[] = {
-    {L"OgreMain.dll",                kOgreTimestamps,  sizeof(kOgreTimestamps) / sizeof(kOgreTimestamps[0]),   0x006b6000U},
-    {L"RenderSystem_Direct3D11.dll", kD3D11Timestamps, sizeof(kD3D11Timestamps) / sizeof(kD3D11Timestamps[0]), 0x0008a000U},
-    {L"OgreGUIRenderer.dll",         kGuiTimestamps,   sizeof(kGuiTimestamps) / sizeof(kGuiTimestamps[0]),     0x00014000U},
+constexpr const wchar_t* kRequiredPeModules[] = {
+    L"Torchlight2.exe",
+    L"OgreMain.dll",
+    L"RenderSystem_Direct3D11.dll",
+    L"OgreGUIRenderer.dll",
 };
 
 constexpr wchar_t kBackupDirName[] = L"TL2_DX11_Enhance_Backup";
@@ -262,11 +252,11 @@ bool IsProcessRunningByName(const wchar_t* exe_name) {
 
 void AppendVersionUpgradeHint(Logger& log) {
     log.AppendBi(
-        L"[升级提示] 当前游戏不是 1.27 (2026 x64 D3D11) 版本，请先将游戏升级至 1.27 版本：",
-        L"[Upgrade Required] Your Torchlight II build is not v1.27 (2026 x64 D3D11). Please update to v1.27:");
+        L"[升级提示] 当前游戏不是 64 位 (x64 D3D11) 版本，请先更新游戏：",
+        L"[Upgrade Required] Your Torchlight II build is not 64-bit (x64 D3D11). Please update your game:");
     log.AppendBi(
-        L"          可在 Steam 库中右键游戏 →「属性」→「测试版」→ 选择 public_beta 分支进行更新。",
-        L"          In Steam: Right-click Torchlight II -> Properties -> Betas -> select the public_beta branch.");
+        L"          可在 Steam 库中右键游戏 →「属性」→「测试版」→ 选择 64 位 / public_beta 分支进行更新。",
+        L"          In Steam: Right-click Torchlight II -> Properties -> Betas -> select the 64-bit / public_beta branch.");
 }
 
 bool ValidateGameDirectory(const fs::path& game_dir, Logger& log, bool* out_version_mismatch = nullptr) {
@@ -287,14 +277,14 @@ bool ValidateGameDirectory(const fs::path& game_dir, Logger& log, bool* out_vers
         return false;
     }
 
-    for (const auto& mod : kRequiredPeModules) {
-        const fs::path mod_path = game_dir / mod.filename;
+    for (const wchar_t* mod_name : kRequiredPeModules) {
+        const fs::path mod_path = game_dir / mod_name;
         if (!fs::exists(mod_path, ec)) {
             log.AppendBi(
-                std::wstring(L"[错误] 缺少 1.27 版引擎文件 ") + mod.filename +
-                    L"（请确认游戏已升级至 1.27 版本，而非旧版 32 位 D3D9 客户端）。",
-                std::wstring(L"[Error] Missing v1.27 engine file ") + mod.filename +
-                    L" (please update to v1.27 rather than legacy 32-bit D3D9).");
+                std::wstring(L"[错误] 缺少 64 位 D3D11 引擎文件 ") + mod_name +
+                    L"（请确认游戏为 64 位 x64 D3D11 版本，而非旧版 32 位 D3D9 客户端）。",
+                std::wstring(L"[Error] Missing 64-bit D3D11 engine file ") + mod_name +
+                    L" (please ensure you are running the 64-bit x64 D3D11 build, not legacy 32-bit D3D9).");
             AppendVersionUpgradeHint(log);
             if (out_version_mismatch) {
                 *out_version_mismatch = true;
@@ -312,33 +302,10 @@ bool ValidateGameDirectory(const fs::path& game_dir, Logger& log, bool* out_vers
             }
             return false;
         }
-        bool ts_matched = false;
-        for (size_t i = 0; i < mod.timestamp_count; ++i) {
-            if (ts == mod.valid_timestamps[i]) {
-                ts_matched = true;
-                break;
-            }
-        }
-        if (!ts_matched || img_sz != mod.expected_image_size) {
-            wchar_t msg_zh[256]{};
-            wchar_t msg_en[256]{};
-            std::swprintf(msg_zh, 256,
-                          L"[错误] %s 不是 1.27 兼容版本 (TimeDateStamp=0x%08X, SizeOfImage=0x%X 期望 0x%X)，为防崩溃已中止。",
-                          mod.filename, ts, img_sz, mod.expected_image_size);
-            std::swprintf(msg_en, 256,
-                          L"[Error] %s is not a compatible v1.27 build (TimeDateStamp=0x%08X, SizeOfImage=0x%X expected 0x%X); aborted.",
-                          mod.filename, ts, img_sz, mod.expected_image_size);
-            log.AppendBi(msg_zh, msg_en);
-            AppendVersionUpgradeHint(log);
-            if (out_version_mismatch) {
-                *out_version_mismatch = true;
-            }
-            return false;
-        }
     }
 
-    log.AppendBi(L"[检查通过] 已识别兼容的 1.27 (2026 x64 D3D11) 版《火炬之光 2》目录。",
-                 L"[Check OK] Compatible Torchlight II v1.27 (2026 x64 D3D11) installation detected.");
+    log.AppendBi(L"[检查通过] 已识别 64 位 (x64 D3D11) 版《火炬之光 2》目录。",
+                 L"[Check OK] Valid 64-bit (x64 D3D11) Torchlight II installation detected.");
     return true;
 }
 
@@ -1041,8 +1008,8 @@ void BuildBackdropBitmap(HWND hwnd) {
         // Header right: Title & complete 2-line subtitle (auto-fit font so title never clips before [中]/[EN])
         Gdiplus::FontFamily ff(L"Microsoft YaHei UI");
         const wchar_t* main_title_text = T(
-            L"D3D11 画质增强 & SSAO 安装器 (v1.27 x64)",
-            L"D3D11 Graphics & SSAO Setup (v1.27 x64)");
+            L"D3D11 画质增强 & SSAO 安装器 (x64)",
+            L"D3D11 Graphics & SSAO Setup (x64)");
         const Gdiplus::RectF title_rect(Sf(220), Sf(22), Sf(414), Sf(28));
         float chosen_title_px = 19.0f;
         {
@@ -1658,9 +1625,9 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
                 if (!ValidateGameDirectory(GetPathFromEdit(), g_gui_log, &version_mismatch) && version_mismatch) {
                     ::MessageBoxW(
                         hwnd,
-                        T(L"检测到当前《火炬之光 2》不是 1.27 (2026 x64 D3D11) 兼容版本！\n\n请先将游戏升级至 1.27 版本：\n在 Steam 游戏库中右键点击《火炬之光 2》 →「属性」→「测试版」→ 在参与测试下拉框中选择 public_beta 分支更新游戏。",
-                          L"Detected Torchlight II installation is not compatible v1.27 (2026 x64 D3D11)!\n\nPlease update the game to v1.27 first:\nIn Steam Library: Right-click Torchlight II -> Properties -> Betas -> select the public_beta branch to update."),
-                        T(L"需要升级至 1.27 版本", L"v1.27 Update Required"),
+                        T(L"检测到当前《火炬之光 2》不是 64 位 (x64 D3D11) 兼容版本！\n\n请先将游戏升级至 64 位版本：\n在 Steam 游戏库中右键点击《火炬之光 2》 →「属性」→「测试版」→ 在参与测试下拉框中选择 64 位 / public_beta 分支更新游戏。",
+                          L"Detected Torchlight II installation is not compatible 64-bit (x64 D3D11)!\n\nPlease update the game to the 64-bit version first:\nIn Steam Library: Right-click Torchlight II -> Properties -> Betas -> select the 64-bit / public_beta branch to update."),
+                        T(L"需要 64 位版本", L"64-bit Update Required"),
                         MB_OK | MB_ICONWARNING);
                 }
                 return 0;
@@ -1670,8 +1637,8 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
                 bool version_mismatch = false;
                 const bool ok = PerformInstall(dir, g_gui_log, &version_mismatch);
                 const wchar_t* err_msg = version_mismatch
-                    ? T(L"安装已中止：检测到当前《火炬之光 2》不是 1.27 (2026 x64 D3D11) 兼容版本！\n\n请先将游戏升级至 1.27 版本：\n在 Steam 游戏库中右键点击《火炬之光 2》 →「属性」→「测试版」→ 选择 public_beta 分支更新游戏。",
-                        L"Installation aborted: Torchlight II installation is not compatible v1.27 (2026 x64 D3D11)!\n\nPlease update the game to v1.27 first:\nIn Steam Library: Right-click Torchlight II -> Properties -> Betas -> select the public_beta branch to update.")
+                    ? T(L"安装已中止：检测到当前《火炬之光 2》不是 64 位 (x64 D3D11) 兼容版本！\n\n请先将游戏升级至 64 位版本：\n在 Steam 游戏库中右键点击《火炬之光 2》 →「属性」→「测试版」→ 选择 64 位 / public_beta 分支更新游戏。",
+                        L"Installation aborted: Torchlight II installation is not compatible 64-bit (x64 D3D11)!\n\nPlease update the game to the 64-bit version first:\nIn Steam Library: Right-click Torchlight II -> Properties -> Betas -> select the 64-bit / public_beta branch to update.")
                     : T(L"安装未完成，请查看日志窗口中的错误信息。",
                         L"Installation incomplete. Please check the error details in the log console.");
                 ::MessageBoxW(

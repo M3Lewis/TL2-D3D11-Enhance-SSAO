@@ -11,9 +11,6 @@
 namespace routeb {
 namespace {
 
-constexpr uint32_t kExpectedGuiTimestamp1 = 0x6af5fab0U;
-constexpr uint32_t kExpectedGuiTimestamp2 = 0x6aff34b0U;
-constexpr uint32_t kExpectedGuiImageSize = 0x00014000U;
 constexpr uintptr_t kInitRenderStatesTailRva = 0x00003BD2U;
 constexpr size_t kTailPatchLen = 17;
 
@@ -159,9 +156,7 @@ bool ValidateGuiModulePe(HMODULE mod) {
     if (nt->Signature != IMAGE_NT_SIGNATURE) {
         return false;
     }
-    return (nt->FileHeader.TimeDateStamp == kExpectedGuiTimestamp1 ||
-            nt->FileHeader.TimeDateStamp == kExpectedGuiTimestamp2) &&
-           nt->OptionalHeader.SizeOfImage == kExpectedGuiImageSize;
+    return nt->FileHeader.Machine == IMAGE_FILE_MACHINE_AMD64;
 }
 
 bool PatchGuiModuleIfReady(HMODULE gui_mod) {

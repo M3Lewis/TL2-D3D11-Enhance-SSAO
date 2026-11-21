@@ -211,6 +211,10 @@ std::atomic<int> g_p1_soft_particles_strength_pct{100};
 std::atomic<int> g_p2_aerial_vignette_strength_pct{100};
 std::atomic<int> g_p2_ssr_strength_pct{100};
 std::atomic<int> g_p2_lut_strength_pct{100};
+std::atomic<bool> g_weather_rain_enabled{false};
+std::atomic<int> g_weather_rain_strength_pct{100};
+std::atomic<int> g_time_of_day_hours{-1};  // -1 = Auto
+std::atomic<bool> g_time_of_day_locked{false};
 std::atomic<bool> g_world_depth_ready_for_particles{false};
 std::atomic<uint64_t> g_toast_expire_tick_ms{0};
 std::atomic<int> g_ao_debug_mode{0};  // Phase C2 default: DebugMode=0 (Live AO Composite)
@@ -717,6 +721,8 @@ void TryDispatchAoForFrame(ActiveSceneFrame& frame, const char* trigger_src, uin
     req.sscs_strength_scale = static_cast<float>(GetRouteCSscsStrengthPct()) * 0.01f;
     req.aerial_strength_scale = static_cast<float>(GetP2AerialVignetteStrengthPct()) * 0.01f;
     req.ssr_strength_scale = static_cast<float>(GetP2SsrStrengthPct()) * 0.01f;
+    req.rain_strength = g_weather_rain_enabled.load(std::memory_order_relaxed) ? (static_cast<float>(GetWeatherRainStrengthPct()) * 0.01f) : 0.0f;
+    req.time_of_day = static_cast<float>(GetTimeOfDayHours());
     req.sscs_key_dir[0] = 0.42f;
     req.sscs_key_dir[1] = -0.907f;
     req.has_sscs_key_dir = false;
@@ -821,6 +827,8 @@ void TryDispatchPostWorldForFrame(ActiveSceneFrame& frame) {
     req.water_hint = water_hint;
     req.filter_preset = GetP2FilterPreset();
     req.ssr_strength_scale = static_cast<float>(GetP2SsrStrengthPct()) * 0.01f;
+    req.rain_strength = g_weather_rain_enabled.load(std::memory_order_relaxed) ? (static_cast<float>(GetWeatherRainStrengthPct()) * 0.01f) : 0.0f;
+    req.time_of_day = static_cast<float>(GetTimeOfDayHours());
     req.lut_strength_scale = static_cast<float>(GetP2LutStrengthPct()) * 0.01f;
     (void)ExecuteRouteCPostWorldPass(req, g_log);
     SafeRelease(ctx);
@@ -1611,6 +1619,124 @@ void SetP2LutStrengthPct(int pct) {
 
 int GetP2LutStrengthPct() {
     return (std::clamp)(g_p2_lut_strength_pct.load(std::memory_order_relaxed), 0, 200);
+}
+
+using FnEditorSetTimeOfDay = void (__fastcall *)(float);
+using FnEditorGetTimeOfDay = float (__fastcall *)();
+using FnEditorSetUpdateTimeOfDay = void (__fastcall *)(bool);
+using FnEditorSetTimeOfDayMult = void (__fastcall *)(float);
+using FnEditorSetShowWeatherEffects = void (__fastcall *)(bool);
+using FnEditorGetShowWeatherEffects = bool (__fastcall *)();
+
+static FnEditorSetTimeOfDay g_fnSetTimeOfDay = nullptr;
+static FnEditorGetTimeOfDay g_fnGetTimeOfDay = nullptr;
+static FnEditorSetUpdateTimeOfDay g_fnSetUpdateTimeOfDay = nullptr;
+static FnEditorSetTimeOfDayMult g_fnSetTimeOfDayMult = nullptr;
+static FnEditorSetShowWeatherEffects g_fnSetShowWeather = nullptr;
+static FnEditorGetShowWeatherEffects g_fnGetShowWeather = nullptr;
+static std::atomic<bool> g_engine_funcs_inited{false};
+
+static void EnsureEngineWeatherTimeFuncs() {
+    if (g_engine_funcs_inited.load(std::memory_order_relaxed)) {
+        return;
+    }
+    HMODULE hExe = ::GetModuleHandleW(nullptr);
+    if (hExe) {
+        g_fnSetTimeOfDay = reinterpret_cast<FnEditorSetTimeOfDay>(::GetProcAddress(hExe, "EditorSetTimeOfDay"));
+        g_fnGetTimeOfDay = reinterpret_cast<FnEditorGetTimeOfDay>(::GetProcAddress(hExe, "EditorGetTimeOfDay"));
+        g_fnSetUpdateTimeOfDay = reinterpret_cast<FnEditorSetUpdateTimeOfDay>(::GetProcAddress(hExe, "EditorSetUpdateTimeOfDay"));
+        g_fnSetTimeOfDayMult = reinterpret_cast<FnEditorSetTimeOfDayMult>(::GetProcAddress(hExe, "EditorSetTimeOfDayMult"));
+        g_fnSetShowWeather = reinterpret_cast<FnEditorSetShowWeatherEffects>(::GetProcAddress(hExe, "EditorSetShowWeatherEffects"));
+        g_fnGetShowWeather = reinterpret_cast<FnEditorGetShowWeatherEffects>(::GetProcAddress(hExe, "EditorGetShowWeatherEffects"));
+    }
+    g_engine_funcs_inited.store(true, std::memory_order_relaxed);
+}
+
+void SetWeatherRainEnabled(bool enabled) {
+    g_weather_rain_enabled.store(enabled, std::memory_order_relaxed);
+    EnsureEngineWeatherTimeFuncs();
+    if (g_fnSetShowWeather) {
+        __try {
+            g_fnSetShowWeather(enabled);
+        } __except (EXCEPTION_EXECUTE_HANDLER) {}
+    }
+}
+
+bool IsWeatherRainEnabled() {
+    return g_weather_rain_enabled.load(std::memory_order_relaxed);
+}
+
+bool ToggleWeatherRainEnabled() {
+    const bool next = !IsWeatherRainEnabled();
+    SetWeatherRainEnabled(next);
+    return next;
+}
+
+void SetWeatherRainStrengthPct(int pct) {
+    g_weather_rain_strength_pct.store((std::clamp)(pct, 0, 200), std::memory_order_relaxed);
+}
+
+int GetWeatherRainStrengthPct() {
+    return (std::clamp)(g_weather_rain_strength_pct.load(std::memory_order_relaxed), 0, 200);
+}
+
+void SetTimeOfDayHours(int hours) {
+    g_time_of_day_hours.store(hours, std::memory_order_relaxed);
+    EnsureEngineWeatherTimeFuncs();
+    if (hours >= 0 && hours <= 24) {
+        if (g_fnSetTimeOfDay) {
+            __try {
+                g_fnSetTimeOfDay(static_cast<float>(hours));
+                if (g_fnSetUpdateTimeOfDay) {
+                    g_fnSetUpdateTimeOfDay(!g_time_of_day_locked.load(std::memory_order_relaxed));
+                }
+            } __except (EXCEPTION_EXECUTE_HANDLER) {}
+        }
+    } else {
+        // -1: Auto / follow natural time
+        if (g_fnSetUpdateTimeOfDay) {
+            __try {
+                g_fnSetUpdateTimeOfDay(true);
+            } __except (EXCEPTION_EXECUTE_HANDLER) {}
+        }
+    }
+}
+
+int GetTimeOfDayHours() {
+    const int val = g_time_of_day_hours.load(std::memory_order_relaxed);
+    if (val >= 0) {
+        return val;
+    }
+    EnsureEngineWeatherTimeFuncs();
+    if (g_fnGetTimeOfDay) {
+        __try {
+            const float t = g_fnGetTimeOfDay();
+            if (t >= 0.0f && t <= 24.0f) {
+                return static_cast<int>(std::lround(t));
+            }
+        } __except (EXCEPTION_EXECUTE_HANDLER) {}
+    }
+    return 12;
+}
+
+void SetTimeOfDayLocked(bool locked) {
+    g_time_of_day_locked.store(locked, std::memory_order_relaxed);
+    EnsureEngineWeatherTimeFuncs();
+    if (g_fnSetUpdateTimeOfDay) {
+        __try {
+            g_fnSetUpdateTimeOfDay(!locked);
+        } __except (EXCEPTION_EXECUTE_HANDLER) {}
+    }
+}
+
+bool IsTimeOfDayLocked() {
+    return g_time_of_day_locked.load(std::memory_order_relaxed);
+}
+
+bool ToggleTimeOfDayLocked() {
+    const bool next = !IsTimeOfDayLocked();
+    SetTimeOfDayLocked(next);
+    return next;
 }
 
 bool IsP2CustomCubeLutLoaded() {

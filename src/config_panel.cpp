@@ -25,7 +25,7 @@ namespace routeb {
 namespace {
 
 constexpr uint32_t kPanelWidth = 610;
-constexpr uint32_t kPanelHeight = 704;
+constexpr uint32_t kPanelHeight = 820;
 constexpr float kPanelMargin = 16.0f;
 constexpr int kTitleBarHeight = 42;
 constexpr int kPaddingX = 16;
@@ -37,6 +37,7 @@ constexpr int kSliderTrackRight = 540;
 constexpr int kSliderReadoutLeft = 544;
 constexpr int kSliderReadoutRight = 590;
 constexpr int kSliderMaxPct = 200;
+constexpr int kSliderTimeIndex = 100;
 
 enum class HitTargetKind {
     None = 0,
@@ -61,6 +62,13 @@ enum class HitTargetKind {
     LutTealOrange,
     LutColdNordic,
     LutCustomCube,
+    ToggleWeatherRain,
+    TimeAuto,
+    TimeDawn,
+    TimeNoon,
+    TimeDusk,
+    TimeMidnight,
+    SliderTime,
     BuiltinFullHd,
     BuiltinDarkDungeon,
     BuiltinVanilla,
@@ -95,6 +103,7 @@ enum class HitTargetKind {
     Slider7,
     Slider8,
     Slider9,
+    Slider10,
 };
 
 struct HitZone {
@@ -190,7 +199,7 @@ struct EffectSliderSpec {
     int (*get_fn)();
 };
 
-constexpr size_t kEffectSliderCount = 10;
+constexpr size_t kEffectSliderCount = 11;
 constexpr std::array<EffectSliderSpec, kEffectSliderCount> kSliderSpecs = {{
     {L"Phase3Strength", L"材质法线与边缘光", L"Surface Normals & Rim", &VisualConfig::phase3_strength, &SetPhase3StrengthPct, &GetPhase3StrengthPct},
     {L"AfPointStrength", L"动态点光增强", L"Dynamic Point Lights", &VisualConfig::af_point_strength, &SetF11PointLightStrengthPct, &GetF11PointLightStrengthPct},
@@ -202,6 +211,7 @@ constexpr std::array<EffectSliderSpec, kEffectSliderCount> kSliderSpecs = {{
     {L"P2SsrStrength", L"水面反射 (SSR)", L"Water Reflections (SSR)", &VisualConfig::p2_ssr_strength, &SetP2SsrStrengthPct, &GetP2SsrStrengthPct},
     {L"P2FilterStrength", L"画面风格滤镜", L"Style Filter", &VisualConfig::p2_filter_strength, &SetP2FilterStrengthPct, &GetP2FilterStrengthPct},
     {L"P2LutStrength", L"3D LUT 电影调色", L"3D LUT Grading", &VisualConfig::p2_lut_strength, &SetP2LutStrengthPct, &GetP2LutStrengthPct},
+    {L"WeatherRainStrength", L"雨天湿地反射", L"Rain & Wet Ground", &VisualConfig::weather_rain_strength, &SetWeatherRainStrengthPct, &GetWeatherRainStrengthPct},
 }};
 
 int PctFromTrackX(int local_x) {
@@ -209,6 +219,13 @@ int PctFromTrackX(int local_x) {
     const float norm = (std::clamp)(static_cast<float>(local_x - kSliderTrackLeft) / span, 0.0f, 1.0f);
     const int step5 = static_cast<int>(std::lround(norm * 40.0f)) * 5;
     return ClampStrengthPct(step5);
+}
+
+int HourFromTrackX(int local_x) {
+    const float span = static_cast<float>(kSliderTrackRight - kSliderTrackLeft);
+    const float norm = (std::clamp)(static_cast<float>(local_x - kSliderTrackLeft) / span, 0.0f, 1.0f);
+    const int hour = static_cast<int>(std::lround(norm * 24.0f));
+    return (std::clamp)(hour, 0, 24);
 }
 
 void ApplyEffectStrengthByIndex(int slider_idx, int pct) {
@@ -269,6 +286,9 @@ void SaveVisualConfigToSection(const wchar_t* section, const VisualConfig& cfg, 
     WriteIniInt(section, L"P2SsrEnabled", cfg.p2_ssr_enabled ? 1 : 0, path);
     WriteIniInt(section, L"P2FilterPreset", ClampFilterPreset(cfg.p2_filter_preset), path);
     WriteIniInt(section, L"P2LutPreset", ClampLutPreset(cfg.p2_lut_preset), path);
+    WriteIniInt(section, L"WeatherRainEnabled", cfg.weather_rain_enabled ? 1 : 0, path);
+    WriteIniInt(section, L"TimeOfDayHours", cfg.time_of_day_hours, path);
+    WriteIniInt(section, L"TimeOfDayLocked", cfg.time_of_day_locked ? 1 : 0, path);
     for (const auto& spec : kSliderSpecs) {
         WriteIniInt(section, spec.ini_key, ClampStrengthPct(cfg.*(spec.member)), path);
     }
@@ -291,6 +311,9 @@ VisualConfig LoadVisualConfigFromSection(
         ReadIniInt(section, L"P2FilterPreset", fallback.p2_filter_preset, path));
     out.p2_lut_preset = ClampLutPreset(
         ReadIniInt(section, L"P2LutPreset", fallback.p2_lut_preset, path));
+    out.weather_rain_enabled = ReadIniInt(section, L"WeatherRainEnabled", fallback.weather_rain_enabled ? 1 : 0, path) != 0;
+    out.time_of_day_hours = ReadIniInt(section, L"TimeOfDayHours", fallback.time_of_day_hours, path);
+    out.time_of_day_locked = ReadIniInt(section, L"TimeOfDayLocked", fallback.time_of_day_locked ? 1 : 0, path) != 0;
     for (const auto& spec : kSliderSpecs) {
         out.*(spec.member) = ClampStrengthPct(
             ReadIniInt(section, spec.ini_key, ClampStrengthPct(fallback.*(spec.member)), path));
@@ -344,7 +367,7 @@ std::wstring FormatPresetSummary(const VisualConfig& cfg, bool english) {
     return buf;
 }
 
-constexpr size_t kHitZoneCount = 55;
+constexpr size_t kHitZoneCount = 63;
 
 std::array<HitZone, kHitZoneCount> BuildHitZones() {
     std::array<HitZone, kHitZoneCount> zones{};
@@ -437,8 +460,41 @@ std::array<HitZone, kHitZoneCount> BuildHitZones() {
                         kLuts[i].kind, kLuts[i].label_zh, kLuts[i].label_en};
     }
 
-    // Built-in presets
-    y = 456;
+    // Section 4: Weather & Time of Day
+    // Row 1: Rain toggle + Slider 10
+    zones[idx++] = {RECT{kPaddingX, 456, kSliderZoneLeft - 4, 456 + 27},
+                    HitTargetKind::ToggleWeatherRain,
+                    L"雨天湿地倒影 (地面动态水坑与波纹)",
+                    L"Rain & Wet Ground (Puddles & Ripples)"};
+    zones[idx++] = {RECT{kSliderZoneLeft, 456, kSliderZoneRight, 456 + 27},
+                    HitTargetKind::Slider10, L"", L""};
+
+    // Row 2: Time of Day Slider
+    zones[idx++] = {RECT{kSliderZoneLeft, 488, kSliderZoneRight, 488 + 27},
+                    HitTargetKind::SliderTime, L"", L""};
+
+    // Row 3: 5 Time Pills (Auto, 06h, 12h, 18h, 24h)
+    const int time_pill_w = 110;
+    const int time_pill_gap = 7;
+    const struct {
+        HitTargetKind kind;
+        const wchar_t* label_zh;
+        const wchar_t* label_en;
+    } kTimePills[5] = {
+        {HitTargetKind::TimeAuto, L"自然昼夜", L"Auto Time"},
+        {HitTargetKind::TimeDawn, L"清晨 06:00", L"Dawn 06:00"},
+        {HitTargetKind::TimeNoon, L"正午 12:00", L"Noon 12:00"},
+        {HitTargetKind::TimeDusk, L"黄昏 18:00", L"Dusk 18:00"},
+        {HitTargetKind::TimeMidnight, L"午夜 24:00", L"Midnight 24:00"},
+    };
+    for (int i = 0; i < 5; ++i) {
+        const int px = kPaddingX + i * (time_pill_w + time_pill_gap);
+        zones[idx++] = {RECT{px, 520, px + time_pill_w, 520 + 26},
+                        kTimePills[i].kind, kTimePills[i].label_zh, kTimePills[i].label_en};
+    }
+
+    // Section 5: Built-in presets
+    y = 578;
     zones[idx++] = {RECT{kPaddingX, y, kPaddingX + pill_w, y + 28},
                     HitTargetKind::BuiltinFullHd, L"全开高清", L"Full HD+"};
     zones[idx++] = {RECT{kPaddingX + (pill_w + pill_gap), y,
@@ -448,8 +504,8 @@ std::array<HitZone, kHitZoneCount> BuildHitZones() {
                          kPaddingX + 2 * (pill_w + pill_gap) + pill_w, y + 28},
                     HitTargetKind::BuiltinVanilla, L"纯原版", L"Vanilla"};
 
-    // 10 Custom preset slots (2 columns x 5 rows, Load + Save)
-    const int base_y = 516;
+    // Section 6: 10 Custom preset slots (2 columns x 5 rows, Load + Save)
+    const int base_y = 636;
     const int col_w = 284;
     const int col_gap = 10;
     const int save_w = 46;
@@ -710,6 +766,65 @@ void DrawIntensitySlider(
     DrawTextBox(dc, g_panel.font_small, txt_col, read_r, pct_buf, DT_RIGHT | DT_VCENTER);
 }
 
+void DrawTimeSlider(
+    HDC dc,
+    const RECT& zone_rect,
+    int hours,
+    bool locked,
+    bool hovered,
+    bool dragging) {
+    const int effective_hour = (hours >= 0) ? hours : GetTimeOfDayHours();
+    const int clamped_hour = (std::clamp)(effective_hour, 0, 24);
+    const int cy = (zone_rect.top + zone_rect.bottom) / 2;
+    const float t = static_cast<float>(clamped_hour) / 24.0f;
+    const int knob_x = kSliderTrackLeft +
+                       static_cast<int>(std::lround(t * static_cast<float>(kSliderTrackRight - kSliderTrackLeft)));
+
+    // Track groove
+    const RECT track_r{kSliderTrackLeft, cy - 3, kSliderTrackRight, cy + 3};
+    DrawBorderRect(dc, track_r, RGB(16, 20, 30),
+                   (hovered || dragging) ? RGB(92, 146, 212) : RGB(46, 56, 76), 4);
+
+    // 06:00, 12:00, 18:00 ticks
+    HPEN tick_pen = ::CreatePen(PS_SOLID, 1, RGB(84, 98, 124));
+    HGDIOBJ old_pen = ::SelectObject(dc, tick_pen);
+    const int span = kSliderTrackRight - kSliderTrackLeft;
+    const int dawn_x = kSliderTrackLeft + span / 4;
+    const int noon_x = kSliderTrackLeft + span / 2;
+    const int dusk_x = kSliderTrackLeft + (span * 3) / 4;
+    ::MoveToEx(dc, dawn_x, cy - 4, nullptr); ::LineTo(dc, dawn_x, cy + 5);
+    ::MoveToEx(dc, noon_x, cy - 6, nullptr); ::LineTo(dc, noon_x, cy + 7);
+    ::MoveToEx(dc, dusk_x, cy - 4, nullptr); ::LineTo(dc, dusk_x, cy + 5);
+    ::SelectObject(dc, old_pen);
+    ::DeleteObject(tick_pen);
+
+    // Filled active bar
+    if (knob_x > kSliderTrackLeft + 1) {
+        const COLORREF fill_col = locked ? RGB(236, 168, 72) : RGB(86, 112, 144);
+        const RECT fill_r{kSliderTrackLeft + 1, cy - 2, knob_x, cy + 2};
+        FillSolidRect(dc, fill_r, fill_col);
+    }
+
+    // Thumb knob
+    const RECT knob_r{knob_x - 4, cy - 7, knob_x + 4, cy + 7};
+    const COLORREF knob_fill = dragging ? RGB(255, 250, 230)
+                                        : (hovered ? RGB(255, 228, 170)
+                                                   : (locked ? RGB(248, 198, 110) : RGB(148, 162, 182)));
+    const COLORREF knob_border = (dragging || hovered) ? RGB(255, 214, 114) : RGB(64, 82, 110);
+    DrawBorderRect(dc, knob_r, knob_fill, knob_border, 4);
+
+    // Numeric hour readout
+    wchar_t time_buf[16] = {};
+    if (locked && hours >= 0) {
+        swprintf_s(time_buf, L"%02d:00", clamped_hour);
+    } else {
+        swprintf_s(time_buf, PickLang(L"自然(%02d)", L"Auto(%02d)"), clamped_hour);
+    }
+    const COLORREF txt_col = locked ? RGB(248, 204, 118) : RGB(164, 184, 212);
+    const RECT read_r{kSliderReadoutLeft, zone_rect.top, kSliderReadoutRight, zone_rect.bottom};
+    DrawTextBox(dc, g_panel.font_small, txt_col, read_r, time_buf, DT_RIGHT | DT_VCENTER);
+}
+
 void PaintPanelToDibLocked() {
     if (!EnsureGdiSurfaceLocked()) {
         return;
@@ -917,8 +1032,117 @@ void PaintPanelToDibLocked() {
                     r, ZoneLabel(zones[z_idx]), DT_CENTER | DT_VCENTER);
     }
 
-    // Section 4: Built-in presets
-    DrawSectionHeader(dc, 434, PickLang(L"内置预设 (一键切换)", L"Built-in Presets (One-Click)"));
+    // Section 4: Weather & Time of Day
+    DrawSectionHeader(dc, 434, PickLang(L"天气与游戏环境时间", L"Weather & In-Game Time of Day"));
+
+    // Row 1: Rain toggle + Slider 10
+    {
+        const size_t z_idx = ZoneIndexByKind(HitTargetKind::ToggleWeatherRain);
+        const size_t s_idx = ZoneIndexByKind(HitTargetKind::Slider10);
+        const RECT& tog_r = zones[z_idx].rect;
+        const RECT& sld_r = zones[s_idx].rect;
+        const RECT row_r{tog_r.left, tog_r.top, sld_r.right, tog_r.bottom};
+        const bool tog_hover = (g_panel.hover_index == static_cast<int>(z_idx));
+        const bool sld_hover = (g_panel.hover_index == static_cast<int>(s_idx));
+        const bool sld_drag = (g_panel.active_slider_index == 10);
+        const bool rain_on = cfg.weather_rain_enabled;
+
+        const COLORREF row_fill = (tog_hover || sld_hover || sld_drag) ? RGB(32, 41, 58) : RGB(24, 30, 42);
+        const COLORREF row_border = (tog_hover || sld_hover || sld_drag) ? RGB(92, 152, 226)
+                                                                         : (rain_on ? RGB(48, 86, 118) : RGB(42, 49, 64));
+        DrawBorderRect(dc, row_r, row_fill, row_border, 6);
+
+        // Checkbox square
+        const RECT box{tog_r.left + 8, tog_r.top + 5, tog_r.left + 25, tog_r.top + 22};
+        DrawBorderRect(dc, box,
+                       rain_on ? RGB(42, 168, 116) : RGB(20, 24, 34),
+                       rain_on ? RGB(105, 232, 178) : RGB(96, 110, 136), 4);
+        if (rain_on) {
+            DrawTextBox(dc, g_panel.font_section, RGB(245, 255, 250), box, L"✓", DT_CENTER | DT_VCENTER);
+        }
+
+        // Label + status tag
+        RECT text_r{tog_r.left + 32, tog_r.top, tog_r.right - 38, tog_r.bottom};
+        DrawTextBox(dc, g_panel.font_body,
+                    rain_on ? RGB(232, 240, 250) : RGB(148, 158, 176),
+                    text_r, ZoneLabel(zones[z_idx]), DT_LEFT | DT_VCENTER);
+
+        RECT tag_r{tog_r.right - 38, tog_r.top, tog_r.right - 4, tog_r.bottom};
+        DrawTextBox(dc, g_panel.font_small,
+                    rain_on ? RGB(102, 232, 170) : RGB(128, 134, 150),
+                    tag_r, rain_on ? PickLang(L"开启", L"ON") : PickLang(L"关闭", L"OFF"),
+                    DT_RIGHT | DT_VCENTER);
+
+        // Interactive rain strength slider
+        DrawIntensitySlider(dc, sld_r, cfg.weather_rain_strength, rain_on, sld_hover, sld_drag);
+    }
+
+    // Row 2: Time of Day Label + Time Slider
+    {
+        const size_t time_s_idx = ZoneIndexByKind(HitTargetKind::SliderTime);
+        const RECT label_r{kPaddingX, 488, kSliderZoneLeft - 4, 488 + 27};
+        const bool sld_hover = (g_panel.hover_index == static_cast<int>(time_s_idx));
+        const bool sld_drag = (g_panel.active_slider_index == kSliderTimeIndex);
+        const bool locked = cfg.time_of_day_locked && (cfg.time_of_day_hours >= 0);
+
+        const COLORREF row_fill = (sld_hover || sld_drag) ? RGB(32, 41, 58) : RGB(24, 30, 42);
+        const COLORREF row_border = (sld_hover || sld_drag) ? RGB(92, 152, 226)
+                                                            : (locked ? RGB(144, 108, 48) : RGB(42, 49, 64));
+        const RECT row_r{kPaddingX, 488, kSliderZoneRight, 488 + 27};
+        DrawBorderRect(dc, row_r, row_fill, row_border, 6);
+
+        RECT text_r{label_r.left + 12, label_r.top, label_r.right - 10, label_r.bottom};
+        DrawTextBox(dc, g_panel.font_body,
+                    locked ? RGB(248, 220, 160) : RGB(196, 208, 226),
+                    text_r,
+                    PickLang(L"昼夜环境时间 (拖动滑块锁定 / 右键恢复自然)",
+                             L"Time of Day (Drag to lock / Right-Click Auto)"),
+                    DT_LEFT | DT_VCENTER);
+
+        DrawTimeSlider(dc, zones[time_s_idx].rect, cfg.time_of_day_hours, locked, sld_hover, sld_drag);
+    }
+
+    // Row 3: 5 Time Pills
+    {
+        const int effective_hour = (cfg.time_of_day_hours >= 0) ? cfg.time_of_day_hours : GetTimeOfDayHours();
+        const struct {
+            HitTargetKind kind;
+        } kTimePills[5] = {
+            {HitTargetKind::TimeAuto},
+            {HitTargetKind::TimeDawn},
+            {HitTargetKind::TimeNoon},
+            {HitTargetKind::TimeDusk},
+            {HitTargetKind::TimeMidnight},
+        };
+        for (int i = 0; i < 5; ++i) {
+            const size_t z_idx = ZoneIndexByKind(kTimePills[i].kind);
+            const RECT& r = zones[z_idx].rect;
+            bool active = false;
+            if (i == 0) {
+                active = !cfg.time_of_day_locked || (cfg.time_of_day_hours < 0);
+            } else if (i == 1) {
+                active = cfg.time_of_day_locked && (std::abs(effective_hour - 6) <= 1);
+            } else if (i == 2) {
+                active = cfg.time_of_day_locked && (std::abs(effective_hour - 12) <= 1);
+            } else if (i == 3) {
+                active = cfg.time_of_day_locked && (std::abs(effective_hour - 18) <= 1);
+            } else if (i == 4) {
+                active = cfg.time_of_day_locked && (effective_hour >= 23 || effective_hour <= 1);
+            }
+            const bool hovered = (g_panel.hover_index == static_cast<int>(z_idx));
+            const COLORREF fill = active ? RGB(144, 98, 38)
+                                         : (hovered ? RGB(38, 48, 68) : RGB(26, 32, 46));
+            const COLORREF border = active ? RGB(246, 184, 98)
+                                           : (hovered ? RGB(172, 140, 92) : RGB(52, 62, 82));
+            DrawBorderRect(dc, r, fill, border, 5);
+            DrawTextBox(dc, active ? g_panel.font_section : g_panel.font_small,
+                        active ? RGB(255, 248, 236) : RGB(196, 206, 224),
+                        r, ZoneLabel(zones[z_idx]), DT_CENTER | DT_VCENTER);
+        }
+    }
+
+    // Section 5: Built-in presets
+    DrawSectionHeader(dc, 556, PickLang(L"内置预设 (一键切换)", L"Built-in Presets (One-Click)"));
     for (int i = 0; i < 3; ++i) {
         const size_t z_idx = ZoneIndexByKind(
             static_cast<HitTargetKind>(static_cast<int>(HitTargetKind::BuiltinFullHd) + i));
@@ -935,8 +1159,8 @@ void PaintPanelToDibLocked() {
                     r, ZoneLabel(zones[z_idx]), DT_CENTER | DT_VCENTER);
     }
 
-    // Section 5: 10 Custom Presets (2 columns x 5 rows)
-    DrawSectionHeader(dc, 492,
+    // Section 6: 10 Custom Presets (2 columns x 5 rows)
+    DrawSectionHeader(dc, 614,
                       PickLang(L"自定义预设 (10个槽位 · 点击名称切换 / 点 [保存] 覆盖)",
                                L"Custom Presets (10 Slots · Click Slot to Load / [Save])"));
     for (int i = 0; i < kCustomPresetCount; ++i) {
@@ -1203,6 +1427,58 @@ void HandleHitClickLocked(int hit_idx) {
                                          L"Not found: Rename 3D .cube to TL2_CustomLUT.cube in game root");
             }
             break;
+        case HitTargetKind::ToggleWeatherRain: {
+            const bool next = ToggleWeatherRainEnabled();
+            g_panel.active_custom_slot = -1;
+            if (next) {
+                SetStatusBilingualLocked(L"已开启: 雨天湿地倒影 (地面动态水坑与波纹)",
+                                         L"Enabled: Rain & Wet Ground Reflections (Puddles)");
+            } else {
+                SetStatusBilingualLocked(L"已关闭: 雨天湿地倒影",
+                                         L"Disabled: Rain & Wet Ground Reflections");
+            }
+            break;
+        }
+        case HitTargetKind::TimeAuto: {
+            SetTimeOfDayLocked(false);
+            SetTimeOfDayHours(-1);
+            g_panel.active_custom_slot = -1;
+            SetStatusBilingualLocked(L"游戏时间已恢复为: 自然昼夜循环",
+                                     L"Time of day restored to: Auto day/night cycle");
+            break;
+        }
+        case HitTargetKind::TimeDawn: {
+            SetTimeOfDayHours(6);
+            SetTimeOfDayLocked(true);
+            g_panel.active_custom_slot = -1;
+            SetStatusBilingualLocked(L"游戏时间已设定为: 清晨黎明 (06:00)",
+                                     L"Game time set to: Dawn (06:00)");
+            break;
+        }
+        case HitTargetKind::TimeNoon: {
+            SetTimeOfDayHours(12);
+            SetTimeOfDayLocked(true);
+            g_panel.active_custom_slot = -1;
+            SetStatusBilingualLocked(L"游戏时间已设定为: 正午日光 (12:00)",
+                                     L"Game time set to: Noon (12:00)");
+            break;
+        }
+        case HitTargetKind::TimeDusk: {
+            SetTimeOfDayHours(18);
+            SetTimeOfDayLocked(true);
+            g_panel.active_custom_slot = -1;
+            SetStatusBilingualLocked(L"游戏时间已设定为: 傍晚黄昏 (18:00)",
+                                     L"Game time set to: Dusk (18:00)");
+            break;
+        }
+        case HitTargetKind::TimeMidnight: {
+            SetTimeOfDayHours(24);
+            SetTimeOfDayLocked(true);
+            g_panel.active_custom_slot = -1;
+            SetStatusBilingualLocked(L"游戏时间已设定为: 深夜午夜 (24:00)",
+                                     L"Game time set to: Midnight (24:00)");
+            break;
+        }
         case HitTargetKind::BuiltinFullHd:
             ApplyVisualConfigToEngine(MakeBuiltinPreset(0));
             g_panel.active_custom_slot = -1;
@@ -1384,14 +1660,39 @@ LRESULT CALLBACK PanelHookWndProc(
                     swallow = true;
                 } else if (g_panel.active_slider_index >= 0 && msg == WM_MOUSEMOVE) {
                     const int local_x = static_cast<int>(rt_x - g_panel.pos_x);
-                    ApplyEffectStrengthByIndex(g_panel.active_slider_index, PctFromTrackX(local_x));
+                    if (g_panel.active_slider_index == kSliderTimeIndex) {
+                        const int h = HourFromTrackX(local_x);
+                        SetTimeOfDayHours(h);
+                        SetTimeOfDayLocked(true);
+                        g_panel.active_custom_slot = -1;
+                        wchar_t msg_zh[64] = {};
+                        wchar_t msg_en[64] = {};
+                        swprintf_s(msg_zh, L"游戏时间已调节至: %02d:00 (昼夜锁定)", h);
+                        swprintf_s(msg_en, L"Game time set to: %02d:00 (Locked)", h);
+                        SetStatusBilingualLocked(msg_zh, msg_en);
+                        g_panel.dirty = true;
+                    } else {
+                        ApplyEffectStrengthByIndex(g_panel.active_slider_index, PctFromTrackX(local_x));
+                    }
                     g_panel.cursor_panel.x = static_cast<LONG>(rt_x);
                     g_panel.cursor_panel.y = static_cast<LONG>(rt_y);
                     g_panel.cursor_inside = true;
                     swallow = true;
                 } else if (g_panel.active_slider_index >= 0 && msg == WM_LBUTTONUP) {
                     const int local_x = static_cast<int>(rt_x - g_panel.pos_x);
-                    ApplyEffectStrengthByIndex(g_panel.active_slider_index, PctFromTrackX(local_x));
+                    if (g_panel.active_slider_index == kSliderTimeIndex) {
+                        const int h = HourFromTrackX(local_x);
+                        SetTimeOfDayHours(h);
+                        SetTimeOfDayLocked(true);
+                        g_panel.active_custom_slot = -1;
+                        wchar_t msg_zh[64] = {};
+                        wchar_t msg_en[64] = {};
+                        swprintf_s(msg_zh, L"游戏时间已锁定为: %02d:00", h);
+                        swprintf_s(msg_en, L"Game time locked at: %02d:00", h);
+                        SetStatusBilingualLocked(msg_zh, msg_en);
+                    } else {
+                        ApplyEffectStrengthByIndex(g_panel.active_slider_index, PctFromTrackX(local_x));
+                    }
                     g_panel.active_slider_index = -1;
                     need_release_capture = (::GetCapture() == hwnd);
                     SaveConfigFileLocked(nullptr);
@@ -1423,12 +1724,27 @@ LRESULT CALLBACK PanelHookWndProc(
                                 g_panel.drag_offset_x = local_x;
                                 g_panel.drag_offset_y = local_y;
                                 need_set_capture = true;
-                            } else if (kind >= HitTargetKind::Slider0 && kind <= HitTargetKind::Slider9) {
+                            } else if (kind >= HitTargetKind::Slider0 && kind <= HitTargetKind::Slider10) {
                                 if (local_x <= kSliderTrackRight + 8) {
                                     const int s_idx = static_cast<int>(kind) - static_cast<int>(HitTargetKind::Slider0);
                                     g_panel.active_slider_index = s_idx;
                                     need_set_capture = true;
                                     ApplyEffectStrengthByIndex(s_idx, PctFromTrackX(local_x));
+                                }
+                            } else if (kind == HitTargetKind::SliderTime) {
+                                if (local_x <= kSliderTrackRight + 8) {
+                                    g_panel.active_slider_index = kSliderTimeIndex;
+                                    need_set_capture = true;
+                                    const int h = HourFromTrackX(local_x);
+                                    SetTimeOfDayHours(h);
+                                    SetTimeOfDayLocked(true);
+                                    g_panel.active_custom_slot = -1;
+                                    wchar_t msg_zh[64] = {};
+                                    wchar_t msg_en[64] = {};
+                                    swprintf_s(msg_zh, L"游戏时间已调节至: %02d:00 (昼夜锁定)", h);
+                                    swprintf_s(msg_en, L"Game time set to: %02d:00 (Locked)", h);
+                                    SetStatusBilingualLocked(msg_zh, msg_en);
+                                    g_panel.dirty = true;
                                 }
                             } else {
                                 HandleHitClickLocked(new_hover);
@@ -1439,19 +1755,29 @@ LRESULT CALLBACK PanelHookWndProc(
                         } else if (msg == WM_RBUTTONDOWN && new_hover >= 0) {
                             const HitTargetKind kind =
                                 GetHitZones()[static_cast<size_t>(new_hover)].kind;
-                            if (kind >= HitTargetKind::Slider0 && kind <= HitTargetKind::Slider9) {
+                            if (kind >= HitTargetKind::Slider0 && kind <= HitTargetKind::Slider10) {
                                 const int s_idx = static_cast<int>(kind) - static_cast<int>(HitTargetKind::Slider0);
                                 ApplyEffectStrengthByIndex(s_idx, 100);
+                                SaveConfigFileLocked(nullptr);
+                            } else if (kind == HitTargetKind::SliderTime) {
+                                SetTimeOfDayLocked(false);
+                                SetTimeOfDayHours(-1);
+                                g_panel.active_custom_slot = -1;
+                                SetStatusBilingualLocked(L"游戏时间已恢复为: 自然昼夜循环",
+                                                         L"Game time restored to: Auto day/night cycle");
+                                g_panel.dirty = true;
                                 SaveConfigFileLocked(nullptr);
                             }
                         } else if (msg == WM_MOUSEWHEEL && new_hover >= 0) {
                             const HitTargetKind kind =
                                 GetHitZones()[static_cast<size_t>(new_hover)].kind;
                             int s_idx = -1;
-                            if (kind >= HitTargetKind::Slider0 && kind <= HitTargetKind::Slider9) {
+                            if (kind >= HitTargetKind::Slider0 && kind <= HitTargetKind::Slider10) {
                                 s_idx = static_cast<int>(kind) - static_cast<int>(HitTargetKind::Slider0);
                             } else if (kind >= HitTargetKind::TogglePhase3 && kind <= HitTargetKind::ToggleP2Ssr) {
                                 s_idx = static_cast<int>(kind) - static_cast<int>(HitTargetKind::TogglePhase3);
+                            } else if (kind == HitTargetKind::ToggleWeatherRain) {
+                                s_idx = 10;
                             } else if (kind >= HitTargetKind::FilterOff && kind <= HitTargetKind::FilterDark) {
                                 s_idx = 8;
                             } else if (kind >= HitTargetKind::LutOff && kind <= HitTargetKind::LutCustomCube) {
@@ -1462,6 +1788,21 @@ LRESULT CALLBACK PanelHookWndProc(
                                 const int step = ((GET_KEYSTATE_WPARAM(wParam) & MK_SHIFT) ? 10 : 5) *
                                                  ((wheel_delta > 0) ? 1 : -1);
                                 ApplyEffectStrengthByIndex(s_idx, GetEffectStrengthByIndex(s_idx) + step);
+                                SaveConfigFileLocked(nullptr);
+                            } else if (kind == HitTargetKind::SliderTime && wheel_delta != 0) {
+                                int cur = GetTimeOfDayHours();
+                                if (cur < 0) cur = 12;
+                                int next_h = cur + (wheel_delta > 0 ? 1 : -1);
+                                next_h = (next_h % 24 + 24) % 24;
+                                SetTimeOfDayHours(next_h);
+                                SetTimeOfDayLocked(true);
+                                g_panel.active_custom_slot = -1;
+                                wchar_t msg_zh[64] = {};
+                                wchar_t msg_en[64] = {};
+                                swprintf_s(msg_zh, L"游戏时间已调节至: %02d:00 (昼夜锁定)", next_h);
+                                swprintf_s(msg_en, L"Game time set to: %02d:00 (Locked)", next_h);
+                                SetStatusBilingualLocked(msg_zh, msg_en);
+                                g_panel.dirty = true;
                                 SaveConfigFileLocked(nullptr);
                             }
                         }
@@ -1501,6 +1842,10 @@ VisualConfig CaptureVisualConfigFromEngine() {
     cfg.p2_ssr_enabled = IsP2SsrEnabled();
     cfg.p2_filter_preset = ClampFilterPreset(GetP2FilterPreset());
     cfg.p2_lut_preset = ClampLutPreset(GetP2LutPreset());
+    cfg.weather_rain_enabled = IsWeatherRainEnabled();
+    cfg.weather_rain_strength = GetWeatherRainStrengthPct();
+    cfg.time_of_day_locked = IsTimeOfDayLocked();
+    cfg.time_of_day_hours = cfg.time_of_day_locked ? GetTimeOfDayHours() : -1;
     for (const auto& spec : kSliderSpecs) {
         cfg.*(spec.member) = ClampStrengthPct(spec.get_fn());
     }
@@ -1518,6 +1863,15 @@ void ApplyVisualConfigToEngine(const VisualConfig& cfg) {
     SetP2SsrEnabled(cfg.p2_ssr_enabled);
     SetP2FilterPreset(ClampFilterPreset(cfg.p2_filter_preset));
     SetP2LutPreset(ClampLutPreset(cfg.p2_lut_preset));
+    SetWeatherRainEnabled(cfg.weather_rain_enabled);
+    SetWeatherRainStrengthPct(cfg.weather_rain_strength);
+    if (cfg.time_of_day_locked && cfg.time_of_day_hours >= 0) {
+        SetTimeOfDayHours(cfg.time_of_day_hours);
+        SetTimeOfDayLocked(true);
+    } else {
+        SetTimeOfDayLocked(false);
+        SetTimeOfDayHours(-1);
+    }
     for (const auto& spec : kSliderSpecs) {
         spec.set_fn(ClampStrengthPct(cfg.*(spec.member)));
     }

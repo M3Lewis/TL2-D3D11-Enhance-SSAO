@@ -51,6 +51,8 @@ struct RouteCAoRenderRequest {
     float sscs_strength_scale = 1.0f;
     float aerial_strength_scale = 1.0f;
     float ssr_strength_scale = 1.0f;
+    float rain_strength = 0.0f;
+    float time_of_day = -1.0f;
     float sscs_key_dir[2] = {0.42f, -0.907f};
     bool has_sscs_key_dir = false;
     int map_fog_mode = 0;  // Ogre::FogMode: 0=NONE, 1=EXP, 2=EXP2, 3=LINEAR
@@ -95,6 +97,8 @@ struct RouteCPostWorldRequest {
     bool water_hint = false;
     int filter_preset = 1;  // 0=OFF, 1=HOB, 2=DRK
     float ssr_strength_scale = 1.0f;
+    float rain_strength = 0.0f;
+    float time_of_day = -1.0f;
     float lut_strength_scale = 1.0f;
 };
 bool ExecuteRouteCPostWorldPass(const RouteCPostWorldRequest& req, RouteCD3DLogFn logger);

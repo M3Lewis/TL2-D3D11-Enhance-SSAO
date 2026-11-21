@@ -55,6 +55,18 @@ int GetP2SsrStrengthPct();
 void SetP2LutStrengthPct(int pct);
 int GetP2LutStrengthPct();
 
+void SetWeatherRainEnabled(bool enabled);
+bool IsWeatherRainEnabled();
+bool ToggleWeatherRainEnabled();
+void SetWeatherRainStrengthPct(int pct);
+int GetWeatherRainStrengthPct();
+
+void SetTimeOfDayHours(int hours); // -1 = Auto/Follow Engine, 0..24
+int GetTimeOfDayHours();
+void SetTimeOfDayLocked(bool locked);
+bool IsTimeOfDayLocked();
+bool ToggleTimeOfDayLocked();
+
 bool IsP2CustomCubeLutLoaded();
 bool IsRouteCWorldDepthReadyForParticles();
 void TriggerRouteCToastForTest();

@@ -26,6 +26,10 @@ struct VisualConfig {
     bool p2_ssr_enabled = true;
     int p2_filter_preset = 1;  // 0=Off, 1=Hob, 2=Dark Film
     int p2_lut_preset = 0;     // 0=Off, 1=CinemaTealOrange, 2=ColdNordic, 3=CustomCube
+    bool weather_rain_enabled = false;
+    int weather_rain_strength = 100; // 0..200 (%)
+    int time_of_day_hours = -1;      // -1=Auto, 0..24
+    bool time_of_day_locked = false;
 
     int phase3_strength = 100;       // 0..200 (%)
     int af_point_strength = 100;     // 0..200 (%)

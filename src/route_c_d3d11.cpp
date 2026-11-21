@@ -647,16 +647,24 @@ float4 PS_WetFloorSsr(VsOut input) : SV_Target0
     }
 
     float3 baseCol = gAoInputTex.Load(int3(pix, 0)).rgb;
-    float waterColorBand = max(baseCol.b, baseCol.g * 0.55f + baseCol.b * 0.45f) - baseCol.r;
-    // 略微收紧蓝红差门禁 (0.020 -> 0.038)，减少干石板冷色阴影被误判为水面
-    float isBlueOrTeal = (baseCol.b > baseCol.r + 0.038f && baseCol.b >= baseCol.g * 0.76f)
-        ? saturate((waterColorBand + 0.005f) * 4.2f) : 0.0f;
-    float waterMask = smoothstep(0.18f, 0.56f, isBlueOrTeal);
-    if (waterMask <= 0.02f)
-    {
-        return float4(0.0f, 0.0f, 0.0f, 0.0f);
-    }
+    float baseLuma = dot(baseCol, float3(0.299f, 0.587f, 0.114f));
+    float maxCh = max(max(baseCol.r, baseCol.g), baseCol.b);
+
     float hasWaterHint = (gViewUpAndWater.w > 0.5f) ? 1.0f : 0.0f;
+    float gTime = gAerialFogParams.x;
+    float rainStrength = saturate(gAerialFogParams.y);
+    float timeHours = gAerialFogParams.z;
+
+    // 1. 亮度自适应归一化相对色度（彻底解决夜晚因环境暗淡、蓝红绝对差收窄而被当场误杀的问题）
+    // 白天 maxCh ~0.3，夜晚 maxCh ~0.025。归一化使得夜晚水面同样能够清晰识别蓝青色相
+    float normFactor = rcp(max(maxCh, 0.042f));
+    float relBlueDiff = (baseCol.b - baseCol.r) * normFactor;
+    float relTealBand = (max(baseCol.b, baseCol.g * 0.60f + baseCol.b * 0.40f) - baseCol.r) * normFactor;
+
+    float minRelDiff = (hasWaterHint > 0.5f) ? 0.08f : 0.15f;
+    float isBlueOrTeal = (relBlueDiff > minRelDiff && baseCol.b >= baseCol.g * 0.72f)
+        ? saturate((relTealBand - minRelDiff * 0.5f) * 3.6f) : 0.0f;
+    float waterMask = smoothstep(0.12f, 0.50f, isBlueOrTeal);
 
     float3 N = ReconstructNormalVS(pix, P);
     float3 upVS = normalize(gViewUpAndWater.xyz);
@@ -681,8 +689,26 @@ float4 PS_WetFloorSsr(VsOut input) : SV_Target0
 
     float wx = dot(P, gInvViewRow0.xyz) + gInvViewRow0.w;
     float wz = dot(P, gInvViewRow2.xyz) + gInvViewRow2.w;
+
+    // 2. 雨天地面湿润与自然积水洼模拟 (Rain & Wet Ground SSR Simulation)
+    float wetGroundMask = 0.0f;
+    if (rainStrength > 0.02f)
+    {
+        // 世界坐标程序化积水洼掩码（平坦地面的低凹处自然汇聚反光积水，凸起处微湿润）
+        float pNoise = sin(wx * 0.82f + sin(wz * 0.68f) * 1.3f) *
+                       cos(wz * 0.92f + cos(wx * 0.78f) * 1.2f);
+        float puddle = smoothstep(0.18f - rainStrength * 0.38f, 0.68f - rainStrength * 0.22f, pNoise);
+        wetGroundMask = saturate(puddle * rainStrength * 1.15f);
+    }
+
+    float effectiveWaterMask = max(waterMask, wetGroundMask);
+    if (effectiveWaterMask <= 0.02f)
+    {
+        return float4(0.0f, 0.0f, 0.0f, 0.0f);
+    }
+
     float distFade = saturate((gProjZAndFade.z - dC) * gProjZAndFade.w);
-    float wetMask = saturate(waterMask * (hasWaterHint > 0.5f ? 1.0f : 0.85f)) * horizMask * flatMask * distFade;
+    float wetMask = saturate(effectiveWaterMask * (hasWaterHint > 0.5f ? 1.0f : 0.88f)) * horizMask * flatMask * distFade;
     if (wetMask <= 0.025f)
     {
         return float4(0.0f, 0.0f, 0.0f, 0.0f);
@@ -692,7 +718,6 @@ float4 PS_WetFloorSsr(VsOut input) : SV_Target0
     gAoInputTex.GetDimensions(texW, texH);
     float2 invTex = rcp(float2(max(texW, 1u), max(texH, 1u)));
 
-    float gTime = gAerialFogParams.x;
     // 适配火炬2 默认俯视角视距 (14~32m)，避免正常游玩时波纹与焦散提前衰减归零
     float waveFade = 1.0f - smoothstep(18.0f, 48.0f, dC);
 
@@ -704,6 +729,16 @@ float4 PS_WetFloorSsr(VsOut input) : SV_Target0
     float2 wuv2 = float2(wz * 3.1f - gTime * 0.75f, wx * 2.6f + gTime * 0.60f);
     float2 ripRaw = float2(sin(wuv1.x + wuv1.y), cos(wuv1.y - wuv1.x)) * 0.6f +
                     float2(sin(wuv2.x - wuv2.y), cos(wuv2.x + wuv2.y)) * 0.4f;
+
+    // 雨天模式叠加高频跳动雨滴涟漪
+    if (rainStrength > 0.02f)
+    {
+        float2 rdrop1 = float2(wx * 9.8f + gTime * 4.4f, wz * 9.8f + gTime * 3.3f);
+        float2 rdrop2 = float2(wz * 13.4f - gTime * 5.0f, wx * 13.4f - gTime * 3.9f);
+        float2 rainRip = float2(sin(rdrop1.x * 2.1f) * cos(rdrop1.y * 1.8f),
+                                sin(rdrop2.x * 1.9f) * cos(rdrop2.y * 2.2f));
+        ripRaw += rainRip * (0.42f * rainStrength);
+    }
 
     float3 Nrefl = normalize(upVS + (tX * ripRaw.x + tZ * ripRaw.y) * (0.0015f * waveFade));
     float3 V = normalize(P);
@@ -846,14 +881,15 @@ float4 PS_WetFloorSsr(VsOut input) : SV_Target0
             gAoInputTex.SampleLevel(gAoSamp, sampleUv + float2( bOfs.x,  bOfs.y), 0).rgb * 0.25f;
 
         float reflLuma = dot(reflCol, float3(0.299f, 0.587f, 0.114f));
-        float shadowGate = smoothstep(0.04f, 0.15f, reflLuma);
+        // 夜晚与弱光环境自适应门禁：夜晚基底暗时自适应降低门禁，让月光下的人物衣着与环境倒影清晰可见
+        float minGate = lerp(0.015f, 0.038f, smoothstep(0.02f, 0.12f, baseLuma));
+        float shadowGate = smoothstep(minGate, minGate + 0.09f, reflLuma);
 
         reflCol *= float3(0.96f, 1.04f, 1.12f);
         reflAlpha = saturate(wetMask * fresnel * edgeFade * heightFade * contactFade * shadowGate * 0.78f * ssrStr);
     }
 
     // 2. 再算水底流动焦散（物理层级位于倒影之下，被强倒影自然压制，彻底消除炮身上的白斑）
-    float baseLuma = dot(baseCol, float3(0.299f, 0.587f, 0.114f));
     float cw1 = 1.0f - abs(sin(wx * 2.4f + gTime * 0.95f + sin(wz * 1.9f + gTime * 0.65f) * 0.8f));
     float cw2 = 1.0f - abs(sin(wz * 2.7f - gTime * 0.85f + cos(wx * 2.1f - gTime * 0.70f) * 0.8f));
     float caustics = pow(saturate(cw1 * cw2), 2.4f) * 0.16f * waveFade *
@@ -3269,6 +3305,8 @@ bool ExecuteRouteCPostWorldPass(const RouteCPostWorldRequest& req, RouteCD3DLogF
         }
         cb_ssr.ao_params[2] = (std::clamp)(req.ssr_strength_scale, 0.0f, 2.0f);
         cb_ssr.aerial_fog_params[0] = static_cast<float>(::GetTickCount64() % 3600000ULL) * 0.001f;
+        cb_ssr.aerial_fog_params[1] = (std::clamp)(req.rain_strength, 0.0f, 2.0f);
+        cb_ssr.aerial_fog_params[2] = req.time_of_day;
         D3D11_MAPPED_SUBRESOURCE mapped_ao{};
         if (SUCCEEDED(req.ctx->Map(g_st.cb_params, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped_ao)) && mapped_ao.pData) {
             std::memcpy(mapped_ao.pData, &cb_ssr, sizeof(cb_ssr));

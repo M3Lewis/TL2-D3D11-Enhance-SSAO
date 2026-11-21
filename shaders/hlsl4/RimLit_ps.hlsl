@@ -323,9 +323,20 @@ void ComputeRimLitLighting(
             float relief0 = dot(Nmicro, L0) - dot(N, L0);
             litEnv *= saturate(1.0 + relief0 * (0.68 * sd.detailFade * rimScale));
 
+            // Soft organic wrapped diffuse & warm terminator scatter for skin / cloth / flesh
+            float ndlRaw0 = dot(Nmicro, L0);
+            float isOrganic = saturate(1.0 - sd.metalMask * 1.8);
+            if (isOrganic > 0.05)
+            {
+                float wrapNdl0 = saturate((ndlRaw0 + 0.35) / 1.35);
+                float scatterTerm0 = pow(1.0 - abs(ndlRaw0), 2.2) * wrapNdl0;
+                float3 sssColor0 = float3(0.85, 0.35, 0.15) * (scatterTerm0 * 0.16 * isOrganic * rimScale);
+                litEnv += sssColor0;
+            }
+
             float3 H0 = normalize(L0 + V);
             float ndh0 = max(dot(Nmicro, H0), 0.0);
-            float ndlMask0 = saturate(dot(Nmicro, L0) * 2.5 + 0.18);
+            float ndlMask0 = saturate(ndlRaw0 * 2.5 + 0.18);
             float specScalar0 = pow(ndh0, specPow) * matScale * fresnelSpec * ndlMask0;
             float rimGlance = pow(1.0 - NdotV, 2.8) * lerp(0.05, 0.12, max(sd.smoothness, sd.metalMask));
             specAdd += input.Texcoord4.rgb * surfTint * ((specScalar0 + rimGlance) * rimScale);
@@ -363,9 +374,20 @@ void ComputeRimLitLighting(
                 float relief = dot(Nmicro, L0) - dot(N, L0);
                 litEnv *= saturate(1.0 + relief * (0.78 * sd.detailFade * rimScale));
 
+                // Soft organic wrapped diffuse & warm terminator scatter
+                float ndlRaw = dot(Nmicro, L0);
+                float isOrganic = saturate(1.0 - sd.metalMask * 1.8);
+                if (isOrganic > 0.05)
+                {
+                    float wrapNdl = saturate((ndlRaw + 0.35) / 1.35);
+                    float scatterTerm = pow(1.0 - abs(ndlRaw), 2.2) * wrapNdl;
+                    float3 sssColor = float3(0.85, 0.35, 0.15) * (scatterTerm * 0.16 * isOrganic * rimScale);
+                    litEnv += sssColor;
+                }
+
                 float3 H = normalize(L0 + V);
                 float ndh = max(dot(Nmicro, H), 0.0);
-                float termMask = saturate(dot(Nmicro, L0) * 2.5 + 0.15);
+                float termMask = saturate(ndlRaw * 2.5 + 0.15);
                 float specScalar = pow(ndh, specPow) * matScale * fresnelSpec * termMask;
                 specAdd += DirectionalLight0_Diffuse.rgb * MaterialDiffuse.rgb * surfTint * (specScalar * rimScale);
             }

@@ -280,9 +280,20 @@ float4 ShadeSkinnedDiff(VS_OUTPUT input, bool doAlphaReject)
             float relief = dot(Nmicro, L0) - dot(N, L0);
             litEnv *= saturate(1.0 + relief * (0.62 * sd.detailFade * p3Scale));
 
+            // Soft organic wrapped diffuse & warm terminator scatter for skin / cloth
+            float ndlRaw = dot(Nmicro, L0);
+            float isOrganic = saturate(1.0 - sd.metalMask * 1.8);
+            if (isOrganic > 0.05)
+            {
+                float wrapNdl = saturate((ndlRaw + 0.35) / 1.35);
+                float scatterTerm = pow(1.0 - abs(ndlRaw), 2.2) * wrapNdl;
+                float3 sssColor = float3(0.85, 0.35, 0.15) * (scatterTerm * 0.16 * isOrganic * p3Scale);
+                litEnv += sssColor;
+            }
+
             float3 H = normalize(L0 + V);
             float ndh = max(dot(Nmicro, H), 0.0);
-            float ndlMask = saturate(dot(Nmicro, L0) * 2.5 + 0.18);
+            float ndlMask = saturate(ndlRaw * 2.5 + 0.18);
 
             float specScalar = pow(ndh, specPow) * matSpec * ndlMask;
             float rim = pow(1.0 - NdotV, 3.2) * lerp(0.05, 0.11, max(sd.smoothness, sd.metalMask));

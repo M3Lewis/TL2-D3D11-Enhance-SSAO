@@ -399,6 +399,45 @@ float4 ShadeDiffPass(VS_OUTPUT input, bool doAlphaReject)
     float3 litEnv = input.Color.rgb;
     float3 specAdd = float3(0.0, 0.0, 0.0);
 
+    // Pre-sample Texture1 and Texture2 to compute shadow awareness & sky ambient tint
+    int op1 = (int)(p3Flags.x + 0.5);
+    bool isProj1 = (p3Flags.w > 0.5);
+    float4 tSample1 = float4(1.0, 1.0, 1.0, 1.0);
+    if (op1 > 0)
+    {
+        float2 uv1 = ResolveFixedFuncUv(input.Texcoord1, isProj1);
+        tSample1 = Texture1.Sample(Sampler1, uv1);
+    }
+
+    int op2 = (int)(p3Flags2.x + 0.5);
+    bool isProj2 = (p3Flags2.y > 0.5);
+    float4 tSample2 = float4(1.0, 1.0, 1.0, 1.0);
+    if (op2 > 0)
+    {
+        float2 uv2 = ResolveFixedFuncUv(input.Texcoord2, isProj2);
+        tSample2 = Texture2.Sample(Sampler2, uv2);
+    }
+
+    // Directional shadow attenuation from projective shadow maps (ProjectorRTT_104 / ProjectorRTTLight_105)
+    float dirShadowAtten = 1.0;
+    if (isProj1 && op1 == 1)
+    {
+        dirShadowAtten *= saturate(dot(tSample1.rgb, float3(0.299, 0.587, 0.114)));
+    }
+    else if (isProj1 && op1 == 4)
+    {
+        dirShadowAtten *= saturate(dot(tSample1.rgb, float3(0.299, 0.587, 0.114)) * 2.0);
+    }
+
+    if (isProj2 && op2 == 1)
+    {
+        dirShadowAtten *= saturate(dot(tSample2.rgb, float3(0.299, 0.587, 0.114)));
+    }
+    else if (isProj2 && op2 == 4)
+    {
+        dirShadowAtten *= saturate(dot(tSample2.rgb, float3(0.299, 0.587, 0.114)) * 2.0);
+    }
+
     if (hasNormal)
     {
         float3 Nmicro = sd.microNormal;
@@ -424,15 +463,27 @@ float4 ShadeDiffPass(VS_OUTPUT input, bool doAlphaReject)
             {
                 float3 L0 = rawL0 * rsqrt(l0LenSq);
                 float relief = dot(Nmicro, L0) - dot(N, L0);
-                litEnv *= saturate(1.0 + relief * (0.85 * sd.reliefFade * p3Scale));
+                float effectiveRelief = relief * (0.35 + 0.65 * dirShadowAtten);
+                litEnv *= saturate(1.0 + effectiveRelief * (0.85 * sd.reliefFade * p3Scale));
 
                 float ndlRaw = dot(Nmicro, L0);
                 float3 H = normalize(L0 + V);
                 float ndh = max(dot(Nmicro, H), 0.0);
                 float termMask = saturate(ndlRaw * 2.5 + 0.15);
-                float specScalar = pow(ndh, specPow) * matScale * fresnel * termMask * detailWeight * p3Scale;
+                float specShadowMask = smoothstep(0.25, 0.85, dirShadowAtten);
+                float specScalar = pow(ndh, specPow) * matScale * fresnel * termMask * detailWeight * p3Scale * specShadowMask;
 
                 specAdd = DirectionalLight0_Diffuse.rgb * MaterialDiffuse.rgb * surfTint * specScalar;
+
+                // Foliage Translucency (backlight transmission through leaves/banners)
+                if (isAlpha)
+                {
+                    float vDotMinusL = saturate(dot(V, -L0) * 0.75 + 0.25);
+                    float backlight = pow(vDotMinusL, 3.5);
+                    float transMask = (1.0 - sd.metalMask) * saturate(sd.detailFade * 1.5);
+                    float3 transColor = DirectionalLight0_Diffuse.rgb * sd.albedo * (backlight * 0.38 * transMask * dirShadowAtten);
+                    specAdd += transColor;
+                }
             }
         }
 
@@ -464,18 +515,31 @@ float4 ShadeDiffPass(VS_OUTPUT input, bool doAlphaReject)
 
     float3 color = saturate(sd.albedo * litEnv + specAdd);
 
-    int op1 = (int)(p3Flags.x + 0.5);
+    // Apply texture stages (with subtle cool skylight tint in projective shadow regions)
     if (op1 > 0)
     {
-        float2 uv1 = ResolveFixedFuncUv(input.Texcoord1, p3Flags.w > 0.5);
-        color = ApplyTextureStageOp(color, Texture1.Sample(Sampler1, uv1), op1);
+        float4 stage1Sample = tSample1;
+        if (isProj1 && op1 == 1)
+        {
+            float shadowDeep = saturate((0.85 - dirShadowAtten) / 0.85);
+            float fogLum = dot(FogColor.rgb, float3(0.299, 0.587, 0.114));
+            float3 skyAmbient = (fogLum > 0.03) ? normalize(FogColor.rgb + float3(0.12, 0.15, 0.20)) : float3(0.90, 0.95, 1.06);
+            stage1Sample.rgb = lerp(stage1Sample.rgb, stage1Sample.rgb * skyAmbient, shadowDeep * 0.35);
+        }
+        color = ApplyTextureStageOp(color, stage1Sample, op1);
     }
 
-    int op2 = (int)(p3Flags2.x + 0.5);
     if (op2 > 0)
     {
-        float2 uv2 = ResolveFixedFuncUv(input.Texcoord2, p3Flags2.y > 0.5);
-        color = ApplyTextureStageOp(color, Texture2.Sample(Sampler2, uv2), op2);
+        float4 stage2Sample = tSample2;
+        if (isProj2 && op2 == 1)
+        {
+            float shadowDeep = saturate((0.85 - dirShadowAtten) / 0.85);
+            float fogLum = dot(FogColor.rgb, float3(0.299, 0.587, 0.114));
+            float3 skyAmbient = (fogLum > 0.03) ? normalize(FogColor.rgb + float3(0.12, 0.15, 0.20)) : float3(0.90, 0.95, 1.06);
+            stage2Sample.rgb = lerp(stage2Sample.rgb, stage2Sample.rgb * skyAmbient, shadowDeep * 0.35);
+        }
+        color = ApplyTextureStageOp(color, stage2Sample, op2);
     }
 
     color = saturate(color + input.ColorSpec.rgb);

@@ -13,19 +13,25 @@
 
 1. **Native Direct3D 11 Engine Plugin (纯原生 64 位 C++ 底层注入)**:
    - Replaces third-party injectors (ReShade / ENB) with zero hitching, zero input lag, and no crash on shutdown.
-   - Comprehensive overhaul of 16 HLSL 4.0 shaders for modern GPU architectures.
-2. **Screen-Space Ambient Occlusion (SSAO) & Contact Shadows (SSCS)**:
+   - Comprehensive overhaul of modern HLSL 4.0 shaders for current GPU architectures.
+2. **PBR Lighting & Stylized GGX Specular (物理微表面高光与油画立体感)**:
+   - Stylized GGX micro-surface lobe distribution replacing legacy Blinn-Phong: razor-sharp specular cores with soft, physically plausible long tails.
+   - Dual-Hemisphere ambient sky light modulating cool sky bounce `(0.96, 1.00, 1.06)` and warm ground bounce `(1.06, 0.99, 0.93)` into dungeon crevices.
+   - AgX-style highlight de-saturation preventing 8-bit SDR hard clipping and posterization on intense spell glows and lanterns.
+3. **Screen-Space Ambient Occlusion (SSAO) & Contact Shadows (SSCS)**:
    - High-fidelity ambient occlusion in dungeon crevices, stone pavements, and character feet.
-   - Depth-buffer based Screen-Space Contact Shadows (SSCS) with smooth attenuation.
-3. **Real-Time Screen-Space Reflections (SSR 水面动态反射)**:
-   - Real-time reflections on water pools and wet surfaces reflecting surrounding torches, crystal spires, and spell effects.
-4. **Micro-Normals, Specular Highlights & Rim Lighting (地表微法线与高光)**:
-   - Physical diffuse and specular roll-off for cobblestones and metallic armor.
-5. **Soft Particles (屏幕空间软粒子)**:
-   - Eliminates hard particle clipping seams between fire, spell glows, and terrain meshes.
+   - Sub-pixel Screen-Space Contact Shadows (SSCS) with non-linear distance falloff and normal bias correction.
+4. **Adaptive SSR Reflections & Living Water (自适应步进水面反射与动态活水)**:
+   - Coarse linear raymarching with binary search refinement, eliminating venetian blind ghosting artifacts.
+   - Living Water dual sinusoidal traveling wave perturbation for lively water surfaces.
+   - 2-Pass bilateral spatial resolve filter with roughness-aware blurring (sharp contact, diffused distant reflections).
+   - Dynamic rain wetness linkage: terrain, armor, and stonework dynamically deepen albedo and gain specular sheen during rain.
+5. **Soft Particles & Micro-Normals (屏幕空间软粒子与地表微法线)**:
+   - Depth-buffer particle softening eliminating hard clipping seams between fire/glow effects and geometry.
+   - Companion `_tl2n` / `_tl2s` auto-discovery for RimLit materials with physical diffuse/specular roll-off.
 6. **In-Game F8 Real-Time Configuration Panel ([F8] 游戏内实时控制台)**:
-   - Press **`[F8]`** in-game anytime to bring up the transparent control panel.
-   - Real-time `0% ~ 200%` intensity sliders for all 10 visual passes with millisecond latency.
+   - Press **`[F8]`** in-game anytime to bring up the transparent interactive control panel.
+   - Real-time `0% ~ 200%` intensity sliders for all visual passes with sub-millisecond latency.
    - One-click presets: `Full HD+` / `Dark Dungeon` / `Vanilla` + **10 custom preset slots**.
    - Instant bilingual `[中]` / `[EN]` UI toggle.
 7. **Color Grading & 3D LUT (电影级色彩分级)**:
@@ -41,26 +47,33 @@
 
 ```
 tl2_d3d11_route_b/
-├── src/                    # C++ Plugin Source Code (Plugin_TL2_DX11_Enhance_SSAO.dll)
-│   ├── plugin_main.cpp     # DLL entry point, Ogre D3D11 hook initialization
-│   ├── config_panel.cpp    # In-game F8 ImGui/Win32 configuration UI & hotkeys
-│   ├── phase3_scene_pipeline.cpp # Scene rendering interceptor & material override
-│   ├── route_c_ao.cpp      # SSAO & SSCS render pass implementation
-│   ├── route_c_d3d11.cpp   # Direct3D 11 device/context hooks & depth buffer management
+├── src/                               # C++ Plugin Source Code (Plugin_TL2_DX11_Enhance_SSAO.dll)
+│   ├── plugin_main.cpp                # DLL entry point, Ogre D3D11 hook initialization
+│   ├── d3d11_post_types.h             # Common constants, CB definitions, and pipeline types
+│   ├── d3d11_post_shaders.h/.cpp      # Embedded HLSL 4.0 shaders & compilation subsystem
+│   ├── d3d11_post_renderer.h/.cpp     # D3D11 state guard, fullscreen triangle, ping-pong RTs & 3D LUT
+│   ├── d3d11_ssao_pass.h/.cpp         # SSAO, SSCS contact shadows, bilateral blur & aerial perspective
+│   ├── d3d11_ssr_pass.h/.cpp          # Screen-space reflections, bilateral resolve & living water
+│   ├── d3d11_overlay_pass.h/.cpp      # Toast OSD overlay, config panel UI, & soft particle depth snapshot
+│   ├── game_time_weather.h/.cpp       # SEH game memory level time scanner & dynamic rain weather controller
+│   ├── render_hook_manager.h/.cpp     # OgreMain swapBuffers / _renderScene hooks & pass orchestrator
+│   ├── config_panel.cpp               # In-game [F8] interactive configuration UI & preset manager
+│   ├── phase3_scene_pipeline.cpp      # Scene rendering interceptor & material override
 │   ├── fixed_func_manual_uniforms.cpp # Uniform buffer binder
-│   └── hlsl_cbuffer_fastpath.cpp      # Fast-path constant buffer updater
-├── installer/              # Standalone Setup Executable Source
-│   ├── installer_main.cpp  # Win32 bilingual setup GUI, PE version checker, backup/restore
-│   └── assets/             # Embedded resources (dialog backgrounds, icons)
-├── shaders/                # 16 Modern HLSL 4.0 Shaders & Material Scripts
-│   ├── hlsl4/              # DiffPass_ps, RimLit_ps, Fxaa_ps, Bloom, SimpleUI
+│   ├── hlsl_cbuffer_fastpath.cpp      # Fast-path constant buffer updater
+│   └── route_c_*.h/.cpp               # Backward-compatibility shims for legacy callers
+├── installer/                         # Standalone Setup Executable Source
+│   ├── installer_main.cpp             # Win32 bilingual setup GUI, PE version checker, backup/restore
+│   └── assets/                        # Embedded resources (dialog backgrounds, icons)
+├── shaders/                           # Modern HLSL 4.0 Shaders & Material Scripts
+│   ├── hlsl4/                         # DiffPass_ps, SkinnedDiff_ps, RimLit_ps, Fxaa_ps, Bloom, SimpleUI
 │   ├── shaders.program
 │   ├── Phase3_Scene.program
 │   └── RenderScale.material
-├── scripts/                # Environment check and helper scripts
-├── tests/                  # Verification test suites
-├── build.ps1               # Builds Plugin_TL2_DX11_Enhance_SSAO.dll via MSVC cl.exe
-└── build_installer.ps1     # Compiles TL2_DX11_Enhance_SSAO_Setup.exe
+├── scripts/                           # Build validation, environment check and helper scripts
+├── tests/                             # Verification test suites (Phase 1/2/3, Route C, Shaders)
+├── build.ps1                          # Builds Plugin_TL2_DX11_Enhance_SSAO.dll via MSVC cl.exe
+└── build_installer.ps1                # Compiles TL2_DX11_Enhance_SSAO_Setup.exe with fxc gatekeeper
 ```
 
 ---

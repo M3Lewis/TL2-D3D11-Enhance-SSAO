@@ -761,14 +761,14 @@ float4 PS_WetFloorSsr(VsOut input) : SV_Target0
 
     // 1. 视距自适应步长：无论拉近特写还是拉远俯视，屏幕步距恒定在细腻的 ~6-12px
     float stepScale = clamp(dC * 0.05f, 0.25f, 1.5f);
-    float baseStep = 0.10f * stepScale;
+    float baseStep = 0.085f * stepScale;
     // 有序梯度噪点 (IGN) + 低振幅抖动：消除角色倒影轮廓的颗粒糊边，同时保持零步进条纹
     float ign = frac(52.9829189f * frac(dot(float2(pix), float2(0.06711056f, 0.00583715f))));
-    float t = baseStep * (0.50f + ign * 0.35f);
+    float t = baseStep * (0.45f + ign * 0.15f);
     float prevT = max(t - baseStep, 0.02f);
 
-    // 真实交点允许的最大精修残差（特写 ~0.30m，远景 ~0.42m），拦截“背后穿过”的重复鬼影
-    float maxAcceptDiff = clamp(0.26f + dC * 0.006f, 0.28f, 0.42f);
+    // 真实交点允许的最大精修残差（特写 ~0.30m，远景 ~0.45m），拦截“背后穿过”的重复鬼影
+    float maxAcceptDiff = clamp(0.28f + dC * 0.007f, 0.30f, 0.45f);
 
     bool hit = false;
     float2 hitTexUv = float2(0.0f, 0.0f);
@@ -779,7 +779,7 @@ float4 PS_WetFloorSsr(VsOut input) : SV_Target0
     [loop]
     for (int i = 0; i < 32; ++i)
     {
-        float stepDist = baseStep * (1.0f + float(i) * 0.12f);
+        float stepDist = baseStep * (1.0f + float(i) * 0.14f);
         float3 sampleVS = rayOrigin + R * t;
         if (sampleVS.z >= -0.25f)
         {
@@ -866,52 +866,55 @@ float4 PS_WetFloorSsr(VsOut input) : SV_Target0
         float hitHeight = dot(hitSurfP - P, upVS);
         float heightFade = smoothstep(0.03f, 0.20f, hitHeight);
 
-        float contactFade = 1.0f - smoothstep(maxAcceptDiff * 0.45f, maxAcceptDiff, hitDiff);
+        float contactFade = 1.0f - smoothstep(maxAcceptDiff * 0.40f, maxAcceptDiff, hitDiff);
 
-        // 【深度防串色水波】：波纹只在同一物体表面内荡漾，绝不跨剪影把旁边的白水花/亮石板拽进人物和火炮边缘
-        float2 wavePxOfs = ripRaw * (2.6f * smoothstep(0.15f, 2.2f, hitT) * waveFade);
+        // 【平滑深度阻尼水波】：用连续 smoothstep 替代硬 if 切换，彻底消灭炮管/人物轮廓撕裂锯齿
+        float2 wavePxOfs = ripRaw * (2.4f * smoothstep(0.15f, 2.2f, hitT) * waveFade);
         int2 wavePix = clamp(hitPix + int2(round(wavePxOfs)), gVpClamp.xy, gVpClamp.zw);
         float waveRaw = LoadRawDepth(wavePix);
-        float2 sampleUv = hitTexUv;
-        if (waveRaw < 0.99995f && abs(RawToLinearDist(waveRaw) - (-hitSurfP.z)) < 0.35f)
-        {
-            sampleUv = hitTexUv + wavePxOfs * invTex;
-        }
+        float waveDepthDiff = (waveRaw < 0.99995f) ? abs(RawToLinearDist(waveRaw) - (-hitSurfP.z)) : 10.0f;
+        float waveValid = 1.0f - smoothstep(0.12f, 0.42f, waveDepthDiff);
+        float2 sampleUv = hitTexUv + wavePxOfs * (waveValid * invTex);
 
         float2 edgeDist = min(hitVpUv, 1.0f - hitVpUv);
         float edgeFade = smoothstep(0.0f, 0.08f, min(edgeDist.x, edgeDist.y));
 
         float viewGraze = 1.0f - saturate(dot(-V, Nrefl));
-        float fresnel = saturate(0.55f + 0.45f * pow(viewGraze, 1.4f));
+        float fresnel = saturate(0.50f + 0.50f * pow(viewGraze, 1.4f));
 
-        // 【接触硬化模糊】：离水面近处（人物/紫炮）仅 0.28px 极锐利，远处自然渐进柔化到 0.95px
-        float blurPx = lerp(0.28f, 0.95f, smoothstep(0.6f, 3.2f, hitT));
-        float2 bOfs = invTex * blurPx;
+        // 【旋转网格抗锯齿采样 (RGSS 4-Tap AA)】：
+        // 旋转 22.5° 采样专门抚平 1x 深度图的斜边锯齿，清晰又不糊
+        float blurPx = lerp(0.65f, 1.35f, smoothstep(0.5f, 3.0f, hitT));
+        float2 o1 = float2( 0.38f,  0.92f) * invTex * blurPx;
+        float2 o2 = float2(-0.92f,  0.38f) * invTex * blurPx;
         reflCol =
-            gAoInputTex.SampleLevel(gAoSamp, sampleUv + float2(-bOfs.x, -bOfs.y), 0).rgb * 0.25f +
-            gAoInputTex.SampleLevel(gAoSamp, sampleUv + float2( bOfs.x, -bOfs.y), 0).rgb * 0.25f +
-            gAoInputTex.SampleLevel(gAoSamp, sampleUv + float2(-bOfs.x,  bOfs.y), 0).rgb * 0.25f +
-            gAoInputTex.SampleLevel(gAoSamp, sampleUv + float2( bOfs.x,  bOfs.y), 0).rgb * 0.25f;
+            gAoInputTex.SampleLevel(gAoSamp, sampleUv + o1, 0).rgb * 0.25f +
+            gAoInputTex.SampleLevel(gAoSamp, sampleUv - o1, 0).rgb * 0.25f +
+            gAoInputTex.SampleLevel(gAoSamp, sampleUv + o2, 0).rgb * 0.25f +
+            gAoInputTex.SampleLevel(gAoSamp, sampleUv - o2, 0).rgb * 0.25f;
 
         float reflLuma = dot(reflCol, float3(0.299f, 0.587f, 0.114f));
         // 夜晚与弱光环境自适应门禁：夜晚基底暗时自适应降低门禁，让月光下的人物衣着与环境倒影清晰可见
         float minGate = lerp(0.015f, 0.038f, smoothstep(0.02f, 0.12f, baseLuma));
         float shadowGate = smoothstep(minGate, minGate + 0.09f, reflLuma);
 
+        // 【真实水体吸收 + 柔和高光压缩】：
+        // 去掉 1.12x 过曝增亮，柔和压制炮管白反光条/阳光石台边/小鹿光环，消除水里刺眼的怪异白块
+        reflCol = reflCol / (1.0f + max(reflCol - 0.62f, 0.0f) * 0.90f);
+        reflCol *= float3(0.84f, 0.90f, 0.96f);
+
         // 当前像素本身很亮且明显亮于暗倒影时，平滑压低暗倒影覆盖，防止在发光边缘留下脏黑印
         float darkOverBright = 1.0f - smoothstep(0.20f, 0.55f, baseLuma0 - reflLuma) * smoothstep(0.45f, 0.75f, baseLuma0);
-
-        reflCol *= float3(0.96f, 1.04f, 1.12f);
-        reflAlpha = saturate(wetMask * fresnel * edgeFade * heightFade * contactFade * shadowGate * 0.78f * ssrStr) * darkOverBright;
+        reflAlpha = saturate(wetMask * fresnel * edgeFade * heightFade * contactFade * shadowGate * darkOverBright * 0.72f * ssrStr);
     }
 
-    // 2. 再算水底流动焦散（物理层级位于倒影之下，被强倒影自然压制，彻底消除炮身上的白斑）
+    // 2. 再算水底流动焦散（强倒影区用 2.5 次方彻底让位给倒影，杜绝焦散白丝混在炮身上）
     float cw1 = 1.0f - abs(sin(wx * 2.4f + gTime * 0.95f + sin(wz * 1.9f + gTime * 0.65f) * 0.8f));
     float cw2 = 1.0f - abs(sin(wz * 2.7f - gTime * 0.85f + cos(wx * 2.1f - gTime * 0.70f) * 0.8f));
     float caustics = pow(saturate(cw1 * cw2), 2.4f) * 0.16f * waveFade *
                      smoothstep(0.05f, 0.26f, baseLuma) * smoothstep(0.30f, 0.75f, waterMask);
-    // 强倒影区域压低水底焦散穿透，只在开阔清澈水面透出细腻亮纹
-    float caustAlpha = saturate(caustics * wetMask * saturate(ssrStr) * pow(1.0f - reflAlpha, 1.5f));
+    // 强倒影区用 2.5 次方彻底让位给倒影，杜绝焦散白丝混在炮身上
+    float caustAlpha = saturate(caustics * wetMask * saturate(ssrStr) * pow(1.0f - reflAlpha, 2.5f));
     float3 caustCol = float3(0.86f, 0.96f, 1.0f);
 
     // 3. 无暗化精确合成

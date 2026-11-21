@@ -222,6 +222,7 @@ struct OgreApiTable {
     PassGetU8Fn pass_get_alpha_reject_val = nullptr;
     PassGetBoolFn pass_get_lighting_enabled = nullptr;
     PassGetBoolFn pass_get_depth_check_enabled = nullptr;
+    PassGetIntFn pass_get_depth_func = nullptr;
     PassGetBoolFn pass_get_depth_write_enabled = nullptr;
     PassGetBoolFn pass_is_transparent = nullptr;
     PassGetIntFn pass_get_src_blend = nullptr;
@@ -1603,10 +1604,47 @@ void __fastcall BindActiveCompanionSrvs(uintptr_t rs) {
     }
 
     const int prev_mode = g_last_bound_soft_particle_mode.load(std::memory_order_relaxed);
-    const int want_mode = (g_active_soft_particle.valid && rs == g_active_soft_particle.rs &&
-                           IsRouteCWorldDepthReadyForParticles())
-                              ? g_active_soft_particle.soft_mode
-                              : 0;
+    int want_mode = (g_active_soft_particle.valid && rs == g_active_soft_particle.rs &&
+                     IsRouteCWorldDepthReadyForParticles())
+                        ? g_active_soft_particle.soft_mode
+                        : 0;
+    if (want_mode > 0 && ctx) {
+        ID3D11DepthStencilState* dss = nullptr;
+        UINT sref = 0;
+        ctx->OMGetDepthStencilState(&dss, &sref);
+        if (dss) {
+            D3D11_DEPTH_STENCIL_DESC ds_desc{};
+            dss->GetDesc(&ds_desc);
+            dss->Release();
+            if (!ds_desc.DepthEnable || ds_desc.DepthFunc == D3D11_COMPARISON_ALWAYS) {
+                want_mode = 0;
+            }
+        }
+        if (want_mode > 0) {
+            ID3D11BlendState* bs = nullptr;
+            FLOAT bfactor[4]{};
+            UINT smask = 0;
+            ctx->OMGetBlendState(&bs, bfactor, &smask);
+            if (bs) {
+                D3D11_BLEND_DESC bdesc{};
+                bs->GetDesc(&bdesc);
+                bs->Release();
+                const auto& rt0 = bdesc.RenderTarget[0];
+                if (!rt0.BlendEnable) {
+                    want_mode = 0;
+                } else if (rt0.BlendOp == D3D11_BLEND_OP_ADD) {
+                    if (rt0.DestBlend == D3D11_BLEND_ONE || rt0.DestBlend == D3D11_BLEND_INV_SRC_COLOR) {
+                        want_mode = (rt0.SrcBlend == D3D11_BLEND_SRC_ALPHA) ? 3 : 2;
+                    } else if (rt0.SrcBlend == D3D11_BLEND_SRC_ALPHA &&
+                               rt0.DestBlend == D3D11_BLEND_INV_SRC_ALPHA) {
+                        want_mode = 1;
+                    } else {
+                        want_mode = 0;
+                    }
+                }
+            }
+        }
+    }
     if (want_mode > 0) {
         if (ctx) {
             RouteCParticleDepthSnapshot snap{};
@@ -1638,6 +1676,7 @@ int ClassifySoftParticleMode(const void* pass) {
     }
     if (g_api.pass_has_fp(pass) || g_api.pass_get_lighting_enabled(pass) ||
         g_api.pass_get_depth_write_enabled(pass) || !g_api.pass_get_depth_check_enabled(pass) ||
+        (g_api.pass_get_depth_func && g_api.pass_get_depth_func(pass) == kCmpAlwaysPass) ||
         !g_api.pass_is_transparent(pass) ||
         g_api.pass_get_alpha_reject_func(pass) != kCmpAlwaysPass) {
         return 0;
@@ -1672,17 +1711,21 @@ int ClassifySoftParticleMode(const void* pass) {
     }
 
     // Verified Ogre::SceneBlendFactor enum from OgreMain Pass::_getBlendFlags:
-    // 0=ONE, 1=ZERO, 2=DEST_COLOUR, 3=SOURCE_COLOUR, 5=ONE_MINUS_SOURCE_COLOUR,
-    // 7=SOURCE_ALPHA, 9=ONE_MINUS_SOURCE_ALPHA
+    // 0=ONE, 1=ZERO, 2=DEST_COLOUR, 3=SOURCE_COLOUR, 4=ONE_MINUS_DEST_COLOUR, 5=ONE_MINUS_SOURCE_COLOUR,
+    // 6=DEST_ALPHA, 7=SOURCE_ALPHA, 8=ONE_MINUS_DEST_ALPHA, 9=ONE_MINUS_SOURCE_ALPHA
     const int src = g_api.pass_get_src_blend(pass);
     const int dst = g_api.pass_get_dst_blend(pass);
-    if (src == 7 && (dst == 9 || dst == 0)) {
-        return 1;  // alpha blend (result.a *= p1Soft)
+    if (src == 7 && dst == 9) {
+        return 1;  // standard alpha blend (smoke, dust, clouds: result.a *= p1Soft)
+    }
+    if (src == 7 && dst == 0) {
+        return 3;  // SRC_ALPHA + ONE: additive glow with alpha weight (lanterns, magic auras)
     }
     if ((src == 0 && dst == 0) ||
         (src == 3 && (dst == 5 || dst == 0)) ||
-        (src == 2 && dst == 0)) {
-        return 2;  // additive / colour-blended glow (result.rgb *= p1Soft)
+        (src == 2 && dst == 0) ||
+        (src == 0 && dst == 5)) {
+        return 2;  // additive / colour-blended glow (result.rgb *= p1Soft with min floor)
     }
     return 0;
 }
@@ -1797,7 +1840,7 @@ const void* __fastcall HookSceneManagerSetPass(
             const int sp_pct = GetP1SoftParticlesStrengthPct();
             if (soft_mode > 0 && sp_pct > 0) {
                 const float sp_scale = (std::max)(0.05f, static_cast<float>(sp_pct) * 0.01f);
-                const float base_inv = (soft_mode == 1) ? (1.0f / 0.65f) : (1.0f / 0.24f);
+                const float base_inv = 1.0f / 0.65f;
                 g_active_soft_particle.rs = rs;
                 g_active_soft_particle.soft_mode = soft_mode;
                 g_active_soft_particle.inv_soft_range = base_inv / sp_scale;
@@ -1994,6 +2037,7 @@ bool ResolveAllOgreExports(HMODULE ogre_mod) {
 
     // Optional pass FP parameter + soft-particle blend/depth + companion texture resolution exports (don't fail Phase 3 if absent).
     ResolveExport(ogre_mod, "?getDepthCheckEnabled@Pass@Ogre@@QEBA_NXZ", g_api.pass_get_depth_check_enabled);
+    ResolveExport(ogre_mod, "?getDepthFunction@Pass@Ogre@@QEBA?AW4CompareFunction@2@XZ", g_api.pass_get_depth_func);
     ResolveExport(ogre_mod, "?getSourceBlendFactor@Pass@Ogre@@QEBA?AW4SceneBlendFactor@2@XZ", g_api.pass_get_src_blend);
     ResolveExport(ogre_mod, "?getDestBlendFactor@Pass@Ogre@@QEBA?AW4SceneBlendFactor@2@XZ", g_api.pass_get_dst_blend);
     ResolveExport(ogre_mod, "?getFragmentProgramParameters@Pass@Ogre@@QEBA?AV?$SharedPtr@VGpuProgramParameters@Ogre@@@2@XZ", g_api.pass_get_fp_params);

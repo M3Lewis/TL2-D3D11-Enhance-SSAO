@@ -638,6 +638,13 @@ float2 ProjectViewToVpUv(float3 pVS)
 float4 PS_WetFloorSsr(VsOut input) : SV_Target0
 {
     int2 pix = clamp(int2(input.pos.xy), gVpClamp.xy, gVpClamp.zw);
+    // 顶部正中 32x24 青色探针：用来 100% 确认 C++ 是否真的执行了 PS_WetFloorSsr
+    int midX = (gVpClamp.x + gVpClamp.z) / 2;
+    if (abs(pix.x - midX) < 16 && pix.y < gVpClamp.y + 24)
+    {
+        return float4(0.0f, 1.0f, 1.0f, 1.0f);
+    }
+
     float rawC = 0.0f;
     float3 P = ReconstructPosVS(pix, rawC);
     float dC = -P.z;
@@ -794,6 +801,8 @@ float4 PS_WetFloorSsr(VsOut input) : SV_Target0
     // 2. SSR 反射采样（仅在命中时执行）
     float reflAlpha = 0.0f;
     float3 reflCol = float3(0.0f, 0.0f, 0.0f);
+    float dbgHeight = 0.0f;
+    float dbgShadowGate = 0.0f;
     if (hit)
     {
         // 几何高度门禁：用真实命中深度判断命中物是否立在水面之上，根治河床/地面阴影自反射
@@ -802,6 +811,7 @@ float4 PS_WetFloorSsr(VsOut input) : SV_Target0
         float3 hitSurfP = ReconstructPosVS(hitPix, hitRaw);
         float hitHeight = dot(hitSurfP - P, upVS);
         float heightFade = smoothstep(0.06f, 0.32f, hitHeight);
+        dbgHeight = heightFade;
 
         // 命中后 UV 水波荡漾：根部 (hitT 小) 锁死不撕裂，远处自然荡漾
         float2 waveUvOfs = ripRaw * invTex * (3.2f * smoothstep(0.15f, 2.5f, hitT) * waveFade);
@@ -822,21 +832,22 @@ float4 PS_WetFloorSsr(VsOut input) : SV_Target0
         // 暗部阴影倒影软抑制（搭配 heightFade 双保险，阈值放低至 0.04~0.16 保护暗色石柱/铠甲）
         float reflLuma = dot(reflCol, float3(0.299f, 0.587f, 0.114f));
         float shadowGate = smoothstep(0.04f, 0.16f, reflLuma);
+        dbgShadowGate = shadowGate;
 
         reflCol *= float3(0.92f, 0.97f, 1.03f);
         reflAlpha = saturate(wetMask * fresnel * edgeFade * heightFade * shadowGate * 0.45f * ssrStr);
     }
 
-    // 3. 兼容 SRC_ALPHA / INV_SRC_ALPHA 的精确无暗化合成
-    float weightSum = reflAlpha + caustAlpha;
-    if (weightSum <= 1e-4f)
-    {
-        return float4(0.0f, 0.0f, 0.0f, 0.0f);
-    }
-
-    float outA = saturate(weightSum);
-    float3 outRgb = (reflCol * reflAlpha + caustCol * caustAlpha) / weightSum;
-    return float4(saturate(outRgb), outA);
+    // 离散色诊断输出（只对通过 wetMask 的水面着色）：
+    if (ssrStr <= 0.01f)
+        return float4(1.0f, 1.0f, 0.0f, 0.75f); // 【纯黄】C++ 传进来的 gAoParams.z (ssrStr) 是 0
+    if (!hit)
+        return float4(0.0f, 0.35f, 1.0f, 0.75f); // 【纯蓝】射线全程未命中（问题在 rayOrigin / t）
+    if (dbgHeight <= 0.01f)
+        return float4(1.0f, 0.0f, 1.0f, 0.75f); // 【洋红】命中了，但 heightFade 被杀成 0
+    if (dbgShadowGate <= 0.05f)
+        return float4(1.0f, 0.35f, 0.0f, 0.75f); // 【橙红】命中且高度过关，但 shadowGate 被杀成 0
+    return float4(0.0f, 1.0f, 0.2f, 0.75f);      // 【亮绿】全链路通过，问题在最终混合公式/BlendState
 }
 )HLSL";
 

@@ -22,4 +22,5 @@ __pycache__/
 # Steam Workshop Internal Automation & Staging
 scripts/upload_workshop.ps1
 scripts/STEAM_WORKSHOP_GUIDE.md
+scripts/workshop_description.txt
 workshop_upload/

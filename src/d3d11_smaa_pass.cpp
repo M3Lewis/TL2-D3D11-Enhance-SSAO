@@ -499,13 +499,14 @@ bool ExecuteSmaaPass(const SmaaRequest& req, PostLogFn logger) {
     req.ctx->OMSetBlendState(nullptr, nullptr, 0xFFFFFFFFU);
     req.ctx->PSSetShader(g_ps_smaa_blend, nullptr, 0);
 
-    ID3D11ShaderResourceView* srvs_pass3[2] = {
+    ID3D11ShaderResourceView* srvs_pass3[3] = {
         g_st.p2_copy_srv,
-        g_smaa_blend_srv
+        g_smaa_blend_srv,
+        g_smaa_edges_srv
     };
-    req.ctx->PSSetShaderResources(0, 2, srvs_pass3);
+    req.ctx->PSSetShaderResources(0, 3, srvs_pass3);
     req.ctx->Draw(3, 0);
-    req.ctx->PSSetShaderResources(0, 2, null_srvs);
+    req.ctx->PSSetShaderResources(0, 3, null_srvs);
 
     g_smaa_executed.fetch_add(1, std::memory_order_relaxed);
     return true;

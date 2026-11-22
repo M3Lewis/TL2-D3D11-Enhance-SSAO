@@ -145,7 +145,7 @@ float SMAASearchLength(Texture2D<float> searchTex, float2 e, float offset)
     bias  += float2( 0.5, -0.5);
     scale *= (1.0 / SMAA_SEARCHTEX_PACKED_SIZE);
     bias  *= (1.0 / SMAA_SEARCHTEX_PACKED_SIZE);
-    return 255.0f * searchTex.SampleLevel(LinearSampler, mad(scale, e, bias), 0);
+    return 255.0f * searchTex.SampleLevel(PointSampler, mad(scale, e, bias), 0);
 }
 
 float SMAASearchXLeft(Texture2D<float2> edgesTex, Texture2D<float> searchTex, float2 texcoord, float end)
@@ -368,39 +368,26 @@ float4 PS_SmaaBlendingWeight(VsOut input) : SV_Target0
 // ----------------------------------------------------------------------------
 // PASS 3: Neighborhood Blending
 // ----------------------------------------------------------------------------
-Texture2D<float4> gBlendTex : register(t1);
+Texture2D<float4> gBlendTex      : register(t1);
+Texture2D<float2> gDebugEdgesTex : register(t2);
 
 float4 PS_SmaaNeighborhoodBlend(VsOut input) : SV_Target0
 {
     float2 texcoord = input.pos.xy * gSmaaRtMetrics.xy;
-    float4 offset = mad(gSmaaRtMetrics.xyxy, float4(1.0, 0.0, 0.0, 1.0), texcoord.xyxy);
 
-    float4 a;
-    a.x = gBlendTex.SampleLevel(LinearSampler, offset.xy, 0).a;  // Right
-    a.y = gBlendTex.SampleLevel(LinearSampler, offset.zw, 0).g;  // Top
-    a.wz = gBlendTex.SampleLevel(LinearSampler, texcoord, 0).xz; // Bottom / Left
-
-    if (dot(a, float4(1.0, 1.0, 1.0, 1.0)) < 1e-5f)
+    // 专家建议23: 分屏诊断代码（开抗锯齿时立即生效）
+    // 左半屏：验证 Pass 3 是否上屏 + Pass 1 是否检出边缘（蓝底 + 红/绿边缘线）
+    // 右半屏：验证 Pass 2 是否算出非零混合权重（黑底 + 彩色权重线）
+    if (texcoord.x < 0.5f)
     {
-        return gColorTex.SampleLevel(LinearSampler, texcoord, 0);
+        float2 e = gDebugEdgesTex.SampleLevel(PointSampler, texcoord, 0).rg;
+        return float4(e.r, e.g, 0.25f, 1.0f);
     }
-
-    bool h = max(a.x, a.z) > max(a.y, a.w);
-
-    float4 blendingOffset = float4(0.0, a.y, 0.0, a.w);
-    float2 blendingWeight = a.yw;
-    if (h)
+    else
     {
-        blendingOffset = float4(a.x, 0.0, a.z, 0.0);
-        blendingWeight = a.xz;
+        float4 w = gBlendTex.SampleLevel(PointSampler, texcoord, 0);
+        return float4(saturate(w.rgb * 4.0f), 1.0f);
     }
-    blendingWeight /= max(dot(blendingWeight, float2(1.0, 1.0)), 1e-5f);
-
-    float4 blendingCoord = mad(blendingOffset, float4(gSmaaRtMetrics.xy, -gSmaaRtMetrics.xy), texcoord.xyxy);
-
-    float4 color = blendingWeight.x * gColorTex.SampleLevel(LinearSampler, blendingCoord.xy, 0);
-    color += blendingWeight.y * gColorTex.SampleLevel(LinearSampler, blendingCoord.zw, 0);
-    return color;
 }
 )HLSL";
 

@@ -4,6 +4,7 @@
 #include "render_hook_manager.h"
 #include "game_time_weather.h"
 #include "d3d11_post_renderer.h"
+#include "d3d11_smaa_pass.h"
 #include "d3d11_overlay_pass.h"
 
 #include <d3d11.h>
@@ -27,7 +28,7 @@ namespace routeb {
 namespace {
 
 constexpr uint32_t kPanelWidth = 610;
-constexpr uint32_t kPanelHeight = 820;
+constexpr uint32_t kPanelHeight = 878;
 constexpr float kPanelMargin = 16.0f;
 constexpr int kTitleBarHeight = 42;
 constexpr int kPaddingX = 16;
@@ -64,6 +65,9 @@ enum class HitTargetKind {
     LutTealOrange,
     LutColdNordic,
     LutCustomCube,
+    SmaaOff,
+    SmaaColor,
+    SmaaDepthColor,
     ToggleWeatherRain,
     TimeAuto,
     TimeDawn,
@@ -277,6 +281,10 @@ int ReadIniInt(const wchar_t* section, const wchar_t* key, int default_val, cons
     return static_cast<int>(::GetPrivateProfileIntW(section, key, default_val, path));
 }
 
+int ClampSmaaMode(int mode) {
+    return std::clamp(mode, 0, 2);
+}
+
 void SaveVisualConfigToSection(const wchar_t* section, const VisualConfig& cfg, const wchar_t* path) {
     WriteIniInt(section, L"Phase3Enhance", cfg.phase3_enhance ? 1 : 0, path);
     WriteIniInt(section, L"AfPointEnhance", cfg.af_point_enhance ? 1 : 0, path);
@@ -288,6 +296,7 @@ void SaveVisualConfigToSection(const wchar_t* section, const VisualConfig& cfg, 
     WriteIniInt(section, L"P2SsrEnabled", cfg.p2_ssr_enabled ? 1 : 0, path);
     WriteIniInt(section, L"P2FilterPreset", ClampFilterPreset(cfg.p2_filter_preset), path);
     WriteIniInt(section, L"P2LutPreset", ClampLutPreset(cfg.p2_lut_preset), path);
+    WriteIniInt(section, L"SmaaMode", ClampSmaaMode(cfg.smaa_mode), path);
     WriteIniInt(section, L"WeatherRainEnabled", cfg.weather_rain_enabled ? 1 : 0, path);
     WriteIniInt(section, L"TimeOfDayHours", cfg.time_of_day_hours, path);
     WriteIniInt(section, L"TimeOfDayLocked", cfg.time_of_day_locked ? 1 : 0, path);
@@ -313,6 +322,8 @@ VisualConfig LoadVisualConfigFromSection(
         ReadIniInt(section, L"P2FilterPreset", fallback.p2_filter_preset, path));
     out.p2_lut_preset = ClampLutPreset(
         ReadIniInt(section, L"P2LutPreset", fallback.p2_lut_preset, path));
+    out.smaa_mode = ClampSmaaMode(
+        ReadIniInt(section, L"SmaaMode", fallback.smaa_mode, path));
     out.weather_rain_enabled = ReadIniInt(section, L"WeatherRainEnabled", fallback.weather_rain_enabled ? 1 : 0, path) != 0;
     out.time_of_day_hours = ReadIniInt(section, L"TimeOfDayHours", fallback.time_of_day_hours, path);
     out.time_of_day_locked = ReadIniInt(section, L"TimeOfDayLocked", fallback.time_of_day_locked ? 1 : 0, path) != 0;
@@ -354,6 +365,10 @@ std::wstring FormatPresetSummary(const VisualConfig& cfg, bool english) {
     else if (cfg.p2_lut_preset == 2) lut_str = english ? L"·Cold" : L"·冷";
     else if (cfg.p2_lut_preset == 3) lut_str = L"·CUBE";
 
+    const wchar_t* smaa_str = L"";
+    if (cfg.smaa_mode == 1) smaa_str = L"·SMAA-C";
+    else if (cfg.smaa_mode == 2) smaa_str = L"·SMAA-D";
+
     int on_count = 0;
     if (cfg.phase3_enhance) ++on_count;
     if (cfg.af_point_enhance) ++on_count;
@@ -365,11 +380,11 @@ std::wstring FormatPresetSummary(const VisualConfig& cfg, bool english) {
     if (cfg.p2_ssr_enabled) ++on_count;
 
     wchar_t buf[64] = {};
-    swprintf_s(buf, L"%d/8·%ls%ls", on_count, filter_str, lut_str);
+    swprintf_s(buf, L"%d/8·%ls%ls%ls", on_count, filter_str, lut_str, smaa_str);
     return buf;
 }
 
-constexpr size_t kHitZoneCount = 63;
+constexpr size_t kHitZoneCount = 66;
 
 std::array<HitZone, kHitZoneCount> BuildHitZones() {
     std::array<HitZone, kHitZoneCount> zones{};
@@ -462,17 +477,28 @@ std::array<HitZone, kHitZoneCount> BuildHitZones() {
                         kLuts[i].kind, kLuts[i].label_zh, kLuts[i].label_en};
     }
 
-    // Section 4: Weather & Time of Day
+    // Section 4: SMAA 1x Anti-Aliasing pills (3 pills)
+    y = 456;
+    zones[idx++] = {RECT{kPaddingX, y, kPaddingX + pill_w, y + 28},
+                    HitTargetKind::SmaaOff, L"关闭抗锯齿", L"SMAA Off"};
+    zones[idx++] = {RECT{kPaddingX + (pill_w + pill_gap), y,
+                         kPaddingX + (pill_w + pill_gap) + pill_w, y + 28},
+                    HitTargetKind::SmaaColor, L"Color (色彩)", L"Color (Fast)"};
+    zones[idx++] = {RECT{kPaddingX + 2 * (pill_w + pill_gap), y,
+                         kPaddingX + 2 * (pill_w + pill_gap) + pill_w, y + 28},
+                    HitTargetKind::SmaaDepthColor, L"Depth+Color (双检)", L"Depth+Color (Ultra)"};
+
+    // Section 5: Weather & Time of Day
     // Row 1: Rain toggle + Slider 10
-    zones[idx++] = {RECT{kPaddingX, 456, kSliderZoneLeft - 4, 456 + 27},
+    zones[idx++] = {RECT{kPaddingX, 514, kSliderZoneLeft - 4, 514 + 27},
                     HitTargetKind::ToggleWeatherRain,
                     L"雨天湿地倒影 (地面动态水坑与波纹)",
                     L"Rain & Wet Ground (Puddles & Ripples)"};
-    zones[idx++] = {RECT{kSliderZoneLeft, 456, kSliderZoneRight, 456 + 27},
+    zones[idx++] = {RECT{kSliderZoneLeft, 514, kSliderZoneRight, 514 + 27},
                     HitTargetKind::Slider10, L"", L""};
 
     // Row 2: Time of Day Slider
-    zones[idx++] = {RECT{kSliderZoneLeft, 488, kSliderZoneRight, 488 + 27},
+    zones[idx++] = {RECT{kSliderZoneLeft, 546, kSliderZoneRight, 546 + 27},
                     HitTargetKind::SliderTime, L"", L""};
 
     // Row 3: 5 Time Pills (Auto, 06h, 12h, 18h, 24h)
@@ -491,12 +517,12 @@ std::array<HitZone, kHitZoneCount> BuildHitZones() {
     };
     for (int i = 0; i < 5; ++i) {
         const int px = kPaddingX + i * (time_pill_w + time_pill_gap);
-        zones[idx++] = {RECT{px, 520, px + time_pill_w, 520 + 26},
+        zones[idx++] = {RECT{px, 578, px + time_pill_w, 578 + 26},
                         kTimePills[i].kind, kTimePills[i].label_zh, kTimePills[i].label_en};
     }
 
-    // Section 5: Built-in presets
-    y = 578;
+    // Section 6: Built-in presets
+    y = 636;
     zones[idx++] = {RECT{kPaddingX, y, kPaddingX + pill_w, y + 28},
                     HitTargetKind::BuiltinFullHd, L"全开高清", L"Full HD+"};
     zones[idx++] = {RECT{kPaddingX + (pill_w + pill_gap), y,
@@ -506,8 +532,8 @@ std::array<HitZone, kHitZoneCount> BuildHitZones() {
                          kPaddingX + 2 * (pill_w + pill_gap) + pill_w, y + 28},
                     HitTargetKind::BuiltinVanilla, L"纯原版", L"Vanilla"};
 
-    // Section 6: 10 Custom preset slots (2 columns x 5 rows, Load + Save)
-    const int base_y = 636;
+    // Section 7: 10 Custom preset slots (2 columns x 5 rows, Load + Save)
+    const int base_y = 694;
     const int col_w = 284;
     const int col_gap = 10;
     const int save_w = 46;
@@ -1034,8 +1060,30 @@ void PaintPanelToDibLocked() {
                     r, ZoneLabel(zones[z_idx]), DT_CENTER | DT_VCENTER);
     }
 
-    // Section 4: Weather & Time of Day
-    DrawSectionHeader(dc, 434, PickLang(L"天气与游戏环境时间", L"Weather & In-Game Time of Day"));
+    // Section 4: SMAA 1x Anti-Aliasing (3 pills)
+    DrawSectionHeader(dc, 434, PickLang(L"SMAA 1x 亚像素形态学抗锯齿", L"SMAA 1x Anti-Aliasing"));
+    DrawTextBox(dc, g_panel.font_small, RGB(154, 176, 206),
+                RECT{344, 430, 594, 452},
+                PickLang(L"0.2ms 极速 · 3D轮廓平滑 · 纯净UI", L"0.2ms · Clean UI · Crisp Silhouettes"),
+                DT_RIGHT | DT_VCENTER);
+    for (int i = 0; i < 3; ++i) {
+        const size_t z_idx = ZoneIndexByKind(
+            static_cast<HitTargetKind>(static_cast<int>(HitTargetKind::SmaaOff) + i));
+        const RECT& r = zones[z_idx].rect;
+        const bool active = (cfg.smaa_mode == i);
+        const bool hovered = (g_panel.hover_index == static_cast<int>(z_idx));
+        const COLORREF fill = active ? RGB(38, 112, 142)
+                                     : (hovered ? RGB(38, 48, 68) : RGB(26, 32, 46));
+        const COLORREF border = active ? RGB(98, 214, 240)
+                                       : (hovered ? RGB(92, 136, 198) : RGB(52, 62, 82));
+        DrawBorderRect(dc, r, fill, border, 6);
+        DrawTextBox(dc, active ? g_panel.font_section : g_panel.font_body,
+                    active ? RGB(244, 252, 255) : RGB(196, 206, 224),
+                    r, ZoneLabel(zones[z_idx]), DT_CENTER | DT_VCENTER);
+    }
+
+    // Section 5: Weather & Time of Day
+    DrawSectionHeader(dc, 492, PickLang(L"天气与游戏环境时间", L"Weather & In-Game Time of Day"));
 
     // Row 1: Rain toggle + Slider 10
     {
@@ -1082,7 +1130,7 @@ void PaintPanelToDibLocked() {
     // Row 2: Time of Day Label + Time Slider
     {
         const size_t time_s_idx = ZoneIndexByKind(HitTargetKind::SliderTime);
-        const RECT label_r{kPaddingX, 488, kSliderZoneLeft - 4, 488 + 27};
+        const RECT label_r{kPaddingX, 546, kSliderZoneLeft - 4, 546 + 27};
         const bool sld_hover = (g_panel.hover_index == static_cast<int>(time_s_idx));
         const bool sld_drag = (g_panel.active_slider_index == kSliderTimeIndex);
         const bool locked = cfg.time_of_day_locked && (cfg.time_of_day_hours >= 0);
@@ -1090,7 +1138,7 @@ void PaintPanelToDibLocked() {
         const COLORREF row_fill = (sld_hover || sld_drag) ? RGB(32, 41, 58) : RGB(24, 30, 42);
         const COLORREF row_border = (sld_hover || sld_drag) ? RGB(92, 152, 226)
                                                             : (locked ? RGB(144, 108, 48) : RGB(42, 49, 64));
-        const RECT row_r{kPaddingX, 488, kSliderZoneRight, 488 + 27};
+        const RECT row_r{kPaddingX, 546, kSliderZoneRight, 546 + 27};
         DrawBorderRect(dc, row_r, row_fill, row_border, 6);
 
         RECT text_r{label_r.left + 12, label_r.top, label_r.right - 10, label_r.bottom};
@@ -1143,8 +1191,8 @@ void PaintPanelToDibLocked() {
         }
     }
 
-    // Section 5: Built-in presets
-    DrawSectionHeader(dc, 556, PickLang(L"内置预设 (一键切换)", L"Built-in Presets (One-Click)"));
+    // Section 6: Built-in presets
+    DrawSectionHeader(dc, 614, PickLang(L"内置预设 (一键切换)", L"Built-in Presets (One-Click)"));
     for (int i = 0; i < 3; ++i) {
         const size_t z_idx = ZoneIndexByKind(
             static_cast<HitTargetKind>(static_cast<int>(HitTargetKind::BuiltinFullHd) + i));
@@ -1161,8 +1209,8 @@ void PaintPanelToDibLocked() {
                     r, ZoneLabel(zones[z_idx]), DT_CENTER | DT_VCENTER);
     }
 
-    // Section 6: 10 Custom Presets (2 columns x 5 rows)
-    DrawSectionHeader(dc, 614,
+    // Section 7: 10 Custom Presets (2 columns x 5 rows)
+    DrawSectionHeader(dc, 672,
                       PickLang(L"自定义预设 (10个槽位 · 点击名称切换 / 点 [保存] 覆盖)",
                                L"Custom Presets (10 Slots · Click Slot to Load / [Save])"));
     for (int i = 0; i < kCustomPresetCount; ++i) {
@@ -1209,7 +1257,15 @@ void PaintPanelToDibLocked() {
     if (g_panel.hover_index >= 0 &&
         static_cast<size_t>(g_panel.hover_index) < zones.size()) {
         const HitTargetKind hover_kind = zones[static_cast<size_t>(g_panel.hover_index)].kind;
-        if (hover_kind == HitTargetKind::LutCustomCube) {
+        if (hover_kind == HitTargetKind::SmaaOff) {
+            footer_text = PickLang(L"关闭 SMAA 1x 抗锯齿", L"Disable SMAA 1x anti-aliasing");
+        } else if (hover_kind == HitTargetKind::SmaaColor) {
+            footer_text = PickLang(L"SMAA 1x Color: 极速色彩边缘检测 (0.2ms)，消除画面绝大部分几何锯齿",
+                                   L"SMAA 1x Color: Ultra-fast luma/chroma edge detection (0.2ms)");
+        } else if (hover_kind == HitTargetKind::SmaaDepthColor) {
+            footer_text = PickLang(L"SMAA 1x Depth+Color: 二阶线性深度梯度双检，精确锁定 3D 模型轮廓，保护地砖纹理",
+                                   L"SMAA 1x Depth+Color: 2nd-order depth gradient guided silhouette AA");
+        } else if (hover_kind == HitTargetKind::LutCustomCube) {
             footer_text = IsP2CustomCubeLutLoaded()
                               ? PickLang(L"已检测到 <游戏根目录>\\TL2_CustomLUT.cube，点击即可启用（支持热重载）",
                                          L"Detected <GameRoot>\\TL2_CustomLUT.cube — click to enable (hot-reload)")
@@ -1428,6 +1484,24 @@ void HandleHitClickLocked(int hit_idx) {
                 SetStatusBilingualLocked(L"未找到文件: 请将 3D .cube 改名为 TL2_CustomLUT.cube 放游戏根目录",
                                          L"Not found: Rename 3D .cube to TL2_CustomLUT.cube in game root");
             }
+            break;
+        case HitTargetKind::SmaaOff:
+            SetSmaaMode(0);
+            g_panel.active_custom_slot = -1;
+            SetStatusBilingualLocked(L"抗锯齿已设为: 关闭 (原生边缘)",
+                                     L"Anti-Aliasing set to: Off");
+            break;
+        case HitTargetKind::SmaaColor:
+            SetSmaaMode(1);
+            g_panel.active_custom_slot = -1;
+            SetStatusBilingualLocked(L"抗锯齿已设为: Color (极速色彩边缘检测, 0.2ms)",
+                                     L"Anti-Aliasing set to: Color Edge Detection (0.2ms)");
+            break;
+        case HitTargetKind::SmaaDepthColor:
+            SetSmaaMode(2);
+            g_panel.active_custom_slot = -1;
+            SetStatusBilingualLocked(L"抗锯齿已设为: Depth+Color (二阶线性深度双检, 极致平滑)",
+                                     L"Anti-Aliasing set to: Depth+Color (2nd-Order Depth Dual)");
             break;
         case HitTargetKind::ToggleWeatherRain: {
             const bool next = ToggleWeatherRainEnabled();
@@ -1844,6 +1918,7 @@ VisualConfig CaptureVisualConfigFromEngine() {
     cfg.p2_ssr_enabled = IsP2SsrEnabled();
     cfg.p2_filter_preset = ClampFilterPreset(GetP2FilterPreset());
     cfg.p2_lut_preset = ClampLutPreset(GetP2LutPreset());
+    cfg.smaa_mode = ClampSmaaMode(GetSmaaMode());
     cfg.weather_rain_enabled = IsWeatherRainEnabled();
     cfg.weather_rain_strength = GetWeatherRainStrengthPct();
     cfg.time_of_day_locked = IsTimeOfDayLocked();
@@ -1865,6 +1940,7 @@ void ApplyVisualConfigToEngine(const VisualConfig& cfg) {
     SetP2SsrEnabled(cfg.p2_ssr_enabled);
     SetP2FilterPreset(ClampFilterPreset(cfg.p2_filter_preset));
     SetP2LutPreset(ClampLutPreset(cfg.p2_lut_preset));
+    SetSmaaMode(ClampSmaaMode(cfg.smaa_mode));
     SetWeatherRainEnabled(cfg.weather_rain_enabled);
     SetWeatherRainStrengthPct(cfg.weather_rain_strength);
     if (cfg.time_of_day_locked && cfg.time_of_day_hours >= 0) {
@@ -1946,6 +2022,7 @@ VisualConfig MakeBuiltinPreset(int builtin_index) {
             cfg.p2_ssr_enabled = true;
             cfg.p2_filter_preset = 1;
             cfg.p2_lut_preset = 0;
+            cfg.smaa_mode = 2;
             break;
         case 1:  // 暗黑地牢
             cfg.phase3_enhance = true;
@@ -1958,6 +2035,7 @@ VisualConfig MakeBuiltinPreset(int builtin_index) {
             cfg.p2_ssr_enabled = true;
             cfg.p2_filter_preset = 2;
             cfg.p2_lut_preset = 0;
+            cfg.smaa_mode = 2;
             break;
         case 2:  // 纯原版
         default:
@@ -1971,6 +2049,7 @@ VisualConfig MakeBuiltinPreset(int builtin_index) {
             cfg.p2_ssr_enabled = false;
             cfg.p2_filter_preset = 0;
             cfg.p2_lut_preset = 0;
+            cfg.smaa_mode = 0;
             break;
     }
     return cfg;

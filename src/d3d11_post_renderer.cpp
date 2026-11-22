@@ -1,5 +1,7 @@
 #include "d3d11_post_renderer.h"
 #include "d3d11_post_shaders.h"
+#include "d3d11_smaa_pass.h"
+#include "d3d11_smaa_shaders.h"
 #include "phase3_scene_pipeline.h"
 #include "render_hook_manager.h"
 
@@ -194,6 +196,7 @@ void ReleaseTargets() {
     g_st.particle_depth_valid = false;
     g_st.post_world_depth_valid = false;
     g_st.post_world_msaa = false;
+    ReleaseSmaaTargets();
 }
 
 void ReleaseBenchQueries() {
@@ -211,6 +214,7 @@ void ReleaseAllDeviceObjects() {
     ReleaseBenchQueries();
     ReleaseTargets();
     ReleaseLutResources();
+    ReleaseSmaaAllObjects();
     SafeRelease(g_st.rs_fullscreen);
     SafeRelease(g_st.dss_disabled);
     SafeRelease(g_st.blend_toast_alpha);
@@ -1931,7 +1935,22 @@ bool VerifyPostShadersCompile(PostLogFn logger) {
         "PS_WriteWaterDepth", "ps_4_0", macro_single, &water_blob, logger);
     SafeRelease(water_blob);
 
-    return toast_ok && p2_ok && panel_ok && cursor_ok && bloom_lut_ok && water_ok;
+    const char* smaa_entries[] = {
+        "PS_SmaaEdgeDetection",
+        "PS_SmaaBlendingWeight",
+        "PS_SmaaNeighborhoodBlend",
+    };
+    bool smaa_ok = true;
+    for (const char* entry : smaa_entries) {
+        ID3DBlob* b = nullptr;
+        const bool ok_one = CompileShaderBlobFromSource(
+            compile_fn, kSmaaShadersSource, kSmaaShadersSourceLength, "route_c_smaa.hlsl",
+            entry, "ps_4_0", macro_single, &b, logger);
+        SafeRelease(b);
+        smaa_ok = smaa_ok && ok_one;
+    }
+
+    return toast_ok && p2_ok && panel_ok && cursor_ok && bloom_lut_ok && water_ok && smaa_ok;
 }
 
 bool IsCustomCubeLutLoaded() {

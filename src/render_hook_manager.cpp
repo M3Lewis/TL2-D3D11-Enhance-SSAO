@@ -3,6 +3,7 @@
 #include "d3d11_post_renderer.h"
 #include "d3d11_ssao_pass.h"
 #include "d3d11_ssr_pass.h"
+#include "d3d11_smaa_pass.h"
 #include "d3d11_overlay_pass.h"
 
 #include "phase3_scene_pipeline.h"
@@ -134,6 +135,7 @@ struct ActiveSceneFrame {
     bool particle_depth_ready = false;
     bool filter_eligible = false;
     bool filter_injected = false;
+    bool smaa_injected = false;
     uint32_t world_geom_draws = 0;
     int vp_l = 0;
     int vp_t = 0;
@@ -890,6 +892,38 @@ void TryDispatchP2FilterFallbackForFrame(ActiveSceneFrame& frame, uint8_t qid) {
     SafeRelease(ctx);
 }
 
+void TryDispatchSmaaForFrame(ActiveSceneFrame& frame) {
+    if (frame.smaa_injected || !frame.ao_eligible || frame.world_geom_draws == 0) {
+        return;
+    }
+    const int smaa_mode = GetSmaaMode();
+    if (smaa_mode <= 0) {
+        return;
+    }
+    frame.smaa_injected = true;
+
+    ID3D11DeviceContext* ctx = nullptr;
+    ID3D11RenderTargetView* rt_rtv = nullptr;
+    ID3D11DepthStencilView* rt_dsv = nullptr;
+    if (!TryGetContextFromRenderTarget(frame.rt, &ctx, &rt_rtv, &rt_dsv) || !ctx) {
+        SafeRelease(ctx);
+        return;
+    }
+
+    SmaaRequest req{};
+    req.ctx = ctx;
+    req.fallback_rtv = rt_rtv;
+    req.vp_left = frame.vp_l;
+    req.vp_top = frame.vp_t;
+    req.vp_width = frame.vp_w;
+    req.vp_height = frame.vp_h;
+    req.smaa_mode = smaa_mode;
+    req.proj_22 = frame.proj.m[2][2];
+    req.proj_23 = frame.proj.m[2][3];
+    (void)ExecuteSmaaPass(req, g_log);
+    SafeRelease(ctx);
+}
+
 bool IsGameProcessForeground() {
     const HWND fg = ::GetForegroundWindow();
     if (!fg) {
@@ -1300,6 +1334,7 @@ void __fastcall HookRenderScene(void* sm, void* cam, void* vp, uint8_t show_over
     SetMainSceneRtv(nullptr);
     if (g_scene_depth > 0) {
         TryDispatchPostWorldForFrame(g_scene_stack[g_scene_depth - 1]);
+        TryDispatchSmaaForFrame(g_scene_stack[g_scene_depth - 1]);
     }
 }
 
@@ -1324,6 +1359,7 @@ uint8_t __fastcall HookFireRenderQueueStarted(void* sm, uint8_t queue_group_id, 
                 }
                 TryDispatchPostWorldForFrame(frame);
                 TryDispatchP2FilterFallbackForFrame(frame, queue_group_id);
+                TryDispatchSmaaForFrame(frame);
             }
             if (g_c0_survey_active.load(std::memory_order_relaxed)) {
                 frame.queue = {};
@@ -1743,8 +1779,9 @@ void LogPipelineSurveySummary(PostLogFn logger) {
 
     const auto d3d_st = GetPostRenderStats();
     logger(
-        "[RouteC][C2][Stats] debugMode=%d ok=%llu skipNoOm=%llu skipFmt=%llu skipFail=%llu depthRebuilds=%u lastTex=%ux%u rtvFmt=%u dsvTexFmt=%u msaa=%ux shadersReady=%d rainObs=%d desert=%d menu=%d rainStr=%.2f",
+        "[RouteC][C2][Stats] debugMode=%d smaa=%d ok=%llu skipNoOm=%llu skipFmt=%llu skipFail=%llu depthRebuilds=%u lastTex=%ux%u rtvFmt=%u dsvTexFmt=%u msaa=%ux shadersReady=%d rainObs=%d desert=%d menu=%d rainStr=%.2f",
         g_ao_debug_mode.load(std::memory_order_relaxed),
+        GetSmaaMode(),
         static_cast<unsigned long long>(d3d_st.inject_ok),
         static_cast<unsigned long long>(d3d_st.inject_skip_no_om),
         static_cast<unsigned long long>(d3d_st.inject_skip_fmt),

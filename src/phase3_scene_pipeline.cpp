@@ -659,43 +659,75 @@ bool HasWaterSurfaceKeyword(std::string_view tex_name) {
     if (tex_name.empty()) {
         return false;
     }
-    if (ContainsAsciiInsensitive(tex_name, "lava") ||
-        ContainsAsciiInsensitive(tex_name, "magma") ||
-        ContainsAsciiInsensitive(tex_name, "fire") ||
-        ContainsAsciiInsensitive(tex_name, "smoke") ||
-        ContainsAsciiInsensitive(tex_name, "blood") ||
-        ContainsAsciiInsensitive(tex_name, "icon") ||
-        ContainsAsciiInsensitive(tex_name, "ui") ||
-        ContainsAsciiInsensitive(tex_name, "particle") ||
-        ContainsAsciiInsensitive(tex_name, "glow") ||
-        ContainsAsciiInsensitive(tex_name, "lightpool") ||
-        ContainsAsciiInsensitive(tex_name, "splash") ||
-        ContainsAsciiInsensitive(tex_name, "foam") ||
-        ContainsAsciiInsensitive(tex_name, "mist") ||
-        ContainsAsciiInsensitive(tex_name, "spray") ||
-        ContainsAsciiInsensitive(tex_name, "rain") ||
-        ContainsAsciiInsensitive(tex_name, "fx") ||
-        ContainsAsciiInsensitive(tex_name, "waterfall") ||
-        ContainsAsciiInsensitive(tex_name, "cascade") ||
-        ContainsAsciiInsensitive(tex_name, "caustic")) {
+    const size_t last_slash = tex_name.find_last_of("/\\");
+    const std::string_view fname = (last_slash != std::string_view::npos) ? tex_name.substr(last_slash + 1) : tex_name;
+
+    // 1. Explicit Non-Water Negative Keywords (props, dry ground, monsters, waterfalls, particles)
+    if (ContainsAsciiInsensitive(fname, "lava") ||
+        ContainsAsciiInsensitive(fname, "magma") ||
+        ContainsAsciiInsensitive(fname, "fire") ||
+        ContainsAsciiInsensitive(fname, "smoke") ||
+        ContainsAsciiInsensitive(fname, "blood") ||
+        ContainsAsciiInsensitive(fname, "icon") ||
+        ContainsAsciiInsensitive(fname, "ui") ||
+        ContainsAsciiInsensitive(fname, "particle") ||
+        ContainsAsciiInsensitive(fname, "glow") ||
+        ContainsAsciiInsensitive(fname, "lightpool") ||
+        ContainsAsciiInsensitive(fname, "splash") ||
+        ContainsAsciiInsensitive(fname, "foam") ||
+        ContainsAsciiInsensitive(fname, "mist") ||
+        ContainsAsciiInsensitive(fname, "spray") ||
+        ContainsAsciiInsensitive(fname, "rain") ||
+        ContainsAsciiInsensitive(fname, "fx") ||
+        ContainsAsciiInsensitive(fname, "waterfall") ||
+        ContainsAsciiInsensitive(fname, "cascade") ||
+        ContainsAsciiInsensitive(fname, "caustic") ||
+        ContainsAsciiInsensitive(fname, "bed") ||        // riverbed, lakebed (dry ground)
+        ContainsAsciiInsensitive(fname, "ship") ||       // lake_shipwreck, lake_ship_ribs
+        ContainsAsciiInsensitive(fname, "wreck") ||
+        ContainsAsciiInsensitive(fname, "boat") ||
+        ContainsAsciiInsensitive(fname, "dinghy") ||
+        ContainsAsciiInsensitive(fname, "tent") ||
+        ContainsAsciiInsensitive(fname, "rib") ||
+        ContainsAsciiInsensitive(fname, "rock") ||
+        ContainsAsciiInsensitive(fname, "stone") ||
+        ContainsAsciiInsensitive(fname, "cliff") ||
+        ContainsAsciiInsensitive(fname, "wall") ||
+        ContainsAsciiInsensitive(fname, "dock") ||
+        ContainsAsciiInsensitive(fname, "plant") ||
+        ContainsAsciiInsensitive(fname, "scum") ||
+        ContainsAsciiInsensitive(fname, "bump") ||
+        ContainsAsciiInsensitive(fname, "guardian") ||   // water_guardian monster
+        ContainsAsciiInsensitive(fname, "mon") ||
+        ContainsAsciiInsensitive(fname, "troll") ||      // swamp trolls
+        ContainsAsciiInsensitive(fname, "skel") ||       // swamp skeletons
+        ContainsAsciiInsensitive(fname, "zombie") ||     // swamp zombies
+        ContainsAsciiInsensitive(fname, "tree") ||
+        ContainsAsciiInsensitive(fname, "statue") ||
+        ContainsAsciiInsensitive(fname, "crystal") ||    // oasis crystals
+        ContainsAsciiInsensitive(fname, "shrine") ||
+        ContainsAsciiInsensitive(fname, "pedestal") ||
+        ContainsAsciiInsensitive(fname, "entrance")) {
         return false;
     }
-    return ContainsAsciiInsensitive(tex_name, "water") ||
-           ContainsAsciiInsensitive(tex_name, "river") ||
-           ContainsAsciiInsensitive(tex_name, "pond") ||
-           ContainsAsciiInsensitive(tex_name, "lake") ||
-           ContainsAsciiInsensitive(tex_name, "pool") ||
-           ContainsAsciiInsensitive(tex_name, "puddle") ||
-           ContainsAsciiInsensitive(tex_name, "stream") ||
-           ContainsAsciiInsensitive(tex_name, "fountain") ||
-           ContainsAsciiInsensitive(tex_name, "marsh") ||
-           ContainsAsciiInsensitive(tex_name, "swamp") ||
-           ContainsAsciiInsensitive(tex_name, "canal") ||
-           ContainsAsciiInsensitive(tex_name, "basin") ||
-           ContainsAsciiInsensitive(tex_name, "brook") ||
-           ContainsAsciiInsensitive(tex_name, "creek") ||
-           ContainsAsciiInsensitive(tex_name, "moat") ||
-           ContainsAsciiInsensitive(tex_name, "oasis");
+
+    // 2. Real Water Surface Keywords
+    return ContainsAsciiInsensitive(fname, "water") ||
+           ContainsAsciiInsensitive(fname, "river") ||
+           ContainsAsciiInsensitive(fname, "pond") ||
+           ContainsAsciiInsensitive(fname, "lake") ||
+           ContainsAsciiInsensitive(fname, "pool") ||
+           ContainsAsciiInsensitive(fname, "puddle") ||
+           ContainsAsciiInsensitive(fname, "stream") ||
+           ContainsAsciiInsensitive(fname, "fountain") ||
+           ContainsAsciiInsensitive(fname, "marsh") ||
+           ContainsAsciiInsensitive(fname, "swamp") ||
+           ContainsAsciiInsensitive(fname, "canal") ||
+           ContainsAsciiInsensitive(fname, "basin") ||
+           ContainsAsciiInsensitive(fname, "brook") ||
+           ContainsAsciiInsensitive(fname, "creek") ||
+           ContainsAsciiInsensitive(fname, "moat") ||
+           ContainsAsciiInsensitive(fname, "oasis");
 }
 
 void MaybeDetectWaterPassHint(const void* pass) {

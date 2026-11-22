@@ -963,6 +963,7 @@ void DrawPanelOverlayForRenderTarget(void* rw) {
 }
 
 void __fastcall HookRenderWindowSwapBuffers(void* rw, uint8_t wait_for_vsync) {
+    g_water_pass_active.store(false, std::memory_order_relaxed);
     if (g_swap_hooked.load(std::memory_order_acquire)) {
         if (rw && !IsPanelWindowAttached()) {
             HWND rw_hwnd = nullptr;

@@ -845,6 +845,82 @@ DrawIndexedFn g_orig_draw_indexed = nullptr;
 DrawFn g_orig_draw = nullptr;
 SRWLOCK g_draw_hook_lock = SRWLOCK_INIT;
 
+bool CanReplayWaterDraw(
+    ID3D11RenderTargetView* rtv0,
+    ID3D11DepthStencilView* dsv,
+    ID3D11BlendState* blend,
+    ID3D11DepthStencilState* dss)
+{
+    if (!rtv0 || !dsv || !blend || !dss) {
+        return false;
+    }
+    if (rtv0 == g_st.water_depth_rtv) {
+        return false;
+    }
+
+    // 1. D3D11 Pipeline State Gate:
+    // Real water surface MUST be alpha-blended (INV_SRC_ALPHA), depth-tested, and depth-write disabled!
+    // Solid props (shipwreck, walls, statues, terrain) and additive effects (waterfall spray, light beams) are rejected.
+    D3D11_BLEND_DESC bdesc{};
+    blend->GetDesc(&bdesc);
+    if (!bdesc.RenderTarget[0].BlendEnable || bdesc.RenderTarget[0].DestBlend != D3D11_BLEND_INV_SRC_ALPHA) {
+        return false;
+    }
+
+    D3D11_DEPTH_STENCIL_DESC dsdesc{};
+    dss->GetDesc(&dsdesc);
+    if (!dsdesc.DepthEnable || dsdesc.DepthWriteMask != D3D11_DEPTH_WRITE_MASK_ZERO) {
+        return false;
+    }
+
+    // 2. RTV Dimension Gate:
+    // Rejects 512x512 ProjectorRTT (projector lights/shadows), scratch textures, etc.
+    ID3D11Resource* rtv_res = nullptr;
+    rtv0->GetResource(&rtv_res);
+    if (!rtv_res) {
+        return false;
+    }
+    ID3D11Texture2D* rtv_tex = nullptr;
+    const HRESULT hr_rtv = rtv_res->QueryInterface(__uuidof(ID3D11Texture2D), reinterpret_cast<void**>(&rtv_tex));
+    SafeRelease(rtv_res);
+    if (FAILED(hr_rtv) || !rtv_tex) {
+        return false;
+    }
+    D3D11_TEXTURE2D_DESC rtv_desc{};
+    rtv_tex->GetDesc(&rtv_desc);
+    SafeRelease(rtv_tex);
+    if (rtv_desc.Width != g_st.water_depth_w || rtv_desc.Height != g_st.water_depth_h) {
+        return false;
+    }
+
+    // 3. DSV Dimension & SampleDesc Gate:
+    D3D11_DEPTH_STENCIL_VIEW_DESC dsv_desc{};
+    dsv->GetDesc(&dsv_desc);
+    if (dsv_desc.ViewDimension != D3D11_DSV_DIMENSION_TEXTURE2D) {
+        return false;
+    }
+    ID3D11Resource* dsv_res = nullptr;
+    dsv->GetResource(&dsv_res);
+    if (!dsv_res) {
+        return false;
+    }
+    ID3D11Texture2D* dsv_tex = nullptr;
+    const HRESULT hr_dsv = dsv_res->QueryInterface(__uuidof(ID3D11Texture2D), reinterpret_cast<void**>(&dsv_tex));
+    SafeRelease(dsv_res);
+    if (FAILED(hr_dsv) || !dsv_tex) {
+        return false;
+    }
+    D3D11_TEXTURE2D_DESC dsv_tex_desc{};
+    dsv_tex->GetDesc(&dsv_tex_desc);
+    SafeRelease(dsv_tex);
+    if (dsv_tex_desc.Width != g_st.water_depth_w || dsv_tex_desc.Height != g_st.water_depth_h ||
+        dsv_tex_desc.SampleDesc.Count != 1) {
+        return false;
+    }
+
+    return true;
+}
+
 void ReplayWaterDrawIndexed(
     ID3D11DeviceContext* ctx,
     UINT IndexCount,
@@ -855,7 +931,8 @@ void ReplayWaterDrawIndexed(
     if (t_replaying || !g_orig_draw_indexed) return;
     t_replaying = true;
 
-    if (!g_st.water_depth_rtv || !g_st.ds_water_depth_readonly || !g_st.ps_write_water_depth) {
+    if (!g_st.water_depth_rtv || !g_st.ds_water_depth_readonly || !g_st.ps_write_water_depth ||
+        g_st.water_depth_w == 0 || g_st.water_depth_h == 0) {
         t_replaying = false;
         return;
     }
@@ -873,23 +950,25 @@ void ReplayWaterDrawIndexed(
     UINT prev_stencil_ref = 0;
     ctx->OMGetDepthStencilState(&prev_dss, &prev_stencil_ref);
 
+    if (!CanReplayWaterDraw(prev_rtvs[0], prev_dsv, prev_blend, prev_dss)) {
+        for (UINT i = 0; i < D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT; ++i) {
+            SafeRelease(prev_rtvs[i]);
+        }
+        SafeRelease(prev_dsv);
+        SafeRelease(prev_blend);
+        SafeRelease(prev_dss);
+        t_replaying = false;
+        return;
+    }
+
     ID3D11PixelShader* prev_ps = nullptr;
     ID3D11ClassInstance* prev_class_inst[256] = {};
     UINT prev_num_instances = 256;
     ctx->PSGetShader(&prev_ps, prev_class_inst, &prev_num_instances);
 
-    ID3D11DepthStencilView* dsv_to_bind = nullptr;
-    if (prev_dsv) {
-        D3D11_DEPTH_STENCIL_VIEW_DESC dsv_desc{};
-        prev_dsv->GetDesc(&dsv_desc);
-        if (dsv_desc.ViewDimension == D3D11_DSV_DIMENSION_TEXTURE2D) {
-            dsv_to_bind = prev_dsv;
-        }
-    }
-
-    ctx->OMSetRenderTargets(1, &g_st.water_depth_rtv, dsv_to_bind);
+    ctx->OMSetRenderTargets(1, &g_st.water_depth_rtv, prev_dsv);
     ctx->OMSetBlendState(nullptr, nullptr, 0xFFFFFFFF);
-    ctx->OMSetDepthStencilState(dsv_to_bind ? g_st.ds_water_depth_readonly : g_st.dss_disabled, 0);
+    ctx->OMSetDepthStencilState(g_st.ds_water_depth_readonly, 0);
     ctx->PSSetShader(g_st.ps_write_water_depth, nullptr, 0);
 
     g_orig_draw_indexed(ctx, IndexCount, StartIndexLocation, BaseVertexLocation);
@@ -922,7 +1001,8 @@ void ReplayWaterDraw(
     if (t_replaying || !g_orig_draw) return;
     t_replaying = true;
 
-    if (!g_st.water_depth_rtv || !g_st.ds_water_depth_readonly || !g_st.ps_write_water_depth) {
+    if (!g_st.water_depth_rtv || !g_st.ds_water_depth_readonly || !g_st.ps_write_water_depth ||
+        g_st.water_depth_w == 0 || g_st.water_depth_h == 0) {
         t_replaying = false;
         return;
     }
@@ -940,23 +1020,25 @@ void ReplayWaterDraw(
     UINT prev_stencil_ref = 0;
     ctx->OMGetDepthStencilState(&prev_dss, &prev_stencil_ref);
 
+    if (!CanReplayWaterDraw(prev_rtvs[0], prev_dsv, prev_blend, prev_dss)) {
+        for (UINT i = 0; i < D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT; ++i) {
+            SafeRelease(prev_rtvs[i]);
+        }
+        SafeRelease(prev_dsv);
+        SafeRelease(prev_blend);
+        SafeRelease(prev_dss);
+        t_replaying = false;
+        return;
+    }
+
     ID3D11PixelShader* prev_ps = nullptr;
     ID3D11ClassInstance* prev_class_inst[256] = {};
     UINT prev_num_instances = 256;
     ctx->PSGetShader(&prev_ps, prev_class_inst, &prev_num_instances);
 
-    ID3D11DepthStencilView* dsv_to_bind = nullptr;
-    if (prev_dsv) {
-        D3D11_DEPTH_STENCIL_VIEW_DESC dsv_desc{};
-        prev_dsv->GetDesc(&dsv_desc);
-        if (dsv_desc.ViewDimension == D3D11_DSV_DIMENSION_TEXTURE2D) {
-            dsv_to_bind = prev_dsv;
-        }
-    }
-
-    ctx->OMSetRenderTargets(1, &g_st.water_depth_rtv, dsv_to_bind);
+    ctx->OMSetRenderTargets(1, &g_st.water_depth_rtv, prev_dsv);
     ctx->OMSetBlendState(nullptr, nullptr, 0xFFFFFFFF);
-    ctx->OMSetDepthStencilState(dsv_to_bind ? g_st.ds_water_depth_readonly : g_st.dss_disabled, 0);
+    ctx->OMSetDepthStencilState(g_st.ds_water_depth_readonly, 0);
     ctx->PSSetShader(g_st.ps_write_water_depth, nullptr, 0);
 
     g_orig_draw(ctx, VertexCount, StartVertexLocation);

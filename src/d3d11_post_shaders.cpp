@@ -523,13 +523,15 @@ float4 PS_WetFloorSsr(VsOut input) : SV_Target0
     float gTime = gAerialFogParams.x;
     float timeHours = gAerialFogParams.z;
 
-    // 水深与浅滩岸边丝滑羽化过渡（仅真实水面网格计算）
+    // 水深与浅滩岸边羽化（暗坑2防护）：TL2水体材质dw=1，场景深度LoadRawDepth已被水面写入覆盖(dBed == dC)；
+    // 真实水面网格保持shoreFade = 1.0f全开，仅在水底明显深于水面(dw=0情况)时才做平滑羽化，彻底杜绝倒影被0值误杀。
     float shoreFade = 1.0f;
     if (isWaterMesh)
     {
         float bedRaw = LoadRawDepth(pix);
         float dBed = (bedRaw < 0.99998f) ? RawToLinearDist(bedRaw) : (dC + 5.0f);
-        shoreFade = smoothstep(0.015f, 0.14f, max(dBed - dC, 0.0f));
+        float waterDepthDiff = dBed - dC;
+        shoreFade = (waterDepthDiff > 0.015f) ? smoothstep(0.015f, 0.14f, waterDepthDiff) : 1.0f;
     }
 
     float3 N = ReconstructNormalVS(pix, P);

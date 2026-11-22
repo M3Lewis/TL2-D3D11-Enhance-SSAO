@@ -903,25 +903,19 @@ bool CanReplayWaterDraw(
         return false;
     }
 
-    // 1. Must be main scene RTV (Expert Rule 3):
-    // Rejects 512x512 ProjectorRTT, offscreen RTTs, bloom/post targets, and CEGUI offscreen buffers
-    ID3D11RenderTargetView* main_rtv = GetMainSceneRtv();
-    if (!main_rtv || rtv0 != main_rtv) {
-        return false;
-    }
-
-    // 2. D3D11 Pipeline State Gate (Expert Rule 1 & Lock 4):
-    // Real water surface MUST be alpha-blended (INV_SRC_ALPHA), depth-tested, and depth-write disabled!
-    // Solid props (shipwreck, walls, statues, terrain) and additive effects (waterfall spray, light beams) are rejected.
+    // 1. D3D11 Pipeline State Gate (Expert Advice 19):
+    // Real water surface MUST be alpha-blended and depth-tested (LESS or LESS_EQUAL).
+    // dw=1 (DepthWriteMask == ALL) is explicitly allowed because TL2 water writes depth.
+    // Solid props (shipwreck, walls, statues, terrain) have BlendEnable == FALSE and are rejected.
     D3D11_BLEND_DESC bdesc{};
     blend->GetDesc(&bdesc);
-    if (!bdesc.RenderTarget[0].BlendEnable || bdesc.RenderTarget[0].DestBlend != D3D11_BLEND_INV_SRC_ALPHA) {
+    if (!bdesc.RenderTarget[0].BlendEnable) {
         return false;
     }
 
     D3D11_DEPTH_STENCIL_DESC dsdesc{};
     dss->GetDesc(&dsdesc);
-    if (!dsdesc.DepthEnable || dsdesc.DepthWriteMask != D3D11_DEPTH_WRITE_MASK_ZERO) {
+    if (!dsdesc.DepthEnable) {
         return false;
     }
     // CEGUI buttons use DepthFunc == ALWAYS; real 3D water uses LESS or LESS_EQUAL
@@ -929,7 +923,9 @@ bool CanReplayWaterDraw(
         return false;
     }
 
-    // 3. RTV Dimension Gate:
+    // 2. RTV Dimension & SampleDesc Gate (Expert Advice 19):
+    // Rejects 512x512 ProjectorRTT or off-size buffers; ensures rtv0 matches water_depth buffer.
+    // (Pointers are not compared because TL2 draws scene to compositor RTT rather than swapchain RTV)
     ID3D11Resource* rtv_res = nullptr;
     rtv0->GetResource(&rtv_res);
     if (!rtv_res) return false;
@@ -940,11 +936,12 @@ bool CanReplayWaterDraw(
     D3D11_TEXTURE2D_DESC rtv_desc{};
     rtv_tex->GetDesc(&rtv_desc);
     SafeRelease(rtv_tex);
-    if (rtv_desc.Width != g_st.water_depth_w || rtv_desc.Height != g_st.water_depth_h) {
+    if (rtv_desc.Width != g_st.water_depth_w || rtv_desc.Height != g_st.water_depth_h ||
+        rtv_desc.SampleDesc.Count != g_st.water_depth_samples) {
         return false;
     }
 
-    // 4. DSV Dimension & SampleDesc Gate (Expert Rule 3):
+    // 3. DSV Dimension & SampleDesc Gate (Expert Advice 19):
     D3D11_DEPTH_STENCIL_VIEW_DESC dsv_desc{};
     dsv->GetDesc(&dsv_desc);
     if (dsv_desc.ViewDimension != D3D11_DSV_DIMENSION_TEXTURE2D &&

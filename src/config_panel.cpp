@@ -282,7 +282,7 @@ int ReadIniInt(const wchar_t* section, const wchar_t* key, int default_val, cons
 }
 
 int ClampSmaaMode(int mode) {
-    return std::clamp(mode, 0, 2);
+    return std::clamp(mode, 0, 3);
 }
 
 void SaveVisualConfigToSection(const wchar_t* section, const VisualConfig& cfg, const wchar_t* path) {

@@ -62,7 +62,7 @@ static_assert(sizeof(CbSmaaParams) == 48, "CbSmaaParams must be 48 bytes");
 }  // namespace
 
 void SetSmaaMode(int mode) {
-    const int clamped = (mode < 0 || mode > 2) ? 0 : mode;
+    const int clamped = (mode < 0 || mode > 3) ? 0 : mode;
     g_p2_smaa_mode.store(clamped, std::memory_order_relaxed);
 }
 
@@ -74,7 +74,7 @@ int CycleSmaaMode() {
     int cur = g_p2_smaa_mode.load(std::memory_order_relaxed);
     int next = 0;
     do {
-        next = (cur + 1) % 3;
+        next = (cur + 1) % 4;
     } while (!g_p2_smaa_mode.compare_exchange_weak(cur, next, std::memory_order_relaxed));
     return next;
 }
@@ -83,6 +83,7 @@ const char* SmaaModeName(int mode) {
     switch (mode) {
         case 1: return "Color";
         case 2: return "Depth+Color";
+        case 3: return "Debug (分屏)";
         default: return "OFF";
     }
 }

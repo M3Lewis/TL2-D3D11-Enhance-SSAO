@@ -798,6 +798,8 @@ void TryDispatchAoForFrame(ActiveSceneFrame& frame, const char* trigger_src, uin
 }
 
 void TryDispatchPostWorldForFrame(ActiveSceneFrame& frame) {
+    SetWorldWaterCaptureOpen(false);
+    SetWaterPassActive(false);
     if (frame.post_world_injected || !frame.ao_eligible || frame.world_geom_draws == 0) {
         return;
     }
@@ -963,6 +965,12 @@ void DrawPanelOverlayForRenderTarget(void* rw) {
 }
 
 void __fastcall HookRenderWindowSwapBuffers(void* rw, uint8_t wait_for_vsync) {
+    SetWaterPassActive(false);
+    SetWorldWaterCaptureOpen(false);
+    SetMainSceneRtv(nullptr);
+    if (IsMainMenuActive() || !IsP2SsrEnabled()) {
+        RemoveContextDrawHook();
+    }
     if (g_swap_hooked.load(std::memory_order_acquire)) {
         if (rw && !IsPanelWindowAttached()) {
             HWND rw_hwnd = nullptr;
@@ -1130,16 +1138,52 @@ void __fastcall HookRenderScene(void* sm, void* cam, void* vp, uint8_t show_over
     if (ao_eligible) {
         (void)ConsumeFrameWaterPassHint();
         ResetCapturedDirectionalLight();
+        SetWaterPassActive(false);
+        const bool main_menu = IsMainMenuActive();
+        const bool ssr_enabled = IsP2SsrEnabled();
+        const bool can_capture_water = ssr_enabled && !main_menu;
+        SetWorldWaterCaptureOpen(can_capture_water);
 
         ID3D11DeviceContext* ctx = nullptr;
         ID3D11RenderTargetView* rt_rtv = nullptr;
         ID3D11DepthStencilView* rt_dsv = nullptr;
         if (TryGetContextFromRenderTarget(rt, &ctx, &rt_rtv, &rt_dsv) && ctx) {
+            SetMainSceneRtv(rt_rtv);
             ID3D11Device* dev = nullptr;
             ctx->GetDevice(&dev);
             if (dev) {
                 EnsurePipelineObjects(dev, g_log);
+                if (can_capture_water) {
+                    uint32_t tw = static_cast<uint32_t>(vp_w);
+                    uint32_t th = static_cast<uint32_t>(vp_h);
+                    uint32_t sample_count = 1;
+                    uint32_t sample_quality = 0;
+                    if (rt_rtv) {
+                        ID3D11Resource* res = nullptr;
+                        rt_rtv->GetResource(&res);
+                        if (res) {
+                            ID3D11Texture2D* tex = nullptr;
+                            if (SUCCEEDED(res->QueryInterface(__uuidof(ID3D11Texture2D), reinterpret_cast<void**>(&tex))) && tex) {
+                                D3D11_TEXTURE2D_DESC td{};
+                                tex->GetDesc(&td);
+                                tw = td.Width;
+                                th = td.Height;
+                                sample_count = td.SampleDesc.Count;
+                                sample_quality = td.SampleDesc.Quality;
+                                SafeRelease(tex);
+                            }
+                            SafeRelease(res);
+                        }
+                    }
+                    EnsureWaterDepthTarget(dev, tw, th, sample_count, sample_quality);
+                }
                 SafeRelease(dev);
+            }
+            if (can_capture_water) {
+                ClearWaterDepthTargetForFrame(ctx);
+                EnsureContextDrawHooked(ctx);
+            } else {
+                RemoveContextDrawHook();
             }
             SafeRelease(ctx);
         }
@@ -1251,6 +1295,9 @@ void __fastcall HookRenderScene(void* sm, void* cam, void* vp, uint8_t show_over
     } stack_guard(g_world_depth_ready_for_particles.exchange(false, std::memory_order_acq_rel));
 
     g_orig_render_scene(sm, cam, vp, show_overlays);
+    SetWaterPassActive(false);
+    SetWorldWaterCaptureOpen(false);
+    SetMainSceneRtv(nullptr);
     if (g_scene_depth > 0) {
         TryDispatchPostWorldForFrame(g_scene_stack[g_scene_depth - 1]);
     }
@@ -1258,6 +1305,10 @@ void __fastcall HookRenderScene(void* sm, void* cam, void* vp, uint8_t show_over
 
 uint8_t __fastcall HookFireRenderQueueStarted(void* sm, uint8_t queue_group_id, const std::string& invocation) {
     g_queue_started_calls.fetch_add(1, std::memory_order_relaxed);
+    if (queue_group_id >= 90) {
+        SetWaterPassActive(false);
+        SetWorldWaterCaptureOpen(false);
+    }
     if (g_scene_depth > 0) {
         ActiveSceneFrame& frame = g_scene_stack[g_scene_depth - 1];
         if (frame.sm == sm) {
@@ -1487,6 +1538,10 @@ void RemoveRenderPipeline() {
     g_toast_expire_tick_ms.store(0, std::memory_order_relaxed);
     ShutdownConfigPanel();
     RemoveRenderWindowSwapBuffersHook();
+    RemoveContextDrawHook();
+    SetWaterPassActive(false);
+    SetWorldWaterCaptureOpen(false);
+    SetMainSceneRtv(nullptr);
     g_detour_queue_ended.Remove();
     g_detour_queue_started.Remove();
     g_detour_render_scene.Remove();

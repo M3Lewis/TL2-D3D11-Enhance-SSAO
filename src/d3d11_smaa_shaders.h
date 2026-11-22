@@ -22,7 +22,7 @@ SamplerState PointSampler  : register(s1);
 
 #define SMAA_MAX_SEARCH_STEPS 32
 #define SMAA_MAX_SEARCH_STEPS_DIAG 16
-#define SMAA_CORNER_ROUNDING 25
+#define SMAA_CORNER_ROUNDING 60
 #define SMAA_CORNER_ROUNDING_NORM (float(SMAA_CORNER_ROUNDING) / 100.0)
 #define SMAA_AREATEX_MAX_DISTANCE 16
 #define SMAA_AREATEX_MAX_DISTANCE_DIAG 20
@@ -234,29 +234,28 @@ void SMAADetectVerticalCornerPattern(Texture2D<float2> edgesTex, inout float2 we
 float2 SMAASearchDiag1(Texture2D<float2> edgesTex, float2 texcoord, float2 dir, out float2 e)
 {
     float4 coord = float4(texcoord, -1.0, 1.0);
-    float t = 1.0;
+    float3 t = float3(gSmaaRtMetrics.xy, 1.0);
     while (coord.z < float(SMAA_MAX_SEARCH_STEPS_DIAG - 1) && coord.w > 0.9)
     {
-        coord.xyz = mad(float3(dir, 1.0), float3(gSmaaRtMetrics.xy, 1.0), coord.xyz);
+        coord.xyz = mad(t, float3(dir, 1.0), coord.xyz);
         e = edgesTex.SampleLevel(LinearSampler, coord.xy, 0).rg;
         coord.w = dot(e, float2(0.5, 0.5));
     }
-    return float2(coord.z, coord.w);
+    return coord.zw;
 }
 
 float2 SMAASearchDiag2(Texture2D<float2> edgesTex, float2 texcoord, float2 dir, out float2 e)
 {
     float4 coord = float4(texcoord, -1.0, 1.0);
-    coord.x += 0.25 * gSmaaRtMetrics.x;
-    float t = 1.0;
+    float3 t = float3(gSmaaRtMetrics.xy, 1.0);
     while (coord.z < float(SMAA_MAX_SEARCH_STEPS_DIAG - 1) && coord.w > 0.9)
     {
-        coord.xyz = mad(float3(dir, 1.0), float3(gSmaaRtMetrics.xy, 1.0), coord.xyz);
-        e = edgesTex.SampleLevel(LinearSampler, coord.xy, 0).rg;
-        e = float2(edgesTex.SampleLevel(PointSampler, coord.xy, 0).r, edgesTex.SampleLevel(PointSampler, coord.xy, 0, int2(1, 0)).g);
+        coord.xyz = mad(t, float3(dir, 1.0), coord.xyz);
+        e.g = edgesTex.SampleLevel(PointSampler, coord.xy, 0).g;
+        e.r = edgesTex.SampleLevel(PointSampler, coord.xy, 0, int2(1, 0)).r;
         coord.w = dot(e, float2(0.5, 0.5));
     }
-    return float2(coord.z, coord.w);
+    return coord.zw;
 }
 
 float2 SMAAAreaDiag(Texture2D<float2> areaTex, float2 dist, float2 e, float offset)
@@ -271,27 +270,68 @@ float2 SMAAAreaDiag(Texture2D<float2> areaTex, float2 dist, float2 e, float offs
 float2 SMAACalculateDiagWeights(Texture2D<float2> edgesTex, Texture2D<float2> areaTex, float2 texcoord, float2 e)
 {
     float2 weights = float2(0.0, 0.0);
+
+    // Search for the line ends (first diagonal direction):
     float4 d;
-    float2 e1, e2;
-    d.xz = SMAASearchDiag1(edgesTex, texcoord, float2(-1.0,  1.0), e1);
-    d.x += float(e1.y > 0.9);
-    d.yw = SMAASearchDiag1(edgesTex, texcoord, float2( 1.0, -1.0), e2);
+    float2 end;
+    if (e.r > 0.0)
+    {
+        d.xz = SMAASearchDiag1(edgesTex, texcoord, float2(-1.0,  1.0), end);
+        d.x += float(end.y > 0.9);
+    }
+    else
+    {
+        d.xz = float2(0.0, 0.0);
+    }
+    d.yw = SMAASearchDiag1(edgesTex, texcoord, float2( 1.0, -1.0), end);
 
     [branch]
     if (d.x + d.y > 2.0)
     {
-        weights = SMAAAreaDiag(areaTex, d.xy, e, 0.0);
+        float4 coords = mad(float4(-d.x, d.x, d.y, -d.y), gSmaaRtMetrics.xyxy, texcoord.xyxy);
+        float4 c;
+        c.x = edgesTex.SampleLevel(PointSampler, coords.xy, 0, int2(-1,  0)).g;
+        c.y = edgesTex.SampleLevel(PointSampler, coords.xy, 0, int2( 0,  0)).r;
+        c.z = edgesTex.SampleLevel(PointSampler, coords.zw, 0, int2( 1,  0)).g;
+        c.w = edgesTex.SampleLevel(PointSampler, coords.zw, 0, int2( 1, -1)).r;
+
+        float2 cc = mad(float2(2.0, 2.0), c.xz, c.yw);
+
+        if (d.z > 0.9) cc.x = 0.0;
+        if (d.w > 0.9) cc.y = 0.0;
+
+        weights += SMAAAreaDiag(areaTex, d.xy, cc, 0.0);
+    }
+
+    // Search for the line ends (second diagonal direction):
+    d.xz = SMAASearchDiag2(edgesTex, texcoord, float2(-1.0, -1.0), end);
+    if (edgesTex.SampleLevel(PointSampler, texcoord, 0, int2(1, 0)).r > 0.0)
+    {
+        d.yw = SMAASearchDiag2(edgesTex, texcoord, float2( 1.0,  1.0), end);
+        d.y += float(end.y > 0.9);
     }
     else
     {
-        d.xz = SMAASearchDiag2(edgesTex, texcoord, float2(-1.0, -1.0), e1);
-        d.yw = SMAASearchDiag2(edgesTex, texcoord, float2( 1.0,  1.0), e2);
-        [branch]
-        if (d.x + d.y > 2.0)
-        {
-            weights = SMAAAreaDiag(areaTex, d.xy, e, 0.0);
-        }
+        d.yw = float2(0.0, 0.0);
     }
+
+    [branch]
+    if (d.x + d.y > 2.0)
+    {
+        float4 coords = mad(float4(-d.x, -d.x, d.y, d.y), gSmaaRtMetrics.xyxy, texcoord.xyxy);
+        float4 c;
+        c.x  = edgesTex.SampleLevel(PointSampler, coords.xy, 0, int2(-1,  0)).g;
+        c.y  = edgesTex.SampleLevel(PointSampler, coords.xy, 0, int2( 0, -1)).r;
+        c.zw = edgesTex.SampleLevel(PointSampler, coords.zw, 0, int2( 1,  0)).gr;
+
+        float2 cc = mad(float2(2.0, 2.0), c.xz, c.yw);
+
+        if (d.z > 0.9) cc.x = 0.0;
+        if (d.w > 0.9) cc.y = 0.0;
+
+        weights += SMAAAreaDiag(areaTex, d.xy, cc, 0.0).gr;
+    }
+
     return weights;
 }
 

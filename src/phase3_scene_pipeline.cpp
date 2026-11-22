@@ -655,6 +655,17 @@ bool ContainsAsciiInsensitive(std::string_view haystack, std::string_view needle
     return it != haystack.end();
 }
 
+bool EqualsAsciiInsensitive(std::string_view a, std::string_view b) {
+    if (a.size() != b.size()) return false;
+    for (size_t i = 0; i < a.size(); ++i) {
+        if (std::tolower(static_cast<unsigned char>(a[i])) !=
+            std::tolower(static_cast<unsigned char>(b[i]))) {
+            return false;
+        }
+    }
+    return true;
+}
+
 bool HasWaterSurfaceKeyword(std::string_view tex_name) {
     if (tex_name.empty()) {
         return false;
@@ -776,28 +787,95 @@ bool IsWaterSurfacePass(const void* pass) {
     return false;
 }
 
-bool IsWeatherRainParticleTexture(std::string_view tex_name) {
+enum class RainParticleType {
+    None,
+    Ripple,
+    Drop
+};
+
+RainParticleType ClassifyRainParticleTexture(std::string_view tex_name) {
     if (tex_name.empty()) {
-        return false;
+        return RainParticleType::None;
     }
+    // Must be in particles/ or effects/ directory (Expert Advice 20)
+    if (!ContainsAsciiInsensitive(tex_name, "particles") &&
+        !ContainsAsciiInsensitive(tex_name, "effects")) {
+        return RainParticleType::None;
+    }
+
     const size_t last_slash = tex_name.find_last_of("/\\");
     const std::string_view fname = (last_slash != std::string_view::npos) ? tex_name.substr(last_slash + 1) : tex_name;
 
-    if (!ContainsAsciiInsensitive(fname, "rain")) {
-        return false;
+    // 1. Weather ripple on ground: definitive weather rain indicator (puddle_single_additive / puddle_single_multiply)
+    if (EqualsAsciiInsensitive(fname, "puddle_single_additive.dds") ||
+        EqualsAsciiInsensitive(fname, "puddle_single_multiply.dds") ||
+        EqualsAsciiInsensitive(fname, "puddle_single_additive") ||
+        EqualsAsciiInsensitive(fname, "puddle_single_multiply")) {
+        return RainParticleType::Ripple;
     }
 
-    if (ContainsAsciiInsensitive(fname, "drain") ||
-        ContainsAsciiInsensitive(fname, "acidrain") ||
-        ContainsAsciiInsensitive(fname, "fusillade") ||
-        ContainsAsciiInsensitive(fname, "rainbow") ||
-        ContainsAsciiInsensitive(fname, "grain") ||
-        ContainsAsciiInsensitive(fname, "train") ||
-        ContainsAsciiInsensitive(fname, "brain")) {
-        return false;
+    // 2. Weather rain drop falling particles: drips.dds or drops.dds
+    if (EqualsAsciiInsensitive(fname, "drips.dds") ||
+        EqualsAsciiInsensitive(fname, "drops.dds") ||
+        EqualsAsciiInsensitive(fname, "drips") ||
+        EqualsAsciiInsensitive(fname, "drops")) {
+        return RainParticleType::Drop;
     }
 
-    return true;
+    // 3. Fallback for rain particle textures with "rain" in filename
+    if (ContainsAsciiInsensitive(fname, "rain")) {
+        if (ContainsAsciiInsensitive(fname, "drain") ||
+            ContainsAsciiInsensitive(fname, "brain") ||
+            ContainsAsciiInsensitive(fname, "terrain") ||
+            ContainsAsciiInsensitive(fname, "grain") ||
+            ContainsAsciiInsensitive(fname, "train") ||
+            ContainsAsciiInsensitive(fname, "rainbow") ||
+            ContainsAsciiInsensitive(fname, "poison") ||
+            ContainsAsciiInsensitive(fname, "blood") ||
+            ContainsAsciiInsensitive(fname, "acid") ||
+            ContainsAsciiInsensitive(fname, "fire")) {
+            return RainParticleType::None;
+        }
+        return RainParticleType::Drop;
+    }
+
+    return RainParticleType::None;
+}
+
+std::atomic<uint64_t> g_last_rain_particle_tick_ms{0};
+std::atomic<uint64_t> g_recent_drop_window_ms{0};
+std::atomic<uint32_t> g_recent_drop_count{0};
+std::atomic<uint64_t> g_last_desert_tex_tick_ms{0};
+std::atomic<uint64_t> g_last_main_menu_tex_tick_ms{0};
+std::atomic<float> g_smoothed_rain_strength{0.0f};
+std::atomic<uint64_t> g_last_rain_smooth_tick_ms{0};
+
+void RecordRainParticleObservation(std::string_view tex_name) {
+    const RainParticleType type = ClassifyRainParticleTexture(tex_name);
+    if (type == RainParticleType::None) {
+        return;
+    }
+
+    const uint64_t now = ::GetTickCount64();
+    if (type == RainParticleType::Ripple) {
+        // puddle_single_additive / puddle_single_multiply: definitive ground weather ripple
+        g_last_rain_particle_tick_ms.store(now, std::memory_order_relaxed);
+        return;
+    }
+
+    if (type == RainParticleType::Drop) {
+        // drips / drops: require >= 3 hits within a 1-second rolling window to prevent cave single-drip false positives
+        const uint64_t win = g_recent_drop_window_ms.load(std::memory_order_relaxed);
+        if (now < win || (now - win) > 1000ULL) {
+            g_recent_drop_window_ms.store(now, std::memory_order_relaxed);
+            g_recent_drop_count.store(1, std::memory_order_relaxed);
+        } else {
+            const uint32_t cnt = g_recent_drop_count.fetch_add(1, std::memory_order_relaxed) + 1;
+            if (cnt >= 3) {
+                g_last_rain_particle_tick_ms.store(now, std::memory_order_relaxed);
+            }
+        }
+    }
 }
 
 bool IsDesertEnvironmentTexture(std::string_view tex_name) {
@@ -815,10 +893,6 @@ bool IsMainMenuEnvironmentTexture(std::string_view tex_name) {
     }
     return ContainsAsciiInsensitive(tex_name, "mainmenu");
 }
-
-std::atomic<uint64_t> g_last_rain_particle_tick_ms{0};
-std::atomic<uint64_t> g_last_desert_tex_tick_ms{0};
-std::atomic<uint64_t> g_last_main_menu_tex_tick_ms{0};
 
 int MapOgreBlendOpToShader(int ogre_lbx_op) {
     // Ogre LayerBlendOperationEx: 2=MODULATE, 3=MODULATE_X2, 4=MODULATE_X4, 5=ADD, 9..11=BLEND_*_ALPHA
@@ -1949,9 +2023,7 @@ const void* __fastcall HookSceneManagerSetPass(
             const std::string& tex_name = g_api.tus_get_texture_name(tus);
             if (tex_name.empty()) continue;
 
-            if (IsWeatherRainParticleTexture(tex_name)) {
-                g_last_rain_particle_tick_ms.store(::GetTickCount64(), std::memory_order_relaxed);
-            }
+            RecordRainParticleObservation(tex_name);
             if (IsDesertEnvironmentTexture(tex_name)) {
                 g_last_desert_tex_tick_ms.store(::GetTickCount64(), std::memory_order_relaxed);
             }
@@ -2220,24 +2292,52 @@ bool IsMainMenuActive() {
 }
 
 float GetEffectiveRainStrength() {
-    // 1. Must be enabled by user in config / F8 panel
-    if (!IsWeatherRainEnabled()) {
-        return 0.0f;
-    }
-    // 2. Strict exclusion: Main menu is ALWAYS 0.0f
+    // 1. Strict exclusion: Main menu is ALWAYS 0.0f immediately (zero latency, no lingering reflections)
     if (IsMainMenuActive()) {
+        g_smoothed_rain_strength.store(0.0f, std::memory_order_relaxed);
+        g_last_rain_smooth_tick_ms.store(::GetTickCount64(), std::memory_order_relaxed);
         return 0.0f;
     }
-    // 3. Strict exclusion: Desert is ALWAYS 0.0f
+    // 2. Strict exclusion: Desert is ALWAYS 0.0f immediately (zero latency, 100% dry desert)
     if (IsDesertSceneActive()) {
+        g_smoothed_rain_strength.store(0.0f, std::memory_order_relaxed);
+        g_last_rain_smooth_tick_ms.store(::GetTickCount64(), std::memory_order_relaxed);
         return 0.0f;
     }
-    // 4. Strict requirement: Dynamic rain particles must be actively rendered
-    if (!IsDynamicRainRecentlyObserved()) {
+    // 3. Must be enabled by user in config / F8 panel
+    if (!IsWeatherRainEnabled()) {
+        g_smoothed_rain_strength.store(0.0f, std::memory_order_relaxed);
+        g_last_rain_smooth_tick_ms.store(::GetTickCount64(), std::memory_order_relaxed);
         return 0.0f;
     }
-    const float strength_pct = static_cast<float>(GetWeatherRainStrengthPct());
-    return (std::clamp)(strength_pct * 0.01f, 0.0f, 2.0f);
+
+    // 4. Target strength based on whether dynamic rain particles are actively rendered
+    float target = 0.0f;
+    if (IsDynamicRainRecentlyObserved()) {
+        const float strength_pct = static_cast<float>(GetWeatherRainStrengthPct());
+        target = (std::clamp)(strength_pct * 0.01f, 0.0f, 2.0f);
+    }
+
+    // 5. Smooth wet/dry transition (Expert Advice 20):
+    // Rain starting (pooling): ~2.5s from 0.0 -> 1.0 (pool_rate = 0.40f / s)
+    // Rain stopping (drying): ~4.0s from 1.0 -> 0.0 (dry_rate = 0.25f / s)
+    const uint64_t now = ::GetTickCount64();
+    const uint64_t last_tick = g_last_rain_smooth_tick_ms.exchange(now, std::memory_order_relaxed);
+    float current = g_smoothed_rain_strength.load(std::memory_order_relaxed);
+
+    if (last_tick == 0 || now < last_tick) {
+        current = target;
+    } else {
+        const float dt = (std::clamp)(static_cast<float>(now - last_tick) * 0.001f, 0.0f, 0.25f);
+        if (current < target) {
+            current = (std::min)(current + 0.40f * dt, target);
+        } else if (current > target) {
+            current = (std::max)(current - 0.25f * dt, target);
+        }
+    }
+
+    g_smoothed_rain_strength.store(current, std::memory_order_relaxed);
+    return current;
 }
 
 bool InstallPhase3ScenePipeline(void* d3d11_base, void* ogre_main_base, Phase3LogFn logger) {

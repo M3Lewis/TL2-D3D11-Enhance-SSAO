@@ -26,6 +26,12 @@ int GetSmaaMode();
 int CycleSmaaMode();
 const char* SmaaModeName(int mode);
 
+struct SmaaStats {
+    uint64_t dispatches = 0;
+    uint64_t executed = 0;
+};
+SmaaStats GetSmaaStats();
+
 bool ExecuteSmaaPass(const SmaaRequest& req, PostLogFn logger);
 void ReleaseSmaaTargets();
 void ReleaseSmaaAllObjects();

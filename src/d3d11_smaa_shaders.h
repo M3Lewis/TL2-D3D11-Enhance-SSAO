@@ -48,7 +48,7 @@ float4 PS_SmaaEdgeDetection(VsOut input) : SV_Target0
     offset[1] = mad(gSmaaRtMetrics.xyxy, float4( 1.0, 0.0, 0.0,  1.0), texcoord.xyxy);
     offset[2] = mad(gSmaaRtMetrics.xyxy, float4(-2.0, 0.0, 0.0, -2.0), texcoord.xyxy);
 
-    float threshold = 0.085f;
+    float threshold = 0.050f;
     float isGeoEdge = 0.0f;
     float2 geoEdges = float2(0.0f, 0.0f);
 
@@ -75,12 +75,12 @@ float4 PS_SmaaEdgeDetection(VsOut input) : SV_Target0
             float invD = rcp(max(dC, 1.0f));
             float depthJumpH = abs(2.0f * dC - dL - dR) * invD;
             float depthJumpV = abs(2.0f * dC - dT - dB) * invD;
-            isGeoEdge = saturate(max(depthJumpH, depthJumpV) * 45.0f);
-            threshold = lerp(0.145f, 0.045f, isGeoEdge);
+            isGeoEdge = saturate(max(depthJumpH, depthJumpV) * 50.0f);
+            threshold = lerp(0.050f, 0.025f, isGeoEdge);
 
             geoEdges = float2(
-                (abs(dC - dL) * invD > 0.035f && depthJumpH > 0.020f) ? 1.0f : 0.0f,
-                (abs(dC - dT) * invD > 0.020f && depthJumpV > 0.020f) ? 1.0f : 0.0f);
+                (abs(dC - dL) * invD > 0.020f && depthJumpH > 0.012f) ? 1.0f : 0.0f,
+                (abs(dC - dT) * invD > 0.015f && depthJumpV > 0.012f) ? 1.0f : 0.0f);
         }
     }
 
@@ -96,9 +96,8 @@ float4 PS_SmaaEdgeDetection(VsOut input) : SV_Target0
     delta.y = max(max(tT.r, tT.g), tT.b);
 
     float2 edges = step(threshold, delta.xy);
-    edges = max(edges, geoEdges);
 
-    if (dot(edges, float2(1.0, 1.0)) == 0.0)
+    if (dot(max(edges, geoEdges), float2(1.0, 1.0)) == 0.0)
     {
         discard;
     }
@@ -124,7 +123,10 @@ float4 PS_SmaaEdgeDetection(VsOut input) : SV_Target0
     maxDelta = max(maxDelta.xy, delta.zw);
     float finalDelta = max(maxDelta.x, maxDelta.y);
 
+    // Color edge local contrast adaptation
     edges.xy *= step(finalDelta, 2.0f * delta.xy);
+    // 3D geometric depth silhouettes must bypass color contrast suppression
+    edges = max(edges, geoEdges);
     return float4(edges, 0.0f, 0.0f);
 }
 
@@ -143,7 +145,7 @@ float SMAASearchLength(Texture2D<float> searchTex, float2 e, float offset)
     bias  += float2( 0.5, -0.5);
     scale *= (1.0 / SMAA_SEARCHTEX_PACKED_SIZE);
     bias  *= (1.0 / SMAA_SEARCHTEX_PACKED_SIZE);
-    return searchTex.SampleLevel(LinearSampler, mad(scale, e, bias), 0);
+    return 255.0f * searchTex.SampleLevel(LinearSampler, mad(scale, e, bias), 0);
 }
 
 float SMAASearchXLeft(Texture2D<float2> edgesTex, Texture2D<float> searchTex, float2 texcoord, float end)
@@ -208,10 +210,10 @@ void SMAADetectHorizontalCornerPattern(Texture2D<float2> edgesTex, inout float2 
     float2 rounding = (1.0 - SMAA_CORNER_ROUNDING_NORM) * leftRight;
     rounding /= leftRight.x + leftRight.y;
     float2 factor = float2(1.0, 1.0);
-    factor.x -= rounding.x * edgesTex.SampleLevel(PointSampler, texcoord.xy, 0).r;
-    factor.x -= rounding.y * edgesTex.SampleLevel(PointSampler, texcoord.zw, 0).r;
-    factor.y -= rounding.x * edgesTex.SampleLevel(PointSampler, texcoord.xy, 0, int2(0, 1)).r;
-    factor.y -= rounding.y * edgesTex.SampleLevel(PointSampler, texcoord.zw, 0, int2(0, 1)).r;
+    factor.x -= rounding.x * edgesTex.SampleLevel(PointSampler, texcoord.xy, 0, int2(0,  1)).r;
+    factor.x -= rounding.y * edgesTex.SampleLevel(PointSampler, texcoord.xy, 0, int2(0, -2)).r;
+    factor.y -= rounding.x * edgesTex.SampleLevel(PointSampler, texcoord.zw, 0, int2(0,  1)).r;
+    factor.y -= rounding.y * edgesTex.SampleLevel(PointSampler, texcoord.zw, 0, int2(0, -2)).r;
     weights *= saturate(factor);
 }
 
@@ -221,10 +223,10 @@ void SMAADetectVerticalCornerPattern(Texture2D<float2> edgesTex, inout float2 we
     float2 rounding = (1.0 - SMAA_CORNER_ROUNDING_NORM) * leftRight;
     rounding /= leftRight.x + leftRight.y;
     float2 factor = float2(1.0, 1.0);
-    factor.x -= rounding.x * edgesTex.SampleLevel(PointSampler, texcoord.xy, 0).g;
-    factor.x -= rounding.y * edgesTex.SampleLevel(PointSampler, texcoord.zw, 0).g;
-    factor.y -= rounding.x * edgesTex.SampleLevel(PointSampler, texcoord.xy, 0, int2(1, 0)).g;
-    factor.y -= rounding.y * edgesTex.SampleLevel(PointSampler, texcoord.zw, 0, int2(1, 0)).g;
+    factor.x -= rounding.x * edgesTex.SampleLevel(PointSampler, texcoord.xy, 0, int2( 1, 0)).g;
+    factor.x -= rounding.y * edgesTex.SampleLevel(PointSampler, texcoord.xy, 0, int2(-2, 0)).g;
+    factor.y -= rounding.x * edgesTex.SampleLevel(PointSampler, texcoord.zw, 0, int2( 1, 0)).g;
+    factor.y -= rounding.y * edgesTex.SampleLevel(PointSampler, texcoord.zw, 0, int2(-2, 0)).g;
     weights *= saturate(factor);
 }
 
@@ -330,8 +332,7 @@ float4 PS_SmaaBlendingWeight(VsOut input) : SV_Target0
             float e2 = gEdgesTex.SampleLevel(PointSampler, coords.zy, 0, int2(1, 0)).r;
             weights.rg = SMAAArea(gAreaTex, sqrt_d, e1, e2, 0.0);
 
-            float4 coordCorner = mad(float4(d.x, -0.25, d.y + 1.0, -0.25), gSmaaRtMetrics.xxyy, texcoord.xyxy);
-            SMAADetectHorizontalCornerPattern(gEdgesTex, weights.rg, coordCorner, d);
+            SMAADetectHorizontalCornerPattern(gEdgesTex, weights.rg, coords.xyzy, d);
         }
         else
         {
@@ -358,8 +359,7 @@ float4 PS_SmaaBlendingWeight(VsOut input) : SV_Target0
         float e2 = gEdgesTex.SampleLevel(PointSampler, coords.xz, 0, int2(0, 1)).g;
         weights.ba = SMAAArea(gAreaTex, sqrt_d, e1, e2, 0.0);
 
-        float4 coordCorner = mad(float4(-0.25, d.x, -0.25, d.y + 1.0), gSmaaRtMetrics.xxyy, texcoord.xyxy);
-        SMAADetectVerticalCornerPattern(gEdgesTex, weights.ba, coordCorner, d);
+        SMAADetectVerticalCornerPattern(gEdgesTex, weights.ba, coords.xyxz, d);
     }
 
     return weights;

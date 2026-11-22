@@ -1778,10 +1778,12 @@ void LogPipelineSurveySummary(PostLogFn logger) {
         static_cast<unsigned long long>(st.survey_unique_queues));
 
     const auto d3d_st = GetPostRenderStats();
+    const auto smaa_st = GetSmaaStats();
     logger(
-        "[RouteC][C2][Stats] debugMode=%d smaa=%d ok=%llu skipNoOm=%llu skipFmt=%llu skipFail=%llu depthRebuilds=%u lastTex=%ux%u rtvFmt=%u dsvTexFmt=%u msaa=%ux shadersReady=%d rainObs=%d desert=%d menu=%d rainStr=%.2f",
+        "[RouteC][C2][Stats] debugMode=%d smaa=%d smaaExec=%llu ok=%llu skipNoOm=%llu skipFmt=%llu skipFail=%llu depthRebuilds=%u lastTex=%ux%u rtvFmt=%u dsvTexFmt=%u msaa=%ux shadersReady=%d rainObs=%d desert=%d menu=%d rainStr=%.2f",
         g_ao_debug_mode.load(std::memory_order_relaxed),
         GetSmaaMode(),
+        static_cast<unsigned long long>(smaa_st.executed),
         static_cast<unsigned long long>(d3d_st.inject_ok),
         static_cast<unsigned long long>(d3d_st.inject_skip_no_om),
         static_cast<unsigned long long>(d3d_st.inject_skip_fmt),

@@ -49,6 +49,8 @@ ID3D11PixelShader* g_ps_smaa_edge = nullptr;
 ID3D11PixelShader* g_ps_smaa_weight = nullptr;
 ID3D11PixelShader* g_ps_smaa_blend = nullptr;
 std::atomic<bool> g_smaa_shaders_ready{false};
+std::atomic<uint64_t> g_smaa_dispatches{0};
+std::atomic<uint64_t> g_smaa_executed{0};
 
 struct CbSmaaParams {
     float rt_metrics[4];       // (1.0f/W, 1.0f/H, (float)W, (float)H)
@@ -83,6 +85,13 @@ const char* SmaaModeName(int mode) {
         case 2: return "Depth+Color";
         default: return "OFF";
     }
+}
+
+SmaaStats GetSmaaStats() {
+    SmaaStats s{};
+    s.dispatches = g_smaa_dispatches.load(std::memory_order_relaxed);
+    s.executed = g_smaa_executed.load(std::memory_order_relaxed);
+    return s;
 }
 
 void ReleaseSmaaTargets() {
@@ -342,6 +351,7 @@ bool ExecuteSmaaPass(const SmaaRequest& req, PostLogFn logger) {
     if (!req.ctx || req.vp_width <= 0 || req.vp_height <= 0 || req.smaa_mode <= 0) {
         return false;
     }
+    g_smaa_dispatches.fetch_add(1, std::memory_order_relaxed);
 
     EnsureLockInit();
     ::EnterCriticalSection(&g_d3d_lock);
@@ -497,6 +507,7 @@ bool ExecuteSmaaPass(const SmaaRequest& req, PostLogFn logger) {
     req.ctx->Draw(3, 0);
     req.ctx->PSSetShaderResources(0, 2, null_srvs);
 
+    g_smaa_executed.fetch_add(1, std::memory_order_relaxed);
     return true;
 }
 

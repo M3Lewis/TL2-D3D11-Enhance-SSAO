@@ -963,7 +963,6 @@ void DrawPanelOverlayForRenderTarget(void* rw) {
 }
 
 void __fastcall HookRenderWindowSwapBuffers(void* rw, uint8_t wait_for_vsync) {
-    g_water_pass_active.store(false, std::memory_order_relaxed);
     if (g_swap_hooked.load(std::memory_order_acquire)) {
         if (rw && !IsPanelWindowAttached()) {
             HWND rw_hwnd = nullptr;
@@ -1064,7 +1063,6 @@ void __fastcall HookRenderScene(void* sm, void* cam, void* vp, uint8_t show_over
     if ((!survey_on && !need_depth_pipeline && !need_filter_fallback) || g_scene_depth >= kMaxSceneStack || !sm || !vp) {
         const bool prev_ready = g_world_depth_ready_for_particles.exchange(false, std::memory_order_acq_rel);
         g_orig_render_scene(sm, cam, vp, show_overlays);
-    g_water_pass_active.store(false, std::memory_order_relaxed);
         g_world_depth_ready_for_particles.store(prev_ready, std::memory_order_release);
         return;
     }
@@ -1074,7 +1072,6 @@ void __fastcall HookRenderScene(void* sm, void* cam, void* vp, uint8_t show_over
     if (!active_cam || !rt) {
         const bool prev_ready = g_world_depth_ready_for_particles.exchange(false, std::memory_order_acq_rel);
         g_orig_render_scene(sm, cam, vp, show_overlays);
-    g_water_pass_active.store(false, std::memory_order_relaxed);
         g_world_depth_ready_for_particles.store(prev_ready, std::memory_order_release);
         return;
     }
@@ -1133,7 +1130,6 @@ void __fastcall HookRenderScene(void* sm, void* cam, void* vp, uint8_t show_over
     if (ao_eligible) {
         (void)ConsumeFrameWaterPassHint();
         ResetCapturedDirectionalLight();
-        g_water_pass_active.store(false, std::memory_order_relaxed);
 
         ID3D11DeviceContext* ctx = nullptr;
         ID3D11RenderTargetView* rt_rtv = nullptr;
@@ -1143,28 +1139,8 @@ void __fastcall HookRenderScene(void* sm, void* cam, void* vp, uint8_t show_over
             ctx->GetDevice(&dev);
             if (dev) {
                 EnsurePipelineObjects(dev, g_log);
-                uint32_t tw = static_cast<uint32_t>(vp_w);
-                uint32_t th = static_cast<uint32_t>(vp_h);
-                if (rt_rtv) {
-                    ID3D11Resource* res = nullptr;
-                    rt_rtv->GetResource(&res);
-                    if (res) {
-                        ID3D11Texture2D* tex = nullptr;
-                        if (SUCCEEDED(res->QueryInterface(__uuidof(ID3D11Texture2D), reinterpret_cast<void**>(&tex))) && tex) {
-                            D3D11_TEXTURE2D_DESC td{};
-                            tex->GetDesc(&td);
-                            tw = td.Width;
-                            th = td.Height;
-                            SafeRelease(tex);
-                        }
-                        SafeRelease(res);
-                    }
-                }
-                EnsureWaterDepthTarget(dev, tw, th);
                 SafeRelease(dev);
             }
-            ClearWaterDepthTargetForFrame(ctx);
-            EnsureContextDrawHooked(ctx);
             SafeRelease(ctx);
         }
 
@@ -1275,7 +1251,6 @@ void __fastcall HookRenderScene(void* sm, void* cam, void* vp, uint8_t show_over
     } stack_guard(g_world_depth_ready_for_particles.exchange(false, std::memory_order_acq_rel));
 
     g_orig_render_scene(sm, cam, vp, show_overlays);
-    g_water_pass_active.store(false, std::memory_order_relaxed);
     if (g_scene_depth > 0) {
         TryDispatchPostWorldForFrame(g_scene_stack[g_scene_depth - 1]);
     }
@@ -1512,7 +1487,6 @@ void RemoveRenderPipeline() {
     g_toast_expire_tick_ms.store(0, std::memory_order_relaxed);
     ShutdownConfigPanel();
     RemoveRenderWindowSwapBuffersHook();
-    RemoveContextDrawHook();
     g_detour_queue_ended.Remove();
     g_detour_queue_started.Remove();
     g_detour_render_scene.Remove();

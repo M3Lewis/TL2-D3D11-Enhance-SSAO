@@ -22,7 +22,6 @@
 namespace routeb {
 
 PostRenderContext g_st{};
-std::atomic<bool> g_water_pass_active{false};
 
 PostRenderContext& GetPostContext() {
     return g_st;
@@ -166,11 +165,6 @@ void ReleaseTargets() {
     SafeRelease(g_st.ao_rt_srv);
     SafeRelease(g_st.ao_rt_rtv);
     SafeRelease(g_st.ao_rt_tex);
-    SafeRelease(g_st.water_depth_srv);
-    SafeRelease(g_st.water_depth_rtv);
-    SafeRelease(g_st.water_depth_tex);
-    g_st.water_depth_w = 0;
-    g_st.water_depth_h = 0;
     SafeRelease(g_st.ssr_rt_srv);
     SafeRelease(g_st.ssr_rt_rtv);
     SafeRelease(g_st.ssr_rt_tex);
@@ -206,12 +200,9 @@ void ReleaseBenchQueries() {
 }
 
 void ReleaseAllDeviceObjects() {
-    RemoveContextDrawHook();
     ReleaseBenchQueries();
     ReleaseTargets();
     ReleaseLutResources();
-    SafeRelease(g_st.ds_water_depth_readonly);
-    SafeRelease(g_st.ps_write_water_depth);
     SafeRelease(g_st.rs_fullscreen);
     SafeRelease(g_st.dss_disabled);
     SafeRelease(g_st.blend_toast_alpha);
@@ -367,8 +358,7 @@ bool EnsurePipelineObjects(ID3D11Device* dev, RouteCD3DLogFn logger) {
         g_st.ps_toast && g_st.cb_toast && g_st.blend_toast_alpha &&
         g_st.ps_panel && g_st.ps_cursor && g_st.cb_panel && g_st.samp_linear &&
         g_st.cb_params && g_st.blend_debug_rgb && g_st.blend_mul_rgb && g_st.blend_dual_ao &&
-        g_st.dss_disabled && g_st.rs_fullscreen &&
-        g_st.ds_water_depth_readonly && g_st.ps_write_water_depth) {
+        g_st.dss_disabled && g_st.rs_fullscreen) {
         return true;
     }
 
@@ -404,10 +394,7 @@ bool EnsurePipelineObjects(ID3D11Device* dev, RouteCD3DLogFn logger) {
                   "PS_CursorOverlay", "ps_4_0", macro_single, &g_st.ps_cursor, logger) &&
               CompileAndCreatePixelShaderFromSource(
                   dev, compile_fn, kBloomLutShaderSource, kBloomLutShaderSourceLength, "route_c_bloom_lut.hlsl",
-                  "PS_LutGrade3D", "ps_4_0", macro_single, &g_st.ps_lut_grade, logger) &&
-              CompileAndCreatePixelShaderFromSource(
-                  dev, compile_fn, kWriteWaterDepthShaderSource, kWriteWaterDepthShaderSourceLength, "route_b_water_depth.hlsl",
-                  "PS_WriteWaterDepth", "ps_4_0", macro_single, &g_st.ps_write_water_depth, logger);
+                  "PS_LutGrade3D", "ps_4_0", macro_single, &g_st.ps_lut_grade, logger);
     SafeRelease(vs_blob);
 
     if (ok && dev->GetFeatureLevel() >= D3D_FEATURE_LEVEL_10_1) {
@@ -497,12 +484,6 @@ bool EnsurePipelineObjects(ID3D11Device* dev, RouteCD3DLogFn logger) {
     dss_desc.DepthWriteMask = D3D11_DEPTH_WRITE_MASK_ZERO;
     dss_desc.StencilEnable = FALSE;
 
-    D3D11_DEPTH_STENCIL_DESC dss_water_desc{};
-    dss_water_desc.DepthEnable = TRUE;
-    dss_water_desc.DepthWriteMask = D3D11_DEPTH_WRITE_MASK_ZERO;
-    dss_water_desc.DepthFunc = D3D11_COMPARISON_LESS_EQUAL;
-    dss_water_desc.StencilEnable = FALSE;
-
     D3D11_RASTERIZER_DESC rs_desc{};
     rs_desc.FillMode = D3D11_FILL_SOLID;
     rs_desc.CullMode = D3D11_CULL_NONE;
@@ -552,7 +533,6 @@ bool EnsurePipelineObjects(ID3D11Device* dev, RouteCD3DLogFn logger) {
          SUCCEEDED(dev->CreateBlendState(&bd_dual, &g_st.blend_dual_ao)) &&
          SUCCEEDED(dev->CreateBlendState(&bd_toast, &g_st.blend_toast_alpha)) &&
          SUCCEEDED(dev->CreateDepthStencilState(&dss_desc, &g_st.dss_disabled)) &&
-         SUCCEEDED(dev->CreateDepthStencilState(&dss_water_desc, &g_st.ds_water_depth_readonly)) &&
          SUCCEEDED(dev->CreateRasterizerState(&rs_desc, &g_st.rs_fullscreen));
 
     if (!ok) {
@@ -773,380 +753,6 @@ bool EnsureSsrTarget(ID3D11Device* dev, uint32_t width, uint32_t height) {
     g_st.ssr_rt_w = width;
     g_st.ssr_rt_h = height;
     return true;
-}
-
-bool EnsureWaterDepthTarget(ID3D11Device* dev, uint32_t width, uint32_t height) {
-    if (g_st.water_depth_tex && g_st.water_depth_rtv && g_st.water_depth_srv &&
-        g_st.water_depth_w == width && g_st.water_depth_h == height) {
-        return true;
-    }
-    SafeRelease(g_st.water_depth_srv);
-    SafeRelease(g_st.water_depth_rtv);
-    SafeRelease(g_st.water_depth_tex);
-    g_st.water_depth_w = 0;
-    g_st.water_depth_h = 0;
-
-    D3D11_TEXTURE2D_DESC td{};
-    td.Width = width;
-    td.Height = height;
-    td.MipLevels = 1;
-    td.ArraySize = 1;
-    td.Format = DXGI_FORMAT_R32_FLOAT;
-    td.SampleDesc.Count = 1;
-    td.SampleDesc.Quality = 0;
-    td.Usage = D3D11_USAGE_DEFAULT;
-    td.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
-    if (FAILED(dev->CreateTexture2D(&td, nullptr, &g_st.water_depth_tex)) || !g_st.water_depth_tex) {
-        return false;
-    }
-    if (FAILED(dev->CreateRenderTargetView(g_st.water_depth_tex, nullptr, &g_st.water_depth_rtv)) || !g_st.water_depth_rtv) {
-        SafeRelease(g_st.water_depth_tex);
-        return false;
-    }
-    D3D11_SHADER_RESOURCE_VIEW_DESC srvd{};
-    srvd.Format = DXGI_FORMAT_R32_FLOAT;
-    srvd.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
-    srvd.Texture2D.MipLevels = 1;
-    srvd.Texture2D.MostDetailedMip = 0;
-    if (FAILED(dev->CreateShaderResourceView(g_st.water_depth_tex, &srvd, &g_st.water_depth_srv)) || !g_st.water_depth_srv) {
-        SafeRelease(g_st.water_depth_rtv);
-        SafeRelease(g_st.water_depth_tex);
-        return false;
-    }
-    g_st.water_depth_w = width;
-    g_st.water_depth_h = height;
-    return true;
-}
-
-void ClearWaterDepthTargetForFrame(ID3D11DeviceContext* ctx) {
-    if (ctx && g_st.water_depth_rtv) {
-        const float clear_val[4] = {0.0f, 0.0f, 0.0f, 0.0f};
-        ctx->ClearRenderTargetView(g_st.water_depth_rtv, clear_val);
-    }
-}
-
-namespace {
-
-typedef void (STDMETHODCALLTYPE *DrawIndexedFn)(
-    ID3D11DeviceContext* This,
-    UINT IndexCount,
-    UINT StartIndexLocation,
-    INT BaseVertexLocation);
-
-typedef void (STDMETHODCALLTYPE *DrawFn)(
-    ID3D11DeviceContext* This,
-    UINT VertexCount,
-    UINT StartVertexLocation);
-
-void* g_shadow_context_vtable[256] = {};
-void** g_orig_context_vtable = nullptr;
-ID3D11DeviceContext* g_hooked_context = nullptr;
-DrawIndexedFn g_orig_draw_indexed = nullptr;
-DrawFn g_orig_draw = nullptr;
-SRWLOCK g_draw_hook_lock = SRWLOCK_INIT;
-
-bool CanReplayWaterDraw(
-    ID3D11RenderTargetView* rtv0,
-    ID3D11DepthStencilView* dsv,
-    ID3D11BlendState* blend,
-    ID3D11DepthStencilState* dss)
-{
-    if (!rtv0 || !dsv || !blend || !dss) {
-        return false;
-    }
-    if (rtv0 == g_st.water_depth_rtv) {
-        return false;
-    }
-
-    // 1. D3D11 Pipeline State Gate:
-    // Real water surface MUST be alpha-blended (INV_SRC_ALPHA), depth-tested, and depth-write disabled!
-    // Solid props (shipwreck, walls, statues, terrain) and additive effects (waterfall spray, light beams) are rejected.
-    D3D11_BLEND_DESC bdesc{};
-    blend->GetDesc(&bdesc);
-    if (!bdesc.RenderTarget[0].BlendEnable || bdesc.RenderTarget[0].DestBlend != D3D11_BLEND_INV_SRC_ALPHA) {
-        return false;
-    }
-
-    D3D11_DEPTH_STENCIL_DESC dsdesc{};
-    dss->GetDesc(&dsdesc);
-    if (!dsdesc.DepthEnable || dsdesc.DepthWriteMask != D3D11_DEPTH_WRITE_MASK_ZERO) {
-        return false;
-    }
-
-    // 2. RTV Dimension Gate:
-    // Rejects 512x512 ProjectorRTT (projector lights/shadows), scratch textures, etc.
-    ID3D11Resource* rtv_res = nullptr;
-    rtv0->GetResource(&rtv_res);
-    if (!rtv_res) {
-        return false;
-    }
-    ID3D11Texture2D* rtv_tex = nullptr;
-    const HRESULT hr_rtv = rtv_res->QueryInterface(__uuidof(ID3D11Texture2D), reinterpret_cast<void**>(&rtv_tex));
-    SafeRelease(rtv_res);
-    if (FAILED(hr_rtv) || !rtv_tex) {
-        return false;
-    }
-    D3D11_TEXTURE2D_DESC rtv_desc{};
-    rtv_tex->GetDesc(&rtv_desc);
-    SafeRelease(rtv_tex);
-    if (rtv_desc.Width != g_st.water_depth_w || rtv_desc.Height != g_st.water_depth_h) {
-        return false;
-    }
-
-    // 3. DSV Dimension & SampleDesc Gate:
-    D3D11_DEPTH_STENCIL_VIEW_DESC dsv_desc{};
-    dsv->GetDesc(&dsv_desc);
-    if (dsv_desc.ViewDimension != D3D11_DSV_DIMENSION_TEXTURE2D) {
-        return false;
-    }
-    ID3D11Resource* dsv_res = nullptr;
-    dsv->GetResource(&dsv_res);
-    if (!dsv_res) {
-        return false;
-    }
-    ID3D11Texture2D* dsv_tex = nullptr;
-    const HRESULT hr_dsv = dsv_res->QueryInterface(__uuidof(ID3D11Texture2D), reinterpret_cast<void**>(&dsv_tex));
-    SafeRelease(dsv_res);
-    if (FAILED(hr_dsv) || !dsv_tex) {
-        return false;
-    }
-    D3D11_TEXTURE2D_DESC dsv_tex_desc{};
-    dsv_tex->GetDesc(&dsv_tex_desc);
-    SafeRelease(dsv_tex);
-    if (dsv_tex_desc.Width != g_st.water_depth_w || dsv_tex_desc.Height != g_st.water_depth_h ||
-        dsv_tex_desc.SampleDesc.Count != 1) {
-        return false;
-    }
-
-    return true;
-}
-
-void ReplayWaterDrawIndexed(
-    ID3D11DeviceContext* ctx,
-    UINT IndexCount,
-    UINT StartIndexLocation,
-    INT BaseVertexLocation)
-{
-    static thread_local bool t_replaying = false;
-    if (t_replaying || !g_orig_draw_indexed) return;
-    t_replaying = true;
-
-    if (!g_st.water_depth_rtv || !g_st.ds_water_depth_readonly || !g_st.ps_write_water_depth ||
-        g_st.water_depth_w == 0 || g_st.water_depth_h == 0) {
-        t_replaying = false;
-        return;
-    }
-
-    ID3D11RenderTargetView* prev_rtvs[D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT] = {};
-    ID3D11DepthStencilView* prev_dsv = nullptr;
-    ctx->OMGetRenderTargets(D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT, prev_rtvs, &prev_dsv);
-
-    ID3D11BlendState* prev_blend = nullptr;
-    FLOAT prev_blend_factor[4] = {};
-    UINT prev_sample_mask = 0xFFFFFFFF;
-    ctx->OMGetBlendState(&prev_blend, prev_blend_factor, &prev_sample_mask);
-
-    ID3D11DepthStencilState* prev_dss = nullptr;
-    UINT prev_stencil_ref = 0;
-    ctx->OMGetDepthStencilState(&prev_dss, &prev_stencil_ref);
-
-    if (!CanReplayWaterDraw(prev_rtvs[0], prev_dsv, prev_blend, prev_dss)) {
-        for (UINT i = 0; i < D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT; ++i) {
-            SafeRelease(prev_rtvs[i]);
-        }
-        SafeRelease(prev_dsv);
-        SafeRelease(prev_blend);
-        SafeRelease(prev_dss);
-        t_replaying = false;
-        return;
-    }
-
-    ID3D11PixelShader* prev_ps = nullptr;
-    ID3D11ClassInstance* prev_class_inst[256] = {};
-    UINT prev_num_instances = 256;
-    ctx->PSGetShader(&prev_ps, prev_class_inst, &prev_num_instances);
-
-    ctx->OMSetRenderTargets(1, &g_st.water_depth_rtv, prev_dsv);
-    ctx->OMSetBlendState(nullptr, nullptr, 0xFFFFFFFF);
-    ctx->OMSetDepthStencilState(g_st.ds_water_depth_readonly, 0);
-    ctx->PSSetShader(g_st.ps_write_water_depth, nullptr, 0);
-
-    g_orig_draw_indexed(ctx, IndexCount, StartIndexLocation, BaseVertexLocation);
-
-    ctx->OMSetRenderTargets(D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT, prev_rtvs, prev_dsv);
-    ctx->OMSetBlendState(prev_blend, prev_blend_factor, prev_sample_mask);
-    ctx->OMSetDepthStencilState(prev_dss, prev_stencil_ref);
-    ctx->PSSetShader(prev_ps, prev_class_inst, prev_num_instances);
-
-    for (UINT i = 0; i < D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT; ++i) {
-        SafeRelease(prev_rtvs[i]);
-    }
-    SafeRelease(prev_dsv);
-    SafeRelease(prev_blend);
-    SafeRelease(prev_dss);
-    SafeRelease(prev_ps);
-    for (UINT i = 0; i < prev_num_instances; ++i) {
-        SafeRelease(prev_class_inst[i]);
-    }
-
-    t_replaying = false;
-}
-
-void ReplayWaterDraw(
-    ID3D11DeviceContext* ctx,
-    UINT VertexCount,
-    UINT StartVertexLocation)
-{
-    static thread_local bool t_replaying = false;
-    if (t_replaying || !g_orig_draw) return;
-    t_replaying = true;
-
-    if (!g_st.water_depth_rtv || !g_st.ds_water_depth_readonly || !g_st.ps_write_water_depth ||
-        g_st.water_depth_w == 0 || g_st.water_depth_h == 0) {
-        t_replaying = false;
-        return;
-    }
-
-    ID3D11RenderTargetView* prev_rtvs[D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT] = {};
-    ID3D11DepthStencilView* prev_dsv = nullptr;
-    ctx->OMGetRenderTargets(D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT, prev_rtvs, &prev_dsv);
-
-    ID3D11BlendState* prev_blend = nullptr;
-    FLOAT prev_blend_factor[4] = {};
-    UINT prev_sample_mask = 0xFFFFFFFF;
-    ctx->OMGetBlendState(&prev_blend, prev_blend_factor, &prev_sample_mask);
-
-    ID3D11DepthStencilState* prev_dss = nullptr;
-    UINT prev_stencil_ref = 0;
-    ctx->OMGetDepthStencilState(&prev_dss, &prev_stencil_ref);
-
-    if (!CanReplayWaterDraw(prev_rtvs[0], prev_dsv, prev_blend, prev_dss)) {
-        for (UINT i = 0; i < D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT; ++i) {
-            SafeRelease(prev_rtvs[i]);
-        }
-        SafeRelease(prev_dsv);
-        SafeRelease(prev_blend);
-        SafeRelease(prev_dss);
-        t_replaying = false;
-        return;
-    }
-
-    ID3D11PixelShader* prev_ps = nullptr;
-    ID3D11ClassInstance* prev_class_inst[256] = {};
-    UINT prev_num_instances = 256;
-    ctx->PSGetShader(&prev_ps, prev_class_inst, &prev_num_instances);
-
-    ctx->OMSetRenderTargets(1, &g_st.water_depth_rtv, prev_dsv);
-    ctx->OMSetBlendState(nullptr, nullptr, 0xFFFFFFFF);
-    ctx->OMSetDepthStencilState(g_st.ds_water_depth_readonly, 0);
-    ctx->PSSetShader(g_st.ps_write_water_depth, nullptr, 0);
-
-    g_orig_draw(ctx, VertexCount, StartVertexLocation);
-
-    ctx->OMSetRenderTargets(D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT, prev_rtvs, prev_dsv);
-    ctx->OMSetBlendState(prev_blend, prev_blend_factor, prev_sample_mask);
-    ctx->OMSetDepthStencilState(prev_dss, prev_stencil_ref);
-    ctx->PSSetShader(prev_ps, prev_class_inst, prev_num_instances);
-
-    for (UINT i = 0; i < D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT; ++i) {
-        SafeRelease(prev_rtvs[i]);
-    }
-    SafeRelease(prev_dsv);
-    SafeRelease(prev_blend);
-    SafeRelease(prev_dss);
-    SafeRelease(prev_ps);
-    for (UINT i = 0; i < prev_num_instances; ++i) {
-        SafeRelease(prev_class_inst[i]);
-    }
-
-    t_replaying = false;
-}
-
-void STDMETHODCALLTYPE HookedDrawIndexed(
-    ID3D11DeviceContext* ctx,
-    UINT IndexCount,
-    UINT StartIndexLocation,
-    INT BaseVertexLocation)
-{
-    if (g_orig_draw_indexed) {
-        g_orig_draw_indexed(ctx, IndexCount, StartIndexLocation, BaseVertexLocation);
-    }
-    if (g_water_pass_active.load(std::memory_order_relaxed)) {
-        ReplayWaterDrawIndexed(ctx, IndexCount, StartIndexLocation, BaseVertexLocation);
-    }
-}
-
-void STDMETHODCALLTYPE HookedDraw(
-    ID3D11DeviceContext* ctx,
-    UINT VertexCount,
-    UINT StartVertexLocation)
-{
-    if (g_orig_draw) {
-        g_orig_draw(ctx, VertexCount, StartVertexLocation);
-    }
-    if (g_water_pass_active.load(std::memory_order_relaxed)) {
-        ReplayWaterDraw(ctx, VertexCount, StartVertexLocation);
-    }
-}
-
-}  // namespace
-
-void EnsureContextDrawHooked(ID3D11DeviceContext* ctx) {
-    if (!ctx) return;
-    ::AcquireSRWLockExclusive(&g_draw_hook_lock);
-    if (g_hooked_context == ctx) {
-        ::ReleaseSRWLockExclusive(&g_draw_hook_lock);
-        return;
-    }
-    if (g_hooked_context && g_hooked_context != ctx) {
-        if (g_orig_context_vtable) {
-            *reinterpret_cast<void***>(g_hooked_context) = g_orig_context_vtable;
-        }
-        g_hooked_context = nullptr;
-        g_orig_context_vtable = nullptr;
-        g_orig_draw_indexed = nullptr;
-        g_orig_draw = nullptr;
-    }
-
-    void** vtbl = *reinterpret_cast<void***>(ctx);
-    if (!vtbl || vtbl == g_shadow_context_vtable) {
-        ::ReleaseSRWLockExclusive(&g_draw_hook_lock);
-        return;
-    }
-
-    size_t copy_count = 115;
-    MEMORY_BASIC_INFORMATION mbi{};
-    if (::VirtualQuery(vtbl, &mbi, sizeof(mbi)) == sizeof(mbi)) {
-        const uintptr_t page_end = reinterpret_cast<uintptr_t>(mbi.BaseAddress) + mbi.RegionSize;
-        const uintptr_t max_bytes = page_end - reinterpret_cast<uintptr_t>(vtbl);
-        const size_t max_ptrs = max_bytes / sizeof(void*);
-        copy_count = (std::min)(static_cast<size_t>(256), (std::max)(static_cast<size_t>(115), max_ptrs));
-    }
-
-    std::memcpy(g_shadow_context_vtable, vtbl, copy_count * sizeof(void*));
-    g_orig_context_vtable = vtbl;
-    g_orig_draw_indexed = reinterpret_cast<DrawIndexedFn>(vtbl[12]);
-    g_orig_draw = reinterpret_cast<DrawFn>(vtbl[13]);
-
-    g_shadow_context_vtable[12] = reinterpret_cast<void*>(&HookedDrawIndexed);
-    g_shadow_context_vtable[13] = reinterpret_cast<void*>(&HookedDraw);
-
-    *reinterpret_cast<void***>(ctx) = g_shadow_context_vtable;
-    g_hooked_context = ctx;
-
-    ::ReleaseSRWLockExclusive(&g_draw_hook_lock);
-}
-
-void RemoveContextDrawHook() {
-    ::AcquireSRWLockExclusive(&g_draw_hook_lock);
-    if (g_hooked_context && g_orig_context_vtable) {
-        *reinterpret_cast<void***>(g_hooked_context) = g_orig_context_vtable;
-    }
-    g_hooked_context = nullptr;
-    g_orig_context_vtable = nullptr;
-    g_orig_draw_indexed = nullptr;
-    g_orig_draw = nullptr;
-    ::ReleaseSRWLockExclusive(&g_draw_hook_lock);
 }
 
 bool EnsureBenchQueries(ID3D11Device* dev) {
@@ -1804,13 +1410,7 @@ bool VerifyPostShadersCompile(PostLogFn logger) {
         bloom_lut_ok = bloom_lut_ok && ok_one;
     }
 
-    ID3DBlob* water_blob = nullptr;
-    const bool water_ok = CompileShaderBlobFromSource(
-        compile_fn, kWriteWaterDepthShaderSource, kWriteWaterDepthShaderSourceLength, "route_b_water_depth.hlsl",
-        "PS_WriteWaterDepth", "ps_4_0", macro_single, &water_blob, logger);
-    SafeRelease(water_blob);
-
-    return toast_ok && p2_ok && panel_ok && cursor_ok && bloom_lut_ok && water_ok;
+    return toast_ok && p2_ok && panel_ok && cursor_ok && bloom_lut_ok;
 }
 
 bool IsCustomCubeLutLoaded() {

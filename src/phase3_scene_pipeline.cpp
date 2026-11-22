@@ -707,7 +707,12 @@ bool HasWaterSurfaceKeyword(std::string_view tex_name) {
         ContainsAsciiInsensitive(fname, "crystal") ||    // oasis crystals
         ContainsAsciiInsensitive(fname, "shrine") ||
         ContainsAsciiInsensitive(fname, "pedestal") ||
-        ContainsAsciiInsensitive(fname, "entrance")) {
+        ContainsAsciiInsensitive(fname, "entrance") ||
+        ContainsAsciiInsensitive(fname, "wake") ||       // waterwake particle/ray
+        ContainsAsciiInsensitive(fname, "ray") ||
+        ContainsAsciiInsensitive(fname, "trail") ||
+        ContainsAsciiInsensitive(fname, "shot") ||
+        ContainsAsciiInsensitive(fname, "debri")) {
         return false;
     }
 
@@ -731,12 +736,10 @@ bool HasWaterSurfaceKeyword(std::string_view tex_name) {
 }
 
 void MaybeDetectWaterPassHint(const void* pass) {
-    if (!pass || !IsP2SsrEnabled()) {
-        g_water_pass_active.store(false, std::memory_order_relaxed);
+    if (!pass || g_frame_water_pass_hint.load(std::memory_order_relaxed) || !IsP2SsrEnabled()) {
         return;
     }
     if (!g_api.pass_get_num_tus || !g_api.pass_get_tus || !g_api.tus_get_texture_name) {
-        g_water_pass_active.store(false, std::memory_order_relaxed);
         return;
     }
     const uint16_t num_tus = g_api.pass_get_num_tus(pass);
@@ -749,11 +752,9 @@ void MaybeDetectWaterPassHint(const void* pass) {
         const std::string& tex_name = g_api.tus_get_texture_name(tus);
         if (HasWaterSurfaceKeyword(tex_name)) {
             g_frame_water_pass_hint.store(true, std::memory_order_relaxed);
-            g_water_pass_active.store(true, std::memory_order_relaxed);
             return;
         }
     }
-    g_water_pass_active.store(false, std::memory_order_relaxed);
 }
 
 int MapOgreBlendOpToShader(int ogre_lbx_op) {

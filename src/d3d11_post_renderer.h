@@ -259,14 +259,6 @@ struct PostRenderContext {
     uint32_t ssr_rt_w = 0;
     uint32_t ssr_rt_h = 0;
 
-    ID3D11Texture2D* water_depth_tex = nullptr;
-    ID3D11RenderTargetView* water_depth_rtv = nullptr;
-    ID3D11ShaderResourceView* water_depth_srv = nullptr;
-    uint32_t water_depth_w = 0;
-    uint32_t water_depth_h = 0;
-    ID3D11DepthStencilState* ds_water_depth_readonly = nullptr;
-    ID3D11PixelShader* ps_write_water_depth = nullptr;
-
     uint32_t depth_w = 0;
     uint32_t depth_h = 0;
     DXGI_FORMAT depth_tex_fmt = DXGI_FORMAT_UNKNOWN;
@@ -361,11 +353,6 @@ bool EnsureAoTargets(
     PostLogFn logger);
 bool EnsureDepthResolveTarget(ID3D11Device* dev, uint32_t width, uint32_t height, PostLogFn logger);
 bool EnsureSsrTarget(ID3D11Device* dev, uint32_t width, uint32_t height);
-bool EnsureWaterDepthTarget(ID3D11Device* dev, uint32_t width, uint32_t height);
-void ClearWaterDepthTargetForFrame(ID3D11DeviceContext* ctx);
-void EnsureContextDrawHooked(ID3D11DeviceContext* ctx);
-void RemoveContextDrawHook();
-extern std::atomic<bool> g_water_pass_active;
 bool EnsureP2CopyTarget(ID3D11Device* dev, uint32_t width, uint32_t height, DXGI_FORMAT fmt);
 bool CopyRtvTextureToP2Copy(
     ID3D11Device* dev,

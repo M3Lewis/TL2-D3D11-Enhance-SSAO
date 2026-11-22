@@ -25,7 +25,4 @@ extern const size_t kPanelShaderSourceLength;
 extern const char kBloomLutShaderSource[];
 extern const size_t kBloomLutShaderSourceLength;
 
-extern const char kWriteWaterDepthShaderSource[];
-extern const size_t kWriteWaterDepthShaderSourceLength;
-
 }  // namespace routeb

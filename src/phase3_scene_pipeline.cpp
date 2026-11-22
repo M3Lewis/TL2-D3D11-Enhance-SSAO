@@ -776,6 +776,50 @@ bool IsWaterSurfacePass(const void* pass) {
     return false;
 }
 
+bool IsWeatherRainParticleTexture(std::string_view tex_name) {
+    if (tex_name.empty()) {
+        return false;
+    }
+    const size_t last_slash = tex_name.find_last_of("/\\");
+    const std::string_view fname = (last_slash != std::string_view::npos) ? tex_name.substr(last_slash + 1) : tex_name;
+
+    if (!ContainsAsciiInsensitive(fname, "rain")) {
+        return false;
+    }
+
+    if (ContainsAsciiInsensitive(fname, "drain") ||
+        ContainsAsciiInsensitive(fname, "acidrain") ||
+        ContainsAsciiInsensitive(fname, "fusillade") ||
+        ContainsAsciiInsensitive(fname, "rainbow") ||
+        ContainsAsciiInsensitive(fname, "grain") ||
+        ContainsAsciiInsensitive(fname, "train") ||
+        ContainsAsciiInsensitive(fname, "brain")) {
+        return false;
+    }
+
+    return true;
+}
+
+bool IsDesertEnvironmentTexture(std::string_view tex_name) {
+    if (tex_name.empty()) {
+        return false;
+    }
+    return ContainsAsciiInsensitive(tex_name, "z2desert") ||
+           ContainsAsciiInsensitive(tex_name, "ossean") ||
+           ContainsAsciiInsensitive(tex_name, "lakebed");
+}
+
+bool IsMainMenuEnvironmentTexture(std::string_view tex_name) {
+    if (tex_name.empty()) {
+        return false;
+    }
+    return ContainsAsciiInsensitive(tex_name, "mainmenu");
+}
+
+std::atomic<uint64_t> g_last_rain_particle_tick_ms{0};
+std::atomic<uint64_t> g_last_desert_tex_tick_ms{0};
+std::atomic<uint64_t> g_last_main_menu_tex_tick_ms{0};
+
 int MapOgreBlendOpToShader(int ogre_lbx_op) {
     // Ogre LayerBlendOperationEx: 2=MODULATE, 3=MODULATE_X2, 4=MODULATE_X4, 5=ADD, 9..11=BLEND_*_ALPHA
     switch (ogre_lbx_op) {
@@ -1407,10 +1451,7 @@ void ApplyPassFogAndAlphaToExplicitPs(
                 : 0.0f;
         const float p3_scale =
             static_cast<float>((std::clamp)(g_phase3_strength_pct.load(std::memory_order_relaxed), 0, 200)) * 0.01f;
-        const float rain_wetness =
-            IsWeatherRainEnabled()
-                ? (static_cast<float>((std::clamp)(GetWeatherRainStrengthPct(), 0, 200)) * 0.01f)
-                : 0.0f;
+        const float rain_wetness = GetEffectiveRainStrength();
         const float enhance_flags[4] = {
             af_scale,
             rim_scale,
@@ -1902,6 +1943,26 @@ const void* __fastcall HookSceneManagerSetPass(
     if (is_water) {
         g_frame_water_pass_hint.store(true, std::memory_order_relaxed);
     }
+    if (g_api.pass_get_num_tus && g_api.pass_get_tus && g_api.tus_get_texture_name) {
+        const uint16_t num_tus = g_api.pass_get_num_tus(used_pass);
+        const uint16_t max_check = (num_tus < 4) ? num_tus : 4;
+        for (uint16_t i = 0; i < max_check; ++i) {
+            const void* tus = g_api.pass_get_tus(used_pass, i);
+            if (!tus) continue;
+            const std::string& tex_name = g_api.tus_get_texture_name(tus);
+            if (tex_name.empty()) continue;
+
+            if (IsWeatherRainParticleTexture(tex_name)) {
+                g_last_rain_particle_tick_ms.store(::GetTickCount64(), std::memory_order_relaxed);
+            }
+            if (IsDesertEnvironmentTexture(tex_name)) {
+                g_last_desert_tex_tick_ms.store(::GetTickCount64(), std::memory_order_relaxed);
+            }
+            if (IsMainMenuEnvironmentTexture(tex_name)) {
+                g_last_main_menu_tex_tick_ms.store(::GetTickCount64(), std::memory_order_relaxed);
+            }
+        }
+    }
     RecordPassDiag(used_pass, arch, skip_reason);
     if (Phase3PassObserverFn observer = g_pass_observer.load(std::memory_order_acquire)) {
         const char* pass_name = g_api.pass_get_name ? g_api.pass_get_name(used_pass).c_str() : "";
@@ -2132,6 +2193,55 @@ bool ResolveAllOgreExports(HMODULE ogre_mod) {
 }
 
 }  // namespace
+
+bool IsDynamicRainRecentlyObserved() {
+    const uint64_t last = g_last_rain_particle_tick_ms.load(std::memory_order_relaxed);
+    if (last == 0) return false;
+    const uint64_t now = ::GetTickCount64();
+    return (now >= last && (now - last) <= 2500ULL);
+}
+
+bool IsDesertSceneActive() {
+    const uint64_t last = g_last_desert_tex_tick_ms.load(std::memory_order_relaxed);
+    if (last == 0) return false;
+    const uint64_t now = ::GetTickCount64();
+    return (now >= last && (now - last) <= 3500ULL);
+}
+
+bool IsMainMenuActive() {
+    if (!IsActiveGameLevelLoaded()) {
+        return true;
+    }
+    const uint64_t last = g_last_main_menu_tex_tick_ms.load(std::memory_order_relaxed);
+    if (last > 0) {
+        const uint64_t now = ::GetTickCount64();
+        if (now >= last && (now - last) <= 3500ULL) {
+            return true;
+        }
+    }
+    return false;
+}
+
+float GetEffectiveRainStrength() {
+    // 1. Must be enabled by user in config / F8 panel
+    if (!IsWeatherRainEnabled()) {
+        return 0.0f;
+    }
+    // 2. Strict exclusion: Main menu is ALWAYS 0.0f
+    if (IsMainMenuActive()) {
+        return 0.0f;
+    }
+    // 3. Strict exclusion: Desert is ALWAYS 0.0f
+    if (IsDesertSceneActive()) {
+        return 0.0f;
+    }
+    // 4. Strict requirement: Dynamic rain particles must be actively rendered
+    if (!IsDynamicRainRecentlyObserved()) {
+        return 0.0f;
+    }
+    const float strength_pct = static_cast<float>(GetWeatherRainStrengthPct());
+    return (std::clamp)(strength_pct * 0.01f, 0.0f, 2.0f);
+}
 
 bool InstallPhase3ScenePipeline(void* d3d11_base, void* ogre_main_base, Phase3LogFn logger) {
     g_log = logger;

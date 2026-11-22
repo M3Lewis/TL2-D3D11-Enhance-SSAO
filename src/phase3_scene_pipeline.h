@@ -182,6 +182,11 @@ int GetP2FilterStrengthPct();
 bool WasP2PostShaderSeenRecently();
 bool ConsumeFrameWaterPassHint();
 
+bool IsDynamicRainRecentlyObserved();
+bool IsDesertSceneActive();
+bool IsMainMenuActive();
+float GetEffectiveRainStrength();
+
 using Phase3PassObserverFn = void (*)(
     const char* pass_name,
     bool lighting,

@@ -726,7 +726,7 @@ void TryDispatchAoForFrame(ActiveSceneFrame& frame, const char* trigger_src, uin
     req.sscs_strength_scale = static_cast<float>(GetRouteCSscsStrengthPct()) * 0.01f;
     req.aerial_strength_scale = static_cast<float>(GetP2AerialVignetteStrengthPct()) * 0.01f;
     req.ssr_strength_scale = static_cast<float>(GetP2SsrStrengthPct()) * 0.01f;
-    req.rain_strength = IsWeatherRainEnabled() ? (static_cast<float>(GetWeatherRainStrengthPct()) * 0.01f) : 0.0f;
+    req.rain_strength = GetEffectiveRainStrength();
     req.time_of_day = static_cast<float>(GetTimeOfDayHours());
     req.sscs_key_dir[0] = 0.42f;
     req.sscs_key_dir[1] = -0.907f;
@@ -834,7 +834,7 @@ void TryDispatchPostWorldForFrame(ActiveSceneFrame& frame) {
     req.water_hint = water_hint;
     req.filter_preset = GetP2FilterPreset();
     req.ssr_strength_scale = static_cast<float>(GetP2SsrStrengthPct()) * 0.01f;
-    req.rain_strength = IsWeatherRainEnabled() ? (static_cast<float>(GetWeatherRainStrengthPct()) * 0.01f) : 0.0f;
+    req.rain_strength = GetEffectiveRainStrength();
     req.time_of_day = static_cast<float>(GetTimeOfDayHours());
     req.lut_strength_scale = static_cast<float>(GetP2LutStrengthPct()) * 0.01f;
     (void)ExecutePostWorldPass(req, g_log);
@@ -1136,7 +1136,8 @@ void __fastcall HookRenderScene(void* sm, void* cam, void* vp, uint8_t show_over
         (void)ConsumeFrameWaterPassHint();
         ResetCapturedDirectionalLight();
         SetWaterPassActive(false);
-        SetWorldWaterCaptureOpen(true);
+        const bool main_menu = IsMainMenuActive();
+        SetWorldWaterCaptureOpen(!main_menu);
 
         ID3D11DeviceContext* ctx = nullptr;
         ID3D11RenderTargetView* rt_rtv = nullptr;

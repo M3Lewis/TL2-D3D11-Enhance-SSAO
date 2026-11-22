@@ -1,5 +1,6 @@
 #include "d3d11_post_renderer.h"
 #include "d3d11_post_shaders.h"
+#include "phase3_scene_pipeline.h"
 
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
@@ -961,6 +962,9 @@ bool CanReplayWaterDraw(
     ID3D11BlendState* blend,
     ID3D11DepthStencilState* dss)
 {
+    if (IsMainMenuActive()) {
+        return false;
+    }
     if (!IsWorldWaterCaptureOpen() || !g_st.water_depth_rtv || !g_st.ps_write_water_depth) {
         return false;
     }

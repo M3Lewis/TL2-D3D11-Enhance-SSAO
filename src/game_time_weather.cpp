@@ -175,6 +175,19 @@ float DirectGetTimeOfDay() {
     }
 }
 
+bool IsActiveGameLevelLoaded() {
+    EnsureEngineWeatherTimeFuncs();
+    if (!ResolveDirectLevelTimeAccess() || !g_fnGetActiveLevel) {
+        return false;
+    }
+    DWORD excCode = 0;
+    __try {
+        return g_fnGetActiveLevel() != nullptr;
+    } __except (excCode = GetExceptionCode(), EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
 void EnsureEngineWeatherTimeFuncs() {
     if (g_engine_funcs_inited.load(std::memory_order_relaxed)) {
         return;

@@ -21,5 +21,6 @@ bool ToggleTimeOfDayLocked();
 bool ResolveDirectLevelTimeAccess();
 bool DirectSetTimeOfDay(float hours);
 float DirectGetTimeOfDay();
+bool IsActiveGameLevelLoaded();
 
 }  // namespace routeb

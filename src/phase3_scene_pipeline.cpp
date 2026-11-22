@@ -20,7 +20,6 @@
 #include "hook_utils.h"
 #include "render_hook_manager.h"
 #include "game_time_weather.h"
-#include "d3d11_post_renderer.h"
 #include "d3d11_overlay_pass.h"
 
 namespace routeb {
@@ -1916,11 +1915,6 @@ const void* __fastcall HookSceneManagerSetPass(
         return used_pass;
     }
 
-    struct InSetPassScopeGuard {
-        InSetPassScopeGuard() { SetInSetPassScope(true); }
-        ~InSetPassScopeGuard() { SetInSetPassScope(false); }
-    } in_set_pass_guard;
-
     const bool suppressed = (*reinterpret_cast<const uint8_t*>(scene_mgr + kSmOffSuppressRenderState) != 0);
     if (suppressed && !even_if_suppressed) {
         return used_pass;
@@ -1938,9 +1932,7 @@ const void* __fastcall HookSceneManagerSetPass(
     bool is_ff_vs = false;
     SkipReason skip_reason = SkipReason::Matched;
     const PassArchetype arch = ClassifyPass(used_pass, flags, flags2, &is_ff_vs, &skip_reason);
-    const bool is_water = IsWaterSurfacePass(used_pass);
-    SetWaterPassActive(is_water);
-    if (is_water) {
+    if (IsWaterSurfacePass(used_pass)) {
         g_frame_water_pass_hint.store(true, std::memory_order_relaxed);
     }
     if (g_api.pass_get_num_tus && g_api.pass_get_tus && g_api.tus_get_texture_name) {

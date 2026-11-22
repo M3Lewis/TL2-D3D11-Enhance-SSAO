@@ -21,29 +21,17 @@ cbuffer CbAoParams : register(b0)
 
 #if MSAA_DEPTH
 Texture2DMS<float4> gDepthTex : register(t0);
-Texture2DMS<float4> gWaterDepthTex : register(t2);
 float LoadRawDepth(int2 pix)
 {
     int2 c = clamp(pix, gVpClamp.xy, gVpClamp.zw);
     return gDepthTex.Load(c, 0).r;
 }
-float LoadWaterDepth(int2 pix)
-{
-    int2 c = clamp(pix, gVpClamp.xy, gVpClamp.zw);
-    return gWaterDepthTex.Load(c, 0).r;
-}
 #else
 Texture2D<float4> gDepthTex : register(t0);
-Texture2D<float4> gWaterDepthTex : register(t2);
 float LoadRawDepth(int2 pix)
 {
     int2 c = clamp(pix, gVpClamp.xy, gVpClamp.zw);
     return gDepthTex.Load(int3(c, 0)).r;
-}
-float LoadWaterDepth(int2 pix)
-{
-    int2 c = clamp(pix, gVpClamp.xy, gVpClamp.zw);
-    return gWaterDepthTex.Load(int3(c, 0)).r;
 }
 #endif
 
@@ -495,20 +483,7 @@ float2 ProjectViewToVpUv(float3 pVS)
 float4 PS_WetFloorSsr(VsOut input) : SV_Target0
 {
     int2 pix = clamp(int2(input.pos.xy), gVpClamp.xy, gVpClamp.zw);
-    float waterZ = LoadWaterDepth(pix);
-    float rainStrength = saturate(gAerialFogParams.y);
-    bool isWaterMesh = (waterZ > 1e-5f && waterZ < 0.99998f);
-
-    // 既不是真实水体网格，也不是雨天积水，直接物理级全关 SSR！
-    // 荒原沙地、石板、雪地在晴天或室内全是 waterZ == 0.0，瞬间退出，彻底根除任何误判！
-    if (!isWaterMesh && rainStrength <= 0.02f)
-    {
-        return float4(0.0f, 0.0f, 0.0f, 0.0f);
-    }
-
-    // 若是真实水体网格，直接用精确水面深度 waterZ 重建水面发射点 P；
-    // 若是下雨天地面湿润，则沿用原始地表深度 LoadRawDepth(pix)
-    float rawC = isWaterMesh ? waterZ : LoadRawDepth(pix);
+    float rawC = 0.0f;
     float3 P = ReconstructPosVS(pix, rawC);
     float dC = -P.z;
     if (rawC >= 0.99998f || dC >= gProjZAndFade.z)
@@ -520,17 +495,30 @@ float4 PS_WetFloorSsr(VsOut input) : SV_Target0
     float baseLuma = dot(baseCol, float3(0.299f, 0.587f, 0.114f));
     float maxCh = max(max(baseCol.r, baseCol.g), baseCol.b);
 
+    float hasWaterHint = (gViewUpAndWater.w > 0.5f) ? 1.0f : 0.0f;
     float gTime = gAerialFogParams.x;
+    float rainStrength = saturate(gAerialFogParams.y);
     float timeHours = gAerialFogParams.z;
 
-    // 水深与浅滩岸边丝滑羽化过渡（仅真实水面网格计算）
-    float shoreFade = 1.0f;
-    if (isWaterMesh)
+    // 0. 硬门禁：既无水体网格又无雨天积水时，直接全关SSR（彻底杜绝干燥地图任何误判）
+    if (hasWaterHint < 0.5f && rainStrength <= 0.02f)
     {
-        float bedRaw = LoadRawDepth(pix);
-        float dBed = (bedRaw < 0.99998f) ? RawToLinearDist(bedRaw) : (dC + 5.0f);
-        shoreFade = smoothstep(0.015f, 0.14f, max(dBed - dC, 0.0f));
+        return float4(0.0f, 0.0f, 0.0f, 0.0f);
     }
+
+    // 1. 亮度自适应归一化相对色度（抬高下限至 0.22f，防止暗部弱光噪点被放大 20 多倍导致误判）
+    float normFactor = rcp(max(maxCh, 0.22f));
+    float relBlueDiff = (baseCol.b - baseCol.r) * normFactor;
+    float relTealBand = (max(baseCol.b, baseCol.g * 0.60f + baseCol.b * 0.40f) - baseCol.r) * normFactor;
+
+    // 2. 真实水面青蓝平衡门禁：水面呈青蓝/碧绿（G 明显高于 R，且 G-R 足够接近 B-G），
+    //    排除夜间冷光照射下的干燥沙地/石板/阴影（典型死蓝紫色，G 约等于 R，B 远大于 G）
+    bool isTealBalanced = (baseCol.g > baseCol.r + 0.015f) && ((baseCol.g - baseCol.r) >= (baseCol.b - baseCol.g) * 0.45f);
+
+    float minRelDiff = (hasWaterHint > 0.5f) ? 0.08f : 0.15f;
+    float isBlueOrTeal = (isTealBalanced && relBlueDiff > minRelDiff && baseCol.b >= baseCol.g * 0.72f)
+        ? saturate((relTealBand - minRelDiff * 0.5f) * 3.6f) : 0.0f;
+    float waterMask = smoothstep(0.12f, 0.50f, isBlueOrTeal);
 
     float3 N = ReconstructNormalVS(pix, P);
     float3 upVS = normalize(gViewUpAndWater.xyz);
@@ -566,7 +554,7 @@ float4 PS_WetFloorSsr(VsOut input) : SV_Target0
         wetGroundMask = saturate(puddle * rainStrength * 1.15f);
     }
 
-    float effectiveWaterMask = isWaterMesh ? shoreFade : wetGroundMask;
+    float effectiveWaterMask = max(waterMask, wetGroundMask);
     if (effectiveWaterMask <= 0.02f)
     {
         return float4(0.0f, 0.0f, 0.0f, 0.0f);
@@ -782,7 +770,7 @@ float4 PS_WetFloorSsr(VsOut input) : SV_Target0
     float cw1 = 1.0f - abs(sin(wx * 2.4f + gTime * 0.95f + sin(wz * 1.9f + gTime * 0.65f) * 0.8f));
     float cw2 = 1.0f - abs(sin(wz * 2.7f - gTime * 0.85f + cos(wx * 2.1f - gTime * 0.70f) * 0.8f));
     float caustics = pow(saturate(cw1 * cw2), 2.4f) * 0.16f * waveFade *
-                     smoothstep(0.05f, 0.26f, baseLuma) * smoothstep(0.30f, 0.75f, effectiveWaterMask);
+                     smoothstep(0.05f, 0.26f, baseLuma) * smoothstep(0.30f, 0.75f, waterMask);
     // 强倒影区用 2.5 次方彻底让位给倒影，杜绝焦散白丝混在炮身上
     float caustAlpha = saturate(caustics * wetMask * saturate(ssrStr) * pow(1.0f - reflAlpha, 2.5f));
     float3 caustCol = float3(0.86f, 0.96f, 1.0f);
@@ -1220,13 +1208,5 @@ float4 PS_LutGrade3D(VS_OUT input) : SV_Target0
 }
 )HLSL";
 const size_t kBloomLutShaderSourceLength = sizeof(kBloomLutShaderSource) - 1;
-
-const char kWriteWaterDepthShaderSource[] = R"HLSL(
-float PS_WriteWaterDepth(float4 pos : SV_POSITION) : SV_Target0
-{
-    return pos.z;
-}
-)HLSL";
-const size_t kWriteWaterDepthShaderSourceLength = sizeof(kWriteWaterDepthShaderSource) - 1;
 
 }  // namespace routeb

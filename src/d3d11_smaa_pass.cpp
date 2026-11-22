@@ -507,7 +507,12 @@ bool ExecuteSmaaPass(const SmaaRequest& req, PostLogFn logger) {
     };
     req.ctx->PSSetShaderResources(0, 3, srvs_pass3);
     req.ctx->Draw(3, 0);
-    req.ctx->PSSetShaderResources(0, 3, null_srvs);
+    ID3D11ShaderResourceView* null_srvs4[4] = {nullptr, nullptr, nullptr, nullptr};
+    req.ctx->PSSetShaderResources(0, 4, null_srvs4);
+    ID3D11SamplerState* null_samps[2] = {nullptr, nullptr};
+    req.ctx->PSSetSamplers(0, 2, null_samps);
+    ID3D11Buffer* null_cb = nullptr;
+    req.ctx->PSSetConstantBuffers(0, 1, &null_cb);
 
     g_smaa_executed.fetch_add(1, std::memory_order_relaxed);
     return true;

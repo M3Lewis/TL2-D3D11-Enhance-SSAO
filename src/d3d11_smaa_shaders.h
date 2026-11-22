@@ -235,6 +235,8 @@ float2 SMAASearchDiag1(Texture2D<float2> edgesTex, float2 texcoord, float2 dir, 
 {
     float4 coord = float4(texcoord, -1.0, 1.0);
     float3 t = float3(gSmaaRtMetrics.xy, 1.0);
+    e = float2(0.0, 0.0);
+    [unroll(16)]
     while (coord.z < float(SMAA_MAX_SEARCH_STEPS_DIAG - 1) && coord.w > 0.9)
     {
         coord.xyz = mad(t, float3(dir, 1.0), coord.xyz);
@@ -248,6 +250,8 @@ float2 SMAASearchDiag2(Texture2D<float2> edgesTex, float2 texcoord, float2 dir, 
 {
     float4 coord = float4(texcoord, -1.0, 1.0);
     float3 t = float3(gSmaaRtMetrics.xy, 1.0);
+    e = float2(0.0, 0.0);
+    [unroll(16)]
     while (coord.z < float(SMAA_MAX_SEARCH_STEPS_DIAG - 1) && coord.w > 0.9)
     {
         coord.xyz = mad(t, float3(dir, 1.0), coord.xyz);
@@ -272,8 +276,8 @@ float2 SMAACalculateDiagWeights(Texture2D<float2> edgesTex, Texture2D<float2> ar
     float2 weights = float2(0.0, 0.0);
 
     // Search for the line ends (first diagonal direction):
-    float4 d;
-    float2 end;
+    float4 d = float4(0.0, 0.0, 0.0, 0.0);
+    float2 end = float2(0.0, 0.0);
     if (e.r > 0.0)
     {
         d.xz = SMAASearchDiag1(edgesTex, texcoord, float2(-1.0,  1.0), end);

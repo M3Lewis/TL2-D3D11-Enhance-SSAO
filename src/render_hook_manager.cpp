@@ -900,6 +900,9 @@ void TryDispatchSmaaForFrame(ActiveSceneFrame& frame) {
     if (smaa_mode <= 0) {
         return;
     }
+    if (frame.vp_w < 640 || frame.vp_h < 480) {
+        return;
+    }
     frame.smaa_injected = true;
 
     ID3D11DeviceContext* ctx = nullptr;

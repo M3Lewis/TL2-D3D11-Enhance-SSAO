@@ -87,9 +87,9 @@ public:
         ctx_->VSGetShader(&vs_, vs_ci_, &vs_ci_cnt_);
         ctx_->GSGetShader(&gs_, gs_ci_, &gs_ci_cnt_);
         ctx_->PSGetShader(&ps_, ps_ci_, &ps_ci_cnt_);
-        ctx_->PSGetConstantBuffers(0, 1, &ps_cb0_);
-        ctx_->PSGetShaderResources(0, 2, ps_srvs_);
-        ctx_->PSGetSamplers(0, 1, &ps_samp0_);
+        ctx_->PSGetConstantBuffers(0, 4, ps_cbs_);
+        ctx_->PSGetShaderResources(0, 8, ps_srvs_);
+        ctx_->PSGetSamplers(0, 4, ps_samps_);
     }
 
     ~D3D11StateGuard() {
@@ -105,9 +105,9 @@ public:
             ctx_->VSSetShader(vs_, vs_ci_, vs_ci_cnt_);
             ctx_->GSSetShader(gs_, gs_ci_, gs_ci_cnt_);
             ctx_->PSSetShader(ps_, ps_ci_, ps_ci_cnt_);
-            ctx_->PSSetConstantBuffers(0, 1, &ps_cb0_);
-            ctx_->PSSetShaderResources(0, 2, ps_srvs_);
-            ctx_->PSSetSamplers(0, 1, &ps_samp0_);
+            ctx_->PSSetConstantBuffers(0, 4, ps_cbs_);
+            ctx_->PSSetShaderResources(0, 8, ps_srvs_);
+            ctx_->PSSetSamplers(0, 4, ps_samps_);
         }
         for (UINT i = 0; i < D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT; ++i) {
             SafeRelease(rtvs_[i]);
@@ -120,10 +120,15 @@ public:
         SafeRelease(vs_);
         SafeRelease(gs_);
         SafeRelease(ps_);
-        SafeRelease(ps_cb0_);
-        SafeRelease(ps_srvs_[0]);
-        SafeRelease(ps_srvs_[1]);
-        SafeRelease(ps_samp0_);
+        for (UINT i = 0; i < 4; ++i) {
+            SafeRelease(ps_cbs_[i]);
+        }
+        for (UINT i = 0; i < 8; ++i) {
+            SafeRelease(ps_srvs_[i]);
+        }
+        for (UINT i = 0; i < 4; ++i) {
+            SafeRelease(ps_samps_[i]);
+        }
         SafeReleaseClassInstances(vs_ci_, vs_ci_cnt_);
         SafeReleaseClassInstances(gs_ci_, gs_ci_cnt_);
         SafeReleaseClassInstances(ps_ci_, ps_ci_cnt_);
@@ -160,9 +165,9 @@ private:
     ID3D11PixelShader* ps_ = nullptr;
     ID3D11ClassInstance* ps_ci_[D3D11_SHADER_MAX_INTERFACES]{};
     UINT ps_ci_cnt_ = D3D11_SHADER_MAX_INTERFACES;
-    ID3D11Buffer* ps_cb0_ = nullptr;
-    ID3D11ShaderResourceView* ps_srvs_[2]{};
-    ID3D11SamplerState* ps_samp0_ = nullptr;
+    ID3D11Buffer* ps_cbs_[4]{};
+    ID3D11ShaderResourceView* ps_srvs_[8]{};
+    ID3D11SamplerState* ps_samps_[4]{};
 };
 
 struct DepthVariantShaders {

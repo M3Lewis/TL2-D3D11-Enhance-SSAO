@@ -565,7 +565,8 @@ float4 PS_WetFloorSsr(VsOut input) : SV_Target0
         float pNoise = sin(wx * 0.82f + sin(wz * 0.68f) * 1.3f) *
                        cos(wz * 0.92f + cos(wx * 0.78f) * 1.2f);
         float puddle = smoothstep(0.18f - rainStrength * 0.38f, 0.68f - rainStrength * 0.22f, pNoise);
-        wetGroundMask = saturate(puddle * rainStrength * 1.15f);
+        float wetFilm = 0.22f * rainStrength;
+        wetGroundMask = saturate(lerp(wetFilm, 1.0f, puddle) * rainStrength);
     }
 
     float effectiveWaterMask = isWaterMesh ? shoreFade : wetGroundMask;

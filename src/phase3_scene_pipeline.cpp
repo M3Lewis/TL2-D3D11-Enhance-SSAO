@@ -847,8 +847,6 @@ std::atomic<uint64_t> g_recent_drop_window_ms{0};
 std::atomic<uint32_t> g_recent_drop_count{0};
 std::atomic<uint64_t> g_last_desert_tex_tick_ms{0};
 std::atomic<uint64_t> g_last_main_menu_tex_tick_ms{0};
-std::atomic<float> g_smoothed_rain_strength{0.0f};
-std::atomic<uint64_t> g_last_rain_smooth_tick_ms{0};
 
 void RecordRainParticleObservation(std::string_view tex_name) {
     const RainParticleType type = ClassifyRainParticleTexture(tex_name);
@@ -2294,50 +2292,24 @@ bool IsMainMenuActive() {
 float GetEffectiveRainStrength() {
     // 1. Strict exclusion: Main menu is ALWAYS 0.0f immediately (zero latency, no lingering reflections)
     if (IsMainMenuActive()) {
-        g_smoothed_rain_strength.store(0.0f, std::memory_order_relaxed);
-        g_last_rain_smooth_tick_ms.store(::GetTickCount64(), std::memory_order_relaxed);
         return 0.0f;
     }
     // 2. Strict exclusion: Desert is ALWAYS 0.0f immediately (zero latency, 100% dry desert)
     if (IsDesertSceneActive()) {
-        g_smoothed_rain_strength.store(0.0f, std::memory_order_relaxed);
-        g_last_rain_smooth_tick_ms.store(::GetTickCount64(), std::memory_order_relaxed);
         return 0.0f;
     }
     // 3. Must be enabled by user in config / F8 panel
     if (!IsWeatherRainEnabled()) {
-        g_smoothed_rain_strength.store(0.0f, std::memory_order_relaxed);
-        g_last_rain_smooth_tick_ms.store(::GetTickCount64(), std::memory_order_relaxed);
         return 0.0f;
     }
 
     // 4. Target strength based on whether dynamic rain particles are actively rendered
-    float target = 0.0f;
     if (IsDynamicRainRecentlyObserved()) {
         const float strength_pct = static_cast<float>(GetWeatherRainStrengthPct());
-        target = (std::clamp)(strength_pct * 0.01f, 0.0f, 2.0f);
+        return (std::clamp)(strength_pct * 0.01f, 0.0f, 2.0f);
     }
 
-    // 5. Smooth wet/dry transition (Expert Advice 20):
-    // Rain starting (pooling): ~2.5s from 0.0 -> 1.0 (pool_rate = 0.40f / s)
-    // Rain stopping (drying): ~4.0s from 1.0 -> 0.0 (dry_rate = 0.25f / s)
-    const uint64_t now = ::GetTickCount64();
-    const uint64_t last_tick = g_last_rain_smooth_tick_ms.exchange(now, std::memory_order_relaxed);
-    float current = g_smoothed_rain_strength.load(std::memory_order_relaxed);
-
-    if (last_tick == 0 || now < last_tick) {
-        current = target;
-    } else {
-        const float dt = (std::clamp)(static_cast<float>(now - last_tick) * 0.001f, 0.0f, 0.25f);
-        if (current < target) {
-            current = (std::min)(current + 0.40f * dt, target);
-        } else if (current > target) {
-            current = (std::max)(current - 0.25f * dt, target);
-        }
-    }
-
-    g_smoothed_rain_strength.store(current, std::memory_order_relaxed);
-    return current;
+    return 0.0f;
 }
 
 bool InstallPhase3ScenePipeline(void* d3d11_base, void* ogre_main_base, Phase3LogFn logger) {

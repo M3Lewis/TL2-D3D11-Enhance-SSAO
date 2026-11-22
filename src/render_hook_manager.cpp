@@ -1743,7 +1743,7 @@ void LogPipelineSurveySummary(PostLogFn logger) {
 
     const auto d3d_st = GetPostRenderStats();
     logger(
-        "[RouteC][C2][Stats] debugMode=%d ok=%llu skipNoOm=%llu skipFmt=%llu skipFail=%llu depthRebuilds=%u lastTex=%ux%u rtvFmt=%u dsvTexFmt=%u msaa=%ux shadersReady=%d",
+        "[RouteC][C2][Stats] debugMode=%d ok=%llu skipNoOm=%llu skipFmt=%llu skipFail=%llu depthRebuilds=%u lastTex=%ux%u rtvFmt=%u dsvTexFmt=%u msaa=%ux shadersReady=%d rainObs=%d desert=%d menu=%d rainStr=%.2f",
         g_ao_debug_mode.load(std::memory_order_relaxed),
         static_cast<unsigned long long>(d3d_st.inject_ok),
         static_cast<unsigned long long>(d3d_st.inject_skip_no_om),
@@ -1755,7 +1755,11 @@ void LogPipelineSurveySummary(PostLogFn logger) {
         d3d_st.last_rtv_fmt,
         d3d_st.last_dsv_tex_fmt,
         d3d_st.last_sample_count,
-        d3d_st.shaders_ready ? 1 : 0);
+        d3d_st.shaders_ready ? 1 : 0,
+        IsDynamicRainRecentlyObserved() ? 1 : 0,
+        IsDesertSceneActive() ? 1 : 0,
+        IsMainMenuActive() ? 1 : 0,
+        GetEffectiveRainStrength());
     logger(
         "[WaterFunnel] setPass=%llu drawActive=%llu gateOpen=%llu canReplay=%llu bindOk=%llu",
         static_cast<unsigned long long>(g_water_funnel_set_pass.load(std::memory_order_relaxed)),

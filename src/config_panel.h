@@ -24,6 +24,7 @@ struct VisualConfig {
     bool p1_soft_particles = true;
     bool p2_aerial_vignette = true;
     bool p2_ssr_enabled = true;
+    bool p2_kawase_bloom_enabled = true;
     int p2_filter_preset = 1;  // 0=Off, 1=Hob, 2=Dark Film
     int p2_lut_preset = 0;     // 0=Off, 1=CinemaTealOrange, 2=ColdNordic, 3=CustomCube
     int smaa_mode = 0;         // 0=Off, 1=Color, 2=Depth+Color
@@ -42,6 +43,7 @@ struct VisualConfig {
     int p2_ssr_strength = 100;       // 0..200 (%)
     int p2_filter_strength = 100;    // 0..200 (%)
     int p2_lut_strength = 100;       // 0..200 (%)
+    int p2_kawase_bloom_strength = 100; // 0..200 (%)
 
     bool operator==(const VisualConfig& other) const = default;
 };

@@ -618,7 +618,7 @@ void MaybeApplyP2FilterUniformsToPass(const void* pass) {
     const float vig_scale =
         (is_fxaa && IsP2AerialVignetteEnabled())
             ? (static_cast<float>(GetP2AerialVignetteStrengthPct()) * 0.01f)
-            : 0.0f;
+            : ((is_bloom_blend && IsKawaseBloomEnabled() && GetKawaseBloomStrengthPct() > 0) ? 1.0f : 0.0f);
     const float filter_scale =
         static_cast<float>((std::clamp)(g_p2_filter_strength_pct.load(std::memory_order_relaxed), 0, 200)) * 0.01f;
     const float params[4] = {

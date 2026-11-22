@@ -1,4 +1,5 @@
 #include "d3d11_ssr_pass.h"
+#include "d3d11_bloom_pass.h"
 #include "d3d11_post_renderer.h"
 
 #define WIN32_LEAN_AND_MEAN
@@ -22,7 +23,7 @@ void ResetPostWorldDepthSnapshot() {
 
 bool ExecutePostWorldPass(const PostWorldRequest& req, PostLogFn logger) {
     if (!req.ctx || req.vp_width <= 0 || req.vp_height <= 0 || req.debug_mode > 0 ||
-        (!req.ssr_enabled && req.lut_preset <= 0)) {
+        (!req.ssr_enabled && !req.bloom_enabled && req.lut_preset <= 0)) {
         return false;
     }
 
@@ -153,7 +154,31 @@ bool ExecutePostWorldPass(const PostWorldRequest& req, PostLogFn logger) {
         did_any = true;
     }
 
-    // Item 7: 3D LUT Color Grading (post-world + post-SSR, strictly pre-UI)
+    // Multi-Mip Dual-Kawase Bloom (post-world + post-SSR, strictly pre-LUT & pre-UI)
+    if (req.bloom_enabled && req.bloom_strength_scale > 0.001f &&
+        CopyRtvTextureToP2Copy(dev, req.ctx, src_rt_tex, rt_desc, rtv_desc)) {
+        KawaseBloomRequest breq{};
+        breq.dev = dev;
+        breq.ctx = req.ctx;
+        breq.target_rtv = target_rtv;
+        breq.scene_srv = g_st.p2_copy_srv;
+        breq.rt_w = rt_desc.Width;
+        breq.rt_h = rt_desc.Height;
+        breq.vp_left = req.vp_left;
+        breq.vp_top = req.vp_top;
+        breq.vp_width = req.vp_width;
+        breq.vp_height = req.vp_height;
+        breq.filter_preset = req.filter_preset;
+        breq.strength_scale = req.bloom_strength_scale;
+        breq.is_desert = req.is_desert;
+        breq.is_menu = req.is_menu;
+        if (ExecuteKawaseBloomPass(breq, logger)) {
+            did_any = true;
+        }
+        req.ctx->PSSetSamplers(0, 1, &g_st.samp_linear);
+    }
+
+    // Item 7: 3D LUT Color Grading (post-world + post-SSR + post-Bloom, strictly pre-UI)
     if (req.lut_preset > 0 &&
         g_st.ps_lut_grade && g_st.cb_bloom_lut && g_st.blend_debug_rgb &&
         EnsureLutReady(dev, req.lut_preset, logger) &&

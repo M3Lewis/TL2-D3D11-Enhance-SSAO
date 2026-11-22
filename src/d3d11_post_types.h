@@ -115,13 +115,17 @@ struct PostWorldRequest {
     int vp_height = 0;
     int debug_mode = 0;
     bool ssr_enabled = false;
+    bool bloom_enabled = false;
     int lut_preset = 0;     // 0=OFF, 1=CinemaTealOrange, 2=ColdNordic, 3=Custom(.cube)
     bool water_hint = false;
     int filter_preset = 1;  // 0=OFF, 1=HOB, 2=DRK
     float ssr_strength_scale = 1.0f;
+    float bloom_strength_scale = 1.0f;
     float rain_strength = 0.0f;
     float time_of_day = -1.0f;
     float lut_strength_scale = 1.0f;
+    bool is_desert = false;
+    bool is_menu = false;
 };
 using RouteCPostWorldRequest = PostWorldRequest;
 

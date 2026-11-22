@@ -1,5 +1,6 @@
 #include "d3d11_post_renderer.h"
 #include "d3d11_post_shaders.h"
+#include "d3d11_bloom_pass.h"
 #include "d3d11_smaa_pass.h"
 #include "d3d11_smaa_shaders.h"
 #include "phase3_scene_pipeline.h"
@@ -196,6 +197,7 @@ void ReleaseTargets() {
     g_st.particle_depth_valid = false;
     g_st.post_world_depth_valid = false;
     g_st.post_world_msaa = false;
+    ReleaseBloomTargets();
     ReleaseSmaaTargets();
 }
 
@@ -214,6 +216,7 @@ void ReleaseAllDeviceObjects() {
     ReleaseBenchQueries();
     ReleaseTargets();
     ReleaseLutResources();
+    ReleaseBloomAllObjects();
     ReleaseSmaaAllObjects();
     SafeRelease(g_st.rs_fullscreen);
     SafeRelease(g_st.dss_disabled);
@@ -1950,7 +1953,8 @@ bool VerifyPostShadersCompile(PostLogFn logger) {
         smaa_ok = smaa_ok && ok_one;
     }
 
-    return toast_ok && p2_ok && panel_ok && cursor_ok && bloom_lut_ok && water_ok && smaa_ok;
+    const bool bloom_ok = VerifyBloomShadersCompile(logger);
+    return toast_ok && p2_ok && panel_ok && cursor_ok && bloom_lut_ok && water_ok && smaa_ok && bloom_ok;
 }
 
 bool IsCustomCubeLutLoaded() {

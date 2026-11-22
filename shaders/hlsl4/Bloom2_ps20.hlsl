@@ -80,7 +80,10 @@ float4 postprocess_impl(float2 texCoord)
 {
     float4 sharp = RT.Sample(RTSampler, texCoord);
     float4 blur = Blur1.Sample(Blur1Sampler, texCoord);
-    float4 combined = blur * BlurWeight + sharp * OriginalImageWeight;
+    bool suppressVanillaBloom = (p2FilterParams.z > 0.5);
+    float effBlurW = suppressVanillaBloom ? 0.0 : BlurWeight;
+    float effOrigW = suppressVanillaBloom ? max(OriginalImageWeight, 1.0) : OriginalImageWeight;
+    float4 combined = blur * effBlurW + sharp * effOrigW;
 
     float filterStrength = clamp(p2FilterParams.w, 0.0, 1.65);
     if (p2FilterParams.x > 0.5 && p2FilterParams.y > 0.5 && filterStrength > 0.001)

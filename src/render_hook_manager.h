@@ -31,6 +31,10 @@ void SetSsrEnabled(bool enabled);
 bool IsSsrEnabled();
 bool ToggleSsrEnabled();
 
+void SetKawaseBloomEnabled(bool enabled);
+bool IsKawaseBloomEnabled();
+bool ToggleKawaseBloomEnabled();
+
 void SetLutPreset(int preset);
 int GetLutPreset();
 const char* LutPresetName(int preset);
@@ -45,6 +49,8 @@ void SetAerialVignetteStrengthPct(int pct);
 int GetAerialVignetteStrengthPct();
 void SetSsrStrengthPct(int pct);
 int GetSsrStrengthPct();
+void SetKawaseBloomStrengthPct(int pct);
+int GetKawaseBloomStrengthPct();
 void SetLutStrengthPct(int pct);
 int GetLutStrengthPct();
 
@@ -82,6 +88,9 @@ inline bool ToggleP2AerialVignetteEnabled() { return ToggleAerialVignetteEnabled
 inline void SetP2SsrEnabled(bool e) { SetSsrEnabled(e); }
 inline bool IsP2SsrEnabled() { return IsSsrEnabled(); }
 inline bool ToggleP2SsrEnabled() { return ToggleSsrEnabled(); }
+inline void SetP2KawaseBloomEnabled(bool e) { SetKawaseBloomEnabled(e); }
+inline bool IsP2KawaseBloomEnabled() { return IsKawaseBloomEnabled(); }
+inline bool ToggleP2KawaseBloomEnabled() { return ToggleKawaseBloomEnabled(); }
 inline void SetP2LutPreset(int p) { SetLutPreset(p); }
 inline int GetP2LutPreset() { return GetLutPreset(); }
 inline const char* P2LutPresetName(int p) { return LutPresetName(p); }
@@ -96,6 +105,8 @@ inline void SetP2AerialVignetteStrengthPct(int p) { SetAerialVignetteStrengthPct
 inline int GetP2AerialVignetteStrengthPct() { return GetAerialVignetteStrengthPct(); }
 inline void SetP2SsrStrengthPct(int p) { SetSsrStrengthPct(p); }
 inline int GetP2SsrStrengthPct() { return GetSsrStrengthPct(); }
+inline void SetP2KawaseBloomStrengthPct(int p) { SetKawaseBloomStrengthPct(p); }
+inline int GetP2KawaseBloomStrengthPct() { return GetKawaseBloomStrengthPct(); }
 inline void SetP2LutStrengthPct(int p) { SetLutStrengthPct(p); }
 inline int GetP2LutStrengthPct() { return GetLutStrengthPct(); }
 

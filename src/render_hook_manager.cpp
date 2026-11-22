@@ -3,6 +3,7 @@
 #include "d3d11_post_renderer.h"
 #include "d3d11_ssao_pass.h"
 #include "d3d11_ssr_pass.h"
+#include "d3d11_bloom_pass.h"
 #include "d3d11_smaa_pass.h"
 #include "d3d11_overlay_pass.h"
 
@@ -211,12 +212,14 @@ std::atomic<bool> g_sscs_runtime_enabled{true};
 std::atomic<bool> g_p1_soft_particles_enabled{true};
 std::atomic<bool> g_p2_aerial_vignette_enabled{true};
 std::atomic<bool> g_p2_ssr_enabled{true};
+std::atomic<bool> g_p2_kawase_bloom_enabled{true};
 std::atomic<int> g_p2_lut_preset{0};  // 0=OFF, 1=CinemaTealOrange, 2=ColdNordic, 3=CustomCube
 std::atomic<int> g_ao_strength_pct{100};
 std::atomic<int> g_sscs_strength_pct{100};
 std::atomic<int> g_p1_soft_particles_strength_pct{100};
 std::atomic<int> g_p2_aerial_vignette_strength_pct{100};
 std::atomic<int> g_p2_ssr_strength_pct{100};
+std::atomic<int> g_p2_kawase_bloom_strength_pct{100};
 std::atomic<int> g_p2_lut_strength_pct{100};
 std::atomic<bool> g_weather_rain_enabled{false};
 std::atomic<int> g_weather_rain_strength_pct{100};
@@ -808,8 +811,9 @@ void TryDispatchPostWorldForFrame(ActiveSceneFrame& frame) {
     const bool ao_on = g_ao_runtime_enabled.load(std::memory_order_relaxed);
     const int dbg_mode = ao_on ? g_ao_debug_mode.load(std::memory_order_relaxed) : -1;
     const bool ssr_on = (dbg_mode <= 0) && g_p2_ssr_enabled.load(std::memory_order_relaxed);
+    const bool bloom_on = (dbg_mode <= 0) && g_p2_kawase_bloom_enabled.load(std::memory_order_relaxed);
     const int lut_preset = (dbg_mode <= 0) ? g_p2_lut_preset.load(std::memory_order_relaxed) : 0;
-    if (!ssr_on && lut_preset <= 0) {
+    if (!ssr_on && !bloom_on && lut_preset <= 0) {
         return;
     }
     frame.post_world_injected = true;
@@ -832,13 +836,17 @@ void TryDispatchPostWorldForFrame(ActiveSceneFrame& frame) {
     req.vp_height = frame.vp_h;
     req.debug_mode = (dbg_mode >= 0) ? dbg_mode : 0;
     req.ssr_enabled = ssr_on;
+    req.bloom_enabled = bloom_on;
     req.lut_preset = lut_preset;
     req.water_hint = water_hint;
     req.filter_preset = GetP2FilterPreset();
     req.ssr_strength_scale = static_cast<float>(GetP2SsrStrengthPct()) * 0.01f;
+    req.bloom_strength_scale = static_cast<float>(GetP2KawaseBloomStrengthPct()) * 0.01f;
     req.rain_strength = GetEffectiveRainStrength();
     req.time_of_day = static_cast<float>(GetTimeOfDayHours());
     req.lut_strength_scale = static_cast<float>(GetP2LutStrengthPct()) * 0.01f;
+    req.is_desert = IsDesertSceneActive();
+    req.is_menu = IsMainMenuActive();
     (void)ExecutePostWorldPass(req, g_log);
     SafeRelease(ctx);
 }
@@ -1105,8 +1113,9 @@ void __fastcall HookRenderScene(void* sm, void* cam, void* vp, uint8_t show_over
     const bool sp_on = g_p1_soft_particles_enabled.load(std::memory_order_relaxed);
     const bool aerial_on = g_p2_aerial_vignette_enabled.load(std::memory_order_relaxed);
     const bool ssr_on = g_p2_ssr_enabled.load(std::memory_order_relaxed);
+    const bool bloom_on = g_p2_kawase_bloom_enabled.load(std::memory_order_relaxed);
     const int lut_preset = g_p2_lut_preset.load(std::memory_order_relaxed);
-    const bool need_depth_pipeline = (dbg_mode >= 0) || sp_on || aerial_on || ssr_on || (lut_preset > 0);
+    const bool need_depth_pipeline = (dbg_mode >= 0) || sp_on || aerial_on || ssr_on || bloom_on || (lut_preset > 0);
     const bool need_filter_fallback = ((GetP2FilterPreset() > 0) || aerial_on) && !WasP2PostShaderSeenRecently();
     if ((!survey_on && !need_depth_pipeline && !need_filter_fallback) || g_scene_depth >= kMaxSceneStack || !sm || !vp) {
         const bool prev_ready = g_world_depth_ready_for_particles.exchange(false, std::memory_order_acq_rel);
@@ -1549,6 +1558,7 @@ bool InstallRenderPipeline(void* ogre_main_base, PostLogFn logger) {
     g_p1_soft_particles_enabled.store(!EnvFlagIsZero("TL2_P1_SOFT_PARTICLES"), std::memory_order_relaxed);
     g_p2_aerial_vignette_enabled.store(!EnvFlagIsZero("TL2_P2_AERIAL_VIGNETTE"), std::memory_order_relaxed);
     g_p2_ssr_enabled.store(!EnvFlagIsZero("TL2_P2_SSR"), std::memory_order_relaxed);
+    g_p2_kawase_bloom_enabled.store(!EnvFlagIsZero("TL2_P2_KAWASE_BLOOM"), std::memory_order_relaxed);
     g_p2_lut_preset.store(0, std::memory_order_relaxed);
     g_world_depth_ready_for_particles.store(false, std::memory_order_relaxed);
     g_ao_debug_mode.store(dbg_mode, std::memory_order_relaxed);
@@ -1558,12 +1568,13 @@ bool InstallRenderPipeline(void* ogre_main_base, PostLogFn logger) {
 
     if (g_log) {
         const int p2_preset = GetP2FilterPreset();
-        g_log("[RouteC][C2] Hooks installed (ao=%s, sscs=%s, p1SoftPart=%s, p2Atmos=%s, ssr=%s, lut=%s, debugMode=%d, p2Filter=%s, f11=%s, p0rim=%s, c0_survey=%s, injectQueue=86, hotkey=F8:ConfigPanel).",
+        g_log("[RouteC][C2] Hooks installed (ao=%s, sscs=%s, p1SoftPart=%s, p2Atmos=%s, ssr=%s, bloom=%s, lut=%s, debugMode=%d, p2Filter=%s, f11=%s, p0rim=%s, c0_survey=%s, injectQueue=86, hotkey=F8:ConfigPanel).",
               IsRouteCAoRuntimeEnabled() ? "ON" : "OFF",
               IsRouteCSscsRuntimeEnabled() ? "ON" : "OFF",
               IsP1SoftParticlesEnabled() ? "ON" : "OFF",
               IsP2AerialVignetteEnabled() ? "ON" : "OFF",
               IsP2SsrEnabled() ? "ON" : "OFF",
+              IsKawaseBloomEnabled() ? "ON" : "OFF",
               P2LutPresetName(GetP2LutPreset()),
               dbg_mode,
               P2FilterPresetName(p2_preset),
@@ -1674,6 +1685,21 @@ bool ToggleSsrEnabled() {
     return !expected;
 }
 
+void SetKawaseBloomEnabled(bool enabled) {
+    g_p2_kawase_bloom_enabled.store(enabled, std::memory_order_relaxed);
+}
+
+bool IsKawaseBloomEnabled() {
+    return g_p2_kawase_bloom_enabled.load(std::memory_order_relaxed);
+}
+
+bool ToggleKawaseBloomEnabled() {
+    bool expected = g_p2_kawase_bloom_enabled.load(std::memory_order_relaxed);
+    while (!g_p2_kawase_bloom_enabled.compare_exchange_weak(expected, !expected, std::memory_order_relaxed)) {
+    }
+    return !expected;
+}
+
 void SetLutPreset(int preset) {
     const int clamped = (preset < 0 || preset > 3) ? 0 : preset;
     g_p2_lut_preset.store(clamped, std::memory_order_relaxed);
@@ -1732,6 +1758,14 @@ int GetSsrStrengthPct() {
     return (std::clamp)(g_p2_ssr_strength_pct.load(std::memory_order_relaxed), 0, 200);
 }
 
+void SetKawaseBloomStrengthPct(int pct) {
+    g_p2_kawase_bloom_strength_pct.store((std::clamp)(pct, 0, 200), std::memory_order_relaxed);
+}
+
+int GetKawaseBloomStrengthPct() {
+    return (std::clamp)(g_p2_kawase_bloom_strength_pct.load(std::memory_order_relaxed), 0, 200);
+}
+
 void SetLutStrengthPct(int pct) {
     g_p2_lut_strength_pct.store((std::clamp)(pct, 0, 200), std::memory_order_relaxed);
 }
@@ -1786,11 +1820,14 @@ void LogPipelineSurveySummary(PostLogFn logger) {
 
     const auto d3d_st = GetPostRenderStats();
     const auto smaa_st = GetSmaaStats();
+    const auto bloom_st = GetBloomStats();
     logger(
-        "[RouteC][C2][Stats] debugMode=%d smaa=%d smaaExec=%llu ok=%llu skipNoOm=%llu skipFmt=%llu skipFail=%llu depthRebuilds=%u lastTex=%ux%u rtvFmt=%u dsvTexFmt=%u msaa=%ux shadersReady=%d rainObs=%d desert=%d menu=%d rainStr=%.2f",
+        "[RouteC][C2][Stats] debugMode=%d smaa=%d smaaExec=%llu bloom=%d bloomExec=%llu ok=%llu skipNoOm=%llu skipFmt=%llu skipFail=%llu depthRebuilds=%u lastTex=%ux%u rtvFmt=%u dsvTexFmt=%u msaa=%ux shadersReady=%d rainObs=%d desert=%d menu=%d rainStr=%.2f",
         g_ao_debug_mode.load(std::memory_order_relaxed),
         GetSmaaMode(),
         static_cast<unsigned long long>(smaa_st.executed),
+        IsKawaseBloomEnabled() ? 1 : 0,
+        static_cast<unsigned long long>(bloom_st.executed),
         static_cast<unsigned long long>(d3d_st.inject_ok),
         static_cast<unsigned long long>(d3d_st.inject_skip_no_om),
         static_cast<unsigned long long>(d3d_st.inject_skip_fmt),

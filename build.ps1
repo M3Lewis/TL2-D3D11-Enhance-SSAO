@@ -12,6 +12,7 @@ $SrcFiles = @(
     (Join-Path $RootDir "src\d3d11_post_renderer.cpp"),
     (Join-Path $RootDir "src\d3d11_ssao_pass.cpp"),
     (Join-Path $RootDir "src\d3d11_ssr_pass.cpp"),
+    (Join-Path $RootDir "src\d3d11_bloom_pass.cpp"),
     (Join-Path $RootDir "src\d3d11_smaa_pass.cpp"),
     (Join-Path $RootDir "src\d3d11_overlay_pass.cpp"),
     (Join-Path $RootDir "src\game_time_weather.cpp"),

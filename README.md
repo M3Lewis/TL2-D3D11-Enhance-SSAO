@@ -29,17 +29,43 @@
 5. **Soft Particles & Micro-Normals (屏幕空间软粒子与地表微法线)**:
    - Depth-buffer particle softening eliminating hard clipping seams between fire/glow effects and geometry.
    - Companion `_tl2n` / `_tl2s` auto-discovery for RimLit materials with physical diffuse/specular roll-off.
-6. **In-Game F8 Real-Time Configuration Panel ([F8] 游戏内实时控制台)**:
+6. **SMAA 1x Ultra Anti-Aliasing (次世代超清抗锯齿)**:
+   - Full implementation of official SMAA 1x with 45° diagonal detection (`SMAACalculateDiagWeights`), tailor-made for Torchlight II's isometric view.
+   - Ultra preset with 32 straight / 16 diagonal search steps, relaxed corner rounding for curved geometry, and sub-pixel edge smoothing.
+7. **In-Game F8 Real-Time Configuration Panel ([F8] 游戏内实时控制台)**:
    - Press **`[F8]`** in-game anytime to bring up the transparent interactive control panel.
    - Real-time `0% ~ 200%` intensity sliders for all visual passes with sub-millisecond latency.
    - One-click presets: `Full HD+` / `Dark Dungeon` / `Vanilla` + **10 custom preset slots**.
    - Instant bilingual `[中]` / `[EN]` UI toggle.
-7. **Color Grading & 3D LUT (电影级色彩分级)**:
+8. **Color Grading & 3D LUT (电影级色彩分级)**:
    - Built-in `Hob Vibrant` (high-saturation magical fantasy) and `Dark Film` (cinematic low-saturation).
    - Place any Adobe 3D `.cube` file named `TL2_CustomLUT.cube` in the game root directory to load external LUTs.
-8. **Lossless Backup & 1-Click Restore (100% 无损安全备份与原版还原)**:
+9. **Lossless Backup & 1-Click Restore (100% 无损安全备份与原版还原)**:
    - Standalone bilingual installer `TL2_DX11_Enhance_SSAO_Setup.exe` automatically backs up vanilla shaders and configs to `TL2_DX11_Enhance_Backup\`.
    - Click "Uninstall & Restore Vanilla" anytime to restore the game to 100% byte-for-byte vanilla state.
+
+---
+
+## Installation & Compatibility / 安装与使用指南
+
+### 1. Steam Workshop Subscription / 创意工坊订阅安装
+After subscribing to this MOD, please **launch the game once first**. The installer will be extracted to:
+```
+<My Documents>\My Games\Runic Games\Torchlight 2\TL2_DX11_Enhance_SSAO_Setup.exe
+```
+
+Run **`TL2_DX11_Enhance_SSAO_Setup.exe`** to **verify, install, or perform a one-click rollback**. Because Steam Workshop restricts direct `.exe` distribution, this MOD uses a dedicated subscription package to extract the installer into the above `Documents\My Games` directory.
+
+> **中文说明**：  
+> 订阅本 MOD 后，请**先启动一次游戏**。安装程序将被自动解压释放至：  
+> `<我的文档>\My Games\Runic Games\Torchlight 2\TL2_DX11_Enhance_SSAO_Setup.exe`  
+> 运行该安装器即可进行**环境验证、一键安装部署或一键无损还原**。由于 Steam 创意工坊限制直接分发 `.exe` 可执行文件，本 MOD 通过订阅包机制将安装器释放至上述文档目录。
+
+### 2. Standalone / GitHub Manual Installation / 独立手动安装
+If you downloaded the release package or compiled from source:
+1. Run **`TL2_DX11_Enhance_SSAO_Setup.exe`**.
+2. Click **Install / Update Enhancement (安装/更新增强)**.
+3. The installer auto-detects your Torchlight II directory, creates a full backup, and deploys the plugin with one click.
 
 ---
 

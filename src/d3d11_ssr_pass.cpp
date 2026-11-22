@@ -108,6 +108,7 @@ bool ExecutePostWorldPass(const PostWorldRequest& req, PostLogFn logger) {
     if (req.ssr_enabled && g_st.post_world_depth_valid && g_st.depth_copy_srv &&
         ds->ps_ssr && ds->ps_ssr_resolve && g_st.cb_params && g_st.blend_toast_alpha &&
         EnsureSsrTarget(dev, rt_desc.Width, rt_desc.Height) &&
+        EnsureWaterDepthTarget(dev, rt_desc.Width, rt_desc.Height, rt_desc.SampleDesc.Count, rt_desc.SampleDesc.Quality) &&
         CopyRtvTextureToP2Copy(dev, req.ctx, src_rt_tex, rt_desc, rtv_desc)) {
         CbAoParams cb_ssr{};
         std::memcpy(&cb_ssr, g_st.post_world_cb_bytes, sizeof(cb_ssr));
@@ -134,10 +135,11 @@ bool ExecutePostWorldPass(const PostWorldRequest& req, PostLogFn logger) {
         req.ctx->OMSetRenderTargets(1, &g_st.ssr_rt_rtv, nullptr);
         req.ctx->OMSetBlendState(nullptr, nullptr, 0xFFFFFFFFU);
         req.ctx->PSSetShader(ds->ps_ssr, nullptr, 0);
-        ID3D11ShaderResourceView* srvs_ssr[2] = {g_st.depth_copy_srv, g_st.p2_copy_srv};
-        req.ctx->PSSetShaderResources(0, 2, srvs_ssr);
+        ID3D11ShaderResourceView* srvs_ssr[3] = {g_st.depth_copy_srv, g_st.p2_copy_srv, g_st.water_depth_srv};
+        req.ctx->PSSetShaderResources(0, 3, srvs_ssr);
         req.ctx->Draw(3, 0);
-        req.ctx->PSSetShaderResources(0, 2, null_srvs);
+        ID3D11ShaderResourceView* null_srvs3[3] = {nullptr, nullptr, nullptr};
+        req.ctx->PSSetShaderResources(0, 3, null_srvs3);
 
         // Pass 2: 3x3 Bilateral Spatial Resolve & Composite to target_rtv
         // Unbind ssr_rt_rtv by setting target_rtv FIRST to avoid D3D11 hazard

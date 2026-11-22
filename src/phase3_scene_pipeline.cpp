@@ -659,6 +659,25 @@ bool HasWaterSurfaceKeyword(std::string_view tex_name) {
     if (tex_name.empty()) {
         return false;
     }
+
+    // 0. Path-level directory blacklist (particles, effects, UI, skills, projectiles)
+    if (ContainsAsciiInsensitive(tex_name, "particles/") ||
+        ContainsAsciiInsensitive(tex_name, "particles\\") ||
+        ContainsAsciiInsensitive(tex_name, "effects/") ||
+        ContainsAsciiInsensitive(tex_name, "effects\\") ||
+        ContainsAsciiInsensitive(tex_name, "/fx/") ||
+        ContainsAsciiInsensitive(tex_name, "\\fx\\") ||
+        ContainsAsciiInsensitive(tex_name, "/ui/") ||
+        ContainsAsciiInsensitive(tex_name, "\\ui\\") ||
+        ContainsAsciiInsensitive(tex_name, "/gui/") ||
+        ContainsAsciiInsensitive(tex_name, "\\gui\\") ||
+        ContainsAsciiInsensitive(tex_name, "skills/") ||
+        ContainsAsciiInsensitive(tex_name, "skills\\") ||
+        ContainsAsciiInsensitive(tex_name, "projectiles/") ||
+        ContainsAsciiInsensitive(tex_name, "projectiles\\")) {
+        return false;
+    }
+
     const size_t last_slash = tex_name.find_last_of("/\\");
     const std::string_view fname = (last_slash != std::string_view::npos) ? tex_name.substr(last_slash + 1) : tex_name;
 
@@ -735,12 +754,12 @@ bool HasWaterSurfaceKeyword(std::string_view tex_name) {
            ContainsAsciiInsensitive(fname, "oasis");
 }
 
-void MaybeDetectWaterPassHint(const void* pass) {
-    if (!pass || g_frame_water_pass_hint.load(std::memory_order_relaxed) || !IsP2SsrEnabled()) {
-        return;
+bool IsWaterSurfacePass(const void* pass) {
+    if (!pass || !IsP2SsrEnabled()) {
+        return false;
     }
     if (!g_api.pass_get_num_tus || !g_api.pass_get_tus || !g_api.tus_get_texture_name) {
-        return;
+        return false;
     }
     const uint16_t num_tus = g_api.pass_get_num_tus(pass);
     const uint16_t max_check = (num_tus < 4) ? num_tus : 4;
@@ -751,10 +770,10 @@ void MaybeDetectWaterPassHint(const void* pass) {
         }
         const std::string& tex_name = g_api.tus_get_texture_name(tus);
         if (HasWaterSurfaceKeyword(tex_name)) {
-            g_frame_water_pass_hint.store(true, std::memory_order_relaxed);
-            return;
+            return true;
         }
     }
+    return false;
 }
 
 int MapOgreBlendOpToShader(int ogre_lbx_op) {
@@ -1856,6 +1875,11 @@ const void* __fastcall HookSceneManagerSetPass(
         return used_pass;
     }
 
+    struct InSetPassScopeGuard {
+        InSetPassScopeGuard() { SetInSetPassScope(true); }
+        ~InSetPassScopeGuard() { SetInSetPassScope(false); }
+    } in_set_pass_guard;
+
     const bool suppressed = (*reinterpret_cast<const uint8_t*>(scene_mgr + kSmOffSuppressRenderState) != 0);
     if (suppressed && !even_if_suppressed) {
         return used_pass;
@@ -1873,7 +1897,11 @@ const void* __fastcall HookSceneManagerSetPass(
     bool is_ff_vs = false;
     SkipReason skip_reason = SkipReason::Matched;
     const PassArchetype arch = ClassifyPass(used_pass, flags, flags2, &is_ff_vs, &skip_reason);
-    MaybeDetectWaterPassHint(used_pass);
+    const bool is_water = IsWaterSurfacePass(used_pass);
+    SetWaterPassActive(is_water);
+    if (is_water) {
+        g_frame_water_pass_hint.store(true, std::memory_order_relaxed);
+    }
     RecordPassDiag(used_pass, arch, skip_reason);
     if (Phase3PassObserverFn observer = g_pass_observer.load(std::memory_order_acquire)) {
         const char* pass_name = g_api.pass_get_name ? g_api.pass_get_name(used_pass).c_str() : "";

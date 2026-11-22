@@ -83,7 +83,7 @@ const char* SmaaModeName(int mode) {
     switch (mode) {
         case 1: return "Color";
         case 2: return "Depth+Color";
-        case 3: return "Debug (分屏)";
+        case 3: return "Debug (10x热力图)";
         default: return "OFF";
     }
 }

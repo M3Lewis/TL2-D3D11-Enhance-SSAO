@@ -145,7 +145,7 @@ float SMAASearchLength(Texture2D<float> searchTex, float2 e, float offset)
     bias  += float2( 0.5, -0.5);
     scale *= (1.0 / SMAA_SEARCHTEX_PACKED_SIZE);
     bias  *= (1.0 / SMAA_SEARCHTEX_PACKED_SIZE);
-    return 255.0f * searchTex.SampleLevel(PointSampler, mad(scale, e, bias), 0);
+    return searchTex.SampleLevel(PointSampler, mad(scale, e, bias), 0);
 }
 
 float SMAASearchXLeft(Texture2D<float2> edgesTex, Texture2D<float> searchTex, float2 texcoord, float end)
@@ -375,35 +375,25 @@ Texture2D<float2> gDebugEdgesTex : register(t2);
 float4 PS_SmaaNeighborhoodBlend(VsOut input) : SV_Target0
 {
     float2 texcoord = input.pos.xy * gSmaaRtMetrics.xy;
-
-    // SmaaMode == 3: Diagnostic split-screen mode
-    [branch]
-    if (gProjZAndMode.z > 2.5f)
-    {
-        if (texcoord.x < 0.5f)
-        {
-            float2 e = gDebugEdgesTex.SampleLevel(PointSampler, texcoord, 0).rg;
-            return float4(e.r, e.g, 0.25f, 1.0f);
-        }
-        else
-        {
-            float4 w = gBlendTex.SampleLevel(PointSampler, texcoord, 0);
-            return float4(saturate(w.rgb * 4.0f), 1.0f);
-        }
-    }
-
     float4 offset = mad(gSmaaRtMetrics.xyxy, float4(1.0, 0.0, 0.0, 1.0), texcoord.xyxy);
 
-    // Fetch the blending weights for current pixel:
+    // Fetch the blending weights for current pixel using PointSampler to avoid bleed:
     float4 a;
-    a.x = gBlendTex.SampleLevel(LinearSampler, offset.xy, 0).a;  // Right
-    a.y = gBlendTex.SampleLevel(LinearSampler, offset.zw, 0).g;  // Top
-    a.wz = gBlendTex.SampleLevel(LinearSampler, texcoord, 0).xz; // Bottom / Left
+    a.x = gBlendTex.SampleLevel(PointSampler, offset.xy, 0).a;  // Right
+    a.y = gBlendTex.SampleLevel(PointSampler, offset.zw, 0).g;  // Top
+    a.wz = gBlendTex.SampleLevel(PointSampler, texcoord, 0).xz; // Bottom / Left
+
+    float4 origColor = gColorTex.SampleLevel(PointSampler, texcoord, 0);
 
     // Is there any blending weight with a value greater than 0.0?
     if (dot(a, float4(1.0, 1.0, 1.0, 1.0)) < 1e-5f)
     {
-        return gColorTex.SampleLevel(LinearSampler, texcoord, 0);
+        // Mode 3: 10x difference heatmap (zero diff = pure black)
+        if (gProjZAndMode.z > 2.5f)
+        {
+            return float4(0.0, 0.0, 0.0, 1.0);
+        }
+        return origColor;
     }
 
     bool h = max(a.x, a.z) > max(a.y, a.w);
@@ -421,6 +411,14 @@ float4 PS_SmaaNeighborhoodBlend(VsOut input) : SV_Target0
 
     float4 color = blendingWeight.x * gColorTex.SampleLevel(LinearSampler, blendingCoord.xy, 0);
     color += blendingWeight.y * gColorTex.SampleLevel(LinearSampler, blendingCoord.zw, 0);
+
+    // Mode 3: 10x difference heatmap diagnostic
+    [branch]
+    if (gProjZAndMode.z > 2.5f)
+    {
+        return float4(abs(color.rgb - origColor.rgb) * 10.0f, 1.0f);
+    }
+
     return color;
 }
 )HLSL";

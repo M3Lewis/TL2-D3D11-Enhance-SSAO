@@ -185,6 +185,7 @@ bool ConsumeFrameWaterPassHint();
 bool IsDynamicRainRecentlyObserved();
 bool IsDesertSceneActive();
 bool IsMainMenuActive();
+float UpdateRainWetnessPerFrame();
 float GetEffectiveRainStrength();
 
 using Phase3PassObserverFn = void (*)(

@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cctype>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -842,11 +843,13 @@ RainParticleType ClassifyRainParticleTexture(std::string_view tex_name) {
     return RainParticleType::None;
 }
 
-std::atomic<uint64_t> g_last_rain_particle_tick_ms{0};
+std::atomic<uint64_t> g_last_rain_confirmed_ms{0};
+std::atomic<uint32_t> g_frame_rain_hits{0};
 std::atomic<uint64_t> g_recent_drop_window_ms{0};
 std::atomic<uint32_t> g_recent_drop_count{0};
 std::atomic<uint64_t> g_last_desert_tex_tick_ms{0};
 std::atomic<uint64_t> g_last_main_menu_tex_tick_ms{0};
+std::atomic<float> g_effective_rain_strength{0.0f};
 
 void RecordRainParticleObservation(std::string_view tex_name) {
     const RainParticleType type = ClassifyRainParticleTexture(tex_name);
@@ -854,10 +857,11 @@ void RecordRainParticleObservation(std::string_view tex_name) {
         return;
     }
 
+    g_frame_rain_hits.fetch_add(1, std::memory_order_relaxed);
     const uint64_t now = ::GetTickCount64();
     if (type == RainParticleType::Ripple) {
         // puddle_single_additive / puddle_single_multiply: definitive ground weather ripple
-        g_last_rain_particle_tick_ms.store(now, std::memory_order_relaxed);
+        g_last_rain_confirmed_ms.store(now, std::memory_order_relaxed);
         return;
     }
 
@@ -870,7 +874,7 @@ void RecordRainParticleObservation(std::string_view tex_name) {
         } else {
             const uint32_t cnt = g_recent_drop_count.fetch_add(1, std::memory_order_relaxed) + 1;
             if (cnt >= 3) {
-                g_last_rain_particle_tick_ms.store(now, std::memory_order_relaxed);
+                g_last_rain_confirmed_ms.store(now, std::memory_order_relaxed);
             }
         }
     }
@@ -2262,10 +2266,10 @@ bool ResolveAllOgreExports(HMODULE ogre_mod) {
 }  // namespace
 
 bool IsDynamicRainRecentlyObserved() {
-    const uint64_t last = g_last_rain_particle_tick_ms.load(std::memory_order_relaxed);
+    const uint64_t last = g_last_rain_confirmed_ms.load(std::memory_order_relaxed);
     if (last == 0) return false;
     const uint64_t now = ::GetTickCount64();
-    return (now >= last && (now - last) <= 2500ULL);
+    return (now >= last && (now - last) <= 25000ULL);
 }
 
 bool IsDesertSceneActive() {
@@ -2289,27 +2293,60 @@ bool IsMainMenuActive() {
     return false;
 }
 
+float UpdateRainWetnessPerFrame() {
+    static uintptr_t s_last_level = 0;
+    static float s_wetness = 0.0f;
+    static auto s_last_frame = std::chrono::steady_clock::now();
+
+    const auto now = std::chrono::steady_clock::now();
+    float dt = std::chrono::duration<float>(now - s_last_frame).count();
+    s_last_frame = now;
+    dt = (std::clamp)(dt, 0.0f, 0.1f);
+
+    const uintptr_t cur_level_ptr = GetActiveGameLevelPtr();
+    const bool is_desert_or_menu = IsDesertSceneActive() || IsMainMenuActive();
+    const bool ui_enabled = IsWeatherRainEnabled();
+
+    // 1. 切图 / 进沙漠 / 主菜单 / 关闭开关 -> 瞬间清零，绝不把雨带进干燥地牢！
+    if (!ui_enabled || is_desert_or_menu || cur_level_ptr == 0 || cur_level_ptr != s_last_level) {
+        s_last_level = cur_level_ptr;
+        s_wetness = 0.0f;
+        g_last_rain_confirmed_ms.store(0, std::memory_order_relaxed);
+        g_frame_rain_hits.store(0, std::memory_order_relaxed);
+        g_effective_rain_strength.store(0.0f, std::memory_order_relaxed);
+        return 0.0f;
+    }
+
+    // 2. 严进宽留双阈值滞回：
+    //    - 尚未确认下雨 (s_wetness <= 0.1f)：需要严格门槛（已在 RecordRainParticleObservation 判定）
+    //    - 已经在下雨 (s_wetness > 0.1f)：本帧只要抓到哪怕 1 次雨滴/涟漪就立刻续命！
+    const uint64_t now_ms = ::GetTickCount64();
+    const bool already_wet = (s_wetness > 0.1f);
+    const uint32_t frame_hits = g_frame_rain_hits.exchange(0, std::memory_order_relaxed);
+
+    if (already_wet && frame_hits >= 1) {
+        g_last_rain_confirmed_ms.store(now_ms, std::memory_order_relaxed);
+    }
+
+    // 3. 同图 25 秒超长保活 + 平滑湿润(3s)/慢速蒸发(8s)
+    const uint64_t last_ms = g_last_rain_confirmed_ms.load(std::memory_order_relaxed);
+    const bool keep_wet = (last_ms > 0) && ((now_ms - last_ms) <= 25000ULL);
+
+    if (keep_wet) {
+        s_wetness = (std::min)(1.0f, s_wetness + dt * 0.33f);  // ~3 秒慢慢积水
+    } else {
+        s_wetness = (std::max)(0.0f, s_wetness - dt * 0.125f); // ~8 秒柔和蒸发
+    }
+
+    // 缩放到用户滑条强度 (0..200%)
+    const float strength_pct = static_cast<float>(GetWeatherRainStrengthPct());
+    const float eff = s_wetness * ((std::clamp)(strength_pct * 0.01f, 0.0f, 2.0f));
+    g_effective_rain_strength.store(eff, std::memory_order_relaxed);
+    return eff;
+}
+
 float GetEffectiveRainStrength() {
-    // 1. Strict exclusion: Main menu is ALWAYS 0.0f immediately (zero latency, no lingering reflections)
-    if (IsMainMenuActive()) {
-        return 0.0f;
-    }
-    // 2. Strict exclusion: Desert is ALWAYS 0.0f immediately (zero latency, 100% dry desert)
-    if (IsDesertSceneActive()) {
-        return 0.0f;
-    }
-    // 3. Must be enabled by user in config / F8 panel
-    if (!IsWeatherRainEnabled()) {
-        return 0.0f;
-    }
-
-    // 4. Target strength based on whether dynamic rain particles are actively rendered
-    if (IsDynamicRainRecentlyObserved()) {
-        const float strength_pct = static_cast<float>(GetWeatherRainStrengthPct());
-        return (std::clamp)(strength_pct * 0.01f, 0.0f, 2.0f);
-    }
-
-    return 0.0f;
+    return g_effective_rain_strength.load(std::memory_order_relaxed);
 }
 
 bool InstallPhase3ScenePipeline(void* d3d11_base, void* ogre_main_base, Phase3LogFn logger) {

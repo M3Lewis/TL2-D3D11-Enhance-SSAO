@@ -175,17 +175,22 @@ float DirectGetTimeOfDay() {
     }
 }
 
-bool IsActiveGameLevelLoaded() {
+uintptr_t GetActiveGameLevelPtr() {
     EnsureEngineWeatherTimeFuncs();
     if (!ResolveDirectLevelTimeAccess() || !g_fnGetActiveLevel) {
-        return false;
+        return 0;
     }
     DWORD excCode = 0;
     __try {
-        return g_fnGetActiveLevel() != nullptr;
+        void* level = g_fnGetActiveLevel();
+        return reinterpret_cast<uintptr_t>(level);
     } __except (excCode = GetExceptionCode(), EXCEPTION_EXECUTE_HANDLER) {
-        return false;
+        return 0;
     }
+}
+
+bool IsActiveGameLevelLoaded() {
+    return GetActiveGameLevelPtr() != 0;
 }
 
 void EnsureEngineWeatherTimeFuncs() {

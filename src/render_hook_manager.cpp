@@ -1005,6 +1005,9 @@ void __fastcall HookRenderWindowSwapBuffers(void* rw, uint8_t wait_for_vsync) {
     SetWaterPassActive(false);
     SetWorldWaterCaptureOpen(false);
     SetMainSceneRtv(nullptr);
+    if (IsMainMenuActive()) {
+        UpdateRainWetnessPerFrame();
+    }
     if (IsMainMenuActive() || !IsP2SsrEnabled()) {
         RemoveContextDrawHook();
     }
@@ -1173,6 +1176,7 @@ void __fastcall HookRenderScene(void* sm, void* cam, void* vp, uint8_t show_over
     frame.far_clip = g_api.cam_get_far(active_cam);
     frame.proj = proj;
     if (ao_eligible) {
+        UpdateRainWetnessPerFrame();
         (void)ConsumeFrameWaterPassHint();
         ResetCapturedDirectionalLight();
         SetWaterPassActive(false);

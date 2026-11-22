@@ -844,6 +844,7 @@ RainParticleType ClassifyRainParticleTexture(std::string_view tex_name) {
 }
 
 std::atomic<uint64_t> g_last_rain_confirmed_ms{0};
+std::atomic<bool> g_level_rain_latched{false};
 std::atomic<uint32_t> g_frame_rain_hits{0};
 std::atomic<uint64_t> g_recent_drop_window_ms{0};
 std::atomic<uint32_t> g_recent_drop_count{0};
@@ -862,6 +863,7 @@ void RecordRainParticleObservation(std::string_view tex_name) {
     if (type == RainParticleType::Ripple) {
         // puddle_single_additive / puddle_single_multiply: definitive ground weather ripple
         g_last_rain_confirmed_ms.store(now, std::memory_order_relaxed);
+        g_level_rain_latched.store(true, std::memory_order_relaxed);
         return;
     }
 
@@ -875,6 +877,7 @@ void RecordRainParticleObservation(std::string_view tex_name) {
             const uint32_t cnt = g_recent_drop_count.fetch_add(1, std::memory_order_relaxed) + 1;
             if (cnt >= 3) {
                 g_last_rain_confirmed_ms.store(now, std::memory_order_relaxed);
+                g_level_rain_latched.store(true, std::memory_order_relaxed);
             }
         }
     }
@@ -2266,10 +2269,7 @@ bool ResolveAllOgreExports(HMODULE ogre_mod) {
 }  // namespace
 
 bool IsDynamicRainRecentlyObserved() {
-    const uint64_t last = g_last_rain_confirmed_ms.load(std::memory_order_relaxed);
-    if (last == 0) return false;
-    const uint64_t now = ::GetTickCount64();
-    return (now >= last && (now - last) <= 25000ULL);
+    return g_level_rain_latched.load(std::memory_order_relaxed);
 }
 
 bool IsDesertSceneActive() {
@@ -2311,28 +2311,27 @@ float UpdateRainWetnessPerFrame() {
     if (!ui_enabled || is_desert_or_menu || cur_level_ptr == 0 || cur_level_ptr != s_last_level) {
         s_last_level = cur_level_ptr;
         s_wetness = 0.0f;
+        g_level_rain_latched.store(false, std::memory_order_relaxed);
         g_last_rain_confirmed_ms.store(0, std::memory_order_relaxed);
         g_frame_rain_hits.store(0, std::memory_order_relaxed);
         g_effective_rain_strength.store(0.0f, std::memory_order_relaxed);
         return 0.0f;
     }
 
-    // 2. 严进宽留双阈值滞回：
-    //    - 尚未确认下雨 (s_wetness <= 0.1f)：需要严格门槛（已在 RecordRainParticleObservation 判定）
-    //    - 已经在下雨 (s_wetness > 0.1f)：本帧只要抓到哪怕 1 次雨滴/涟漪就立刻续命！
-    const uint64_t now_ms = ::GetTickCount64();
-    const bool already_wet = (s_wetness > 0.1f);
+    // 2. 严进确认下雨：
+    //    一旦在当前关卡确认过下雨（通过严格门槛写入 g_last_rain_confirmed_ms，或已有雨且抓到帧粒子），
+    //    立刻将当前关卡锁定为下雨关卡！
     const uint32_t frame_hits = g_frame_rain_hits.exchange(0, std::memory_order_relaxed);
+    const uint64_t last_ms = g_last_rain_confirmed_ms.load(std::memory_order_relaxed);
 
-    if (already_wet && frame_hits >= 1) {
-        g_last_rain_confirmed_ms.store(now_ms, std::memory_order_relaxed);
+    if (last_ms > 0 || (s_wetness > 0.1f && frame_hits >= 1)) {
+        g_level_rain_latched.store(true, std::memory_order_relaxed);
     }
 
-    // 3. 同图 25 秒超长保活 + 平滑湿润(3s)/慢速蒸发(8s)
-    const uint64_t last_ms = g_last_rain_confirmed_ms.load(std::memory_order_relaxed);
-    const bool keep_wet = (last_ms > 0) && ((now_ms - last_ms) <= 25000ULL);
-
-    if (keep_wet) {
+    // 3. 同图锁定状态（彻底解决火炬2移动时引擎静默掐断雨滴粒子发射导致水坑消失的问题）：
+    //    只要当前关卡锁定了下雨，人物奔跑移动时绝不超时消失，平滑积水到满值 (1.0f)；
+    //    换图/进洞穴/进沙漠/退主菜单时由上方第 1 步直接 0ms 瞬间清零。
+    if (g_level_rain_latched.load(std::memory_order_relaxed)) {
         s_wetness = (std::min)(1.0f, s_wetness + dt * 0.33f);  // ~3 秒慢慢积水
     } else {
         s_wetness = (std::max)(0.0f, s_wetness - dt * 0.125f); // ~8 秒柔和蒸发

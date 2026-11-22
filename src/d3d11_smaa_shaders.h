@@ -20,8 +20,8 @@ struct VsOut
 SamplerState LinearSampler : register(s0);
 SamplerState PointSampler  : register(s1);
 
-#define SMAA_MAX_SEARCH_STEPS 16
-#define SMAA_MAX_SEARCH_STEPS_DIAG 8
+#define SMAA_MAX_SEARCH_STEPS 32
+#define SMAA_MAX_SEARCH_STEPS_DIAG 16
 #define SMAA_CORNER_ROUNDING 25
 #define SMAA_CORNER_ROUNDING_NORM (float(SMAA_CORNER_ROUNDING) / 100.0)
 #define SMAA_AREATEX_MAX_DISTANCE 16

@@ -799,13 +799,11 @@ bool IsWorldWaterCaptureOpen() {
     return g_world_water_capture_open.load(std::memory_order_relaxed);
 }
 
-thread_local bool t_in_set_pass = false;
-void SetInSetPassScope(bool in_scope) {
-    t_in_set_pass = in_scope;
-}
-bool IsInSetPassScope() {
-    return t_in_set_pass;
-}
+std::atomic<uint64_t> g_water_funnel_set_pass{0};
+std::atomic<uint64_t> g_water_funnel_draw_active{0};
+std::atomic<uint64_t> g_water_funnel_gate_open{0};
+std::atomic<uint64_t> g_water_funnel_can_replay{0};
+std::atomic<uint64_t> g_water_funnel_bind_ok{0};
 
 bool EnsureWaterDepthTarget(ID3D11Device* dev, uint32_t width, uint32_t height, uint32_t sample_count, uint32_t sample_quality) {
     if (g_st.water_depth_tex && g_st.water_depth_rtv && g_st.water_depth_srv &&
@@ -866,12 +864,6 @@ void ClearWaterDepthTargetForFrame(ID3D11DeviceContext* ctx) {
 
 namespace {
 
-typedef void (STDMETHODCALLTYPE *PSSetShaderFn)(
-    ID3D11DeviceContext* This,
-    ID3D11PixelShader* pPixelShader,
-    ID3D11ClassInstance* const* ppClassInstances,
-    UINT NumClassInstances);
-
 typedef void (STDMETHODCALLTYPE *DrawIndexedFn)(
     ID3D11DeviceContext* This,
     UINT IndexCount,
@@ -883,79 +875,14 @@ typedef void (STDMETHODCALLTYPE *DrawFn)(
     UINT VertexCount,
     UINT StartVertexLocation);
 
-typedef void (STDMETHODCALLTYPE *OMSetRenderTargetsFn)(
-    ID3D11DeviceContext* This,
-    UINT NumViews,
-    ID3D11RenderTargetView* const* ppRenderTargetViews,
-    ID3D11DepthStencilView* pDepthStencilView);
-
-typedef void (STDMETHODCALLTYPE *OMSetRenderTargetsAndUAVsFn)(
-    ID3D11DeviceContext* This,
-    UINT NumRTVs,
-    ID3D11RenderTargetView* const* ppRenderTargetViews,
-    ID3D11DepthStencilView* pDepthStencilView,
-    UINT UAVStartSlot,
-    UINT NumUAVs,
-    ID3D11UnorderedAccessView* const* ppUnorderedAccessViews,
-    const UINT* pUAVInitialCounts);
-
 void* g_shadow_context_vtable[256] = {};
 void** g_orig_context_vtable = nullptr;
 ID3D11DeviceContext* g_hooked_context = nullptr;
-PSSetShaderFn g_orig_ps_set_shader = nullptr;
 DrawIndexedFn g_orig_draw_indexed = nullptr;
 DrawFn g_orig_draw = nullptr;
-OMSetRenderTargetsFn g_orig_om_set_render_targets = nullptr;
-OMSetRenderTargetsAndUAVsFn g_orig_om_set_rtvs_and_uavs = nullptr;
 SRWLOCK g_draw_hook_lock = SRWLOCK_INIT;
 
 thread_local bool t_replaying = false;
-
-void STDMETHODCALLTYPE HookedPSSetShader(
-    ID3D11DeviceContext* ctx,
-    ID3D11PixelShader* pPixelShader,
-    ID3D11ClassInstance* const* ppClassInstances,
-    UINT NumClassInstances)
-{
-    if (!t_replaying && !IsInSetPassScope()) {
-        SetWaterPassActive(false);
-    }
-    if (g_orig_ps_set_shader) {
-        g_orig_ps_set_shader(ctx, pPixelShader, ppClassInstances, NumClassInstances);
-    }
-}
-
-void STDMETHODCALLTYPE HookedOMSetRenderTargets(
-    ID3D11DeviceContext* ctx,
-    UINT NumViews,
-    ID3D11RenderTargetView* const* ppRenderTargetViews,
-    ID3D11DepthStencilView* pDepthStencilView)
-{
-    if (!t_replaying) {
-        SetWaterPassActive(false);
-    }
-    if (g_orig_om_set_render_targets) {
-        g_orig_om_set_render_targets(ctx, NumViews, ppRenderTargetViews, pDepthStencilView);
-    }
-}
-
-void STDMETHODCALLTYPE HookedOMSetRenderTargetsAndUAVs(
-    ID3D11DeviceContext* ctx,
-    UINT NumRTVs,
-    ID3D11RenderTargetView* const* ppRenderTargetViews,
-    ID3D11DepthStencilView* pDepthStencilView,
-    UINT UAVStartSlot,
-    UINT NumUAVs,
-    ID3D11UnorderedAccessView* const* ppUnorderedAccessViews,
-    const UINT* pUAVInitialCounts)
-{
-    if (!t_replaying) {
-        SetWaterPassActive(false);
-    }
-    if (g_orig_om_set_rtvs_and_uavs) {
-        g_orig_om_set_rtvs_and_uavs(ctx, NumRTVs, ppRenderTargetViews, pDepthStencilView, UAVStartSlot, NumUAVs, ppUnorderedAccessViews, pUAVInitialCounts);
-    }
-}
 
 bool CanReplayWaterDraw(
     ID3D11RenderTargetView* rtv0,
@@ -1083,6 +1010,7 @@ void ReplayWaterDrawIndexed(
         t_replaying = false;
         return;
     }
+    g_water_funnel_can_replay.fetch_add(1, std::memory_order_relaxed);
 
     ID3D11PixelShader* prev_ps = nullptr;
     ID3D11ClassInstance* prev_class_inst[256] = {};
@@ -1113,6 +1041,7 @@ void ReplayWaterDrawIndexed(
         return;
     }
     SafeRelease(verify_rtv);
+    g_water_funnel_bind_ok.fetch_add(1, std::memory_order_relaxed);
 
     ctx->OMSetBlendState(nullptr, nullptr, 0xFFFFFFFF);
     ctx->OMSetDepthStencilState(g_st.ds_water_depth_readonly, 0);
@@ -1179,6 +1108,7 @@ void ReplayWaterDraw(
         t_replaying = false;
         return;
     }
+    g_water_funnel_can_replay.fetch_add(1, std::memory_order_relaxed);
 
     ID3D11PixelShader* prev_ps = nullptr;
     ID3D11ClassInstance* prev_class_inst[256] = {};
@@ -1209,6 +1139,7 @@ void ReplayWaterDraw(
         return;
     }
     SafeRelease(verify_rtv);
+    g_water_funnel_bind_ok.fetch_add(1, std::memory_order_relaxed);
 
     ctx->OMSetBlendState(nullptr, nullptr, 0xFFFFFFFF);
     ctx->OMSetDepthStencilState(g_st.ds_water_depth_readonly, 0);
@@ -1244,12 +1175,16 @@ void STDMETHODCALLTYPE HookedDrawIndexed(
     if (g_orig_draw_indexed) {
         g_orig_draw_indexed(ctx, IndexCount, StartIndexLocation, BaseVertexLocation);
     }
+    if (!g_water_pass_active.load(std::memory_order_relaxed)) {
+        return;
+    }
+    g_water_funnel_draw_active.fetch_add(1, std::memory_order_relaxed);
     if (!IsP2SsrEnabled() ||
         !g_world_water_capture_open.load(std::memory_order_relaxed) ||
-        !g_water_pass_active.load(std::memory_order_relaxed) ||
         IsMainMenuActive()) {
         return;
     }
+    g_water_funnel_gate_open.fetch_add(1, std::memory_order_relaxed);
     ReplayWaterDrawIndexed(ctx, IndexCount, StartIndexLocation, BaseVertexLocation);
 }
 
@@ -1261,12 +1196,16 @@ void STDMETHODCALLTYPE HookedDraw(
     if (g_orig_draw) {
         g_orig_draw(ctx, VertexCount, StartVertexLocation);
     }
+    if (!g_water_pass_active.load(std::memory_order_relaxed)) {
+        return;
+    }
+    g_water_funnel_draw_active.fetch_add(1, std::memory_order_relaxed);
     if (!IsP2SsrEnabled() ||
         !g_world_water_capture_open.load(std::memory_order_relaxed) ||
-        !g_water_pass_active.load(std::memory_order_relaxed) ||
         IsMainMenuActive()) {
         return;
     }
+    g_water_funnel_gate_open.fetch_add(1, std::memory_order_relaxed);
     ReplayWaterDraw(ctx, VertexCount, StartVertexLocation);
 }
 
@@ -1289,11 +1228,8 @@ void EnsureContextDrawHooked(ID3D11DeviceContext* ctx) {
         }
         g_hooked_context = nullptr;
         g_orig_context_vtable = nullptr;
-        g_orig_ps_set_shader = nullptr;
         g_orig_draw_indexed = nullptr;
         g_orig_draw = nullptr;
-        g_orig_om_set_render_targets = nullptr;
-        g_orig_om_set_rtvs_and_uavs = nullptr;
     }
 
     void** vtbl = *reinterpret_cast<void***>(ctx);
@@ -1313,17 +1249,11 @@ void EnsureContextDrawHooked(ID3D11DeviceContext* ctx) {
 
     std::memcpy(g_shadow_context_vtable, vtbl, copy_count * sizeof(void*));
     g_orig_context_vtable = vtbl;
-    g_orig_ps_set_shader = reinterpret_cast<PSSetShaderFn>(vtbl[9]);
     g_orig_draw_indexed = reinterpret_cast<DrawIndexedFn>(vtbl[12]);
     g_orig_draw = reinterpret_cast<DrawFn>(vtbl[13]);
-    g_orig_om_set_render_targets = reinterpret_cast<OMSetRenderTargetsFn>(vtbl[33]);
-    g_orig_om_set_rtvs_and_uavs = reinterpret_cast<OMSetRenderTargetsAndUAVsFn>(vtbl[34]);
 
-    g_shadow_context_vtable[9] = reinterpret_cast<void*>(&HookedPSSetShader);
     g_shadow_context_vtable[12] = reinterpret_cast<void*>(&HookedDrawIndexed);
     g_shadow_context_vtable[13] = reinterpret_cast<void*>(&HookedDraw);
-    g_shadow_context_vtable[33] = reinterpret_cast<void*>(&HookedOMSetRenderTargets);
-    g_shadow_context_vtable[34] = reinterpret_cast<void*>(&HookedOMSetRenderTargetsAndUAVs);
 
     *reinterpret_cast<void***>(ctx) = g_shadow_context_vtable;
     g_hooked_context = ctx;
@@ -1338,11 +1268,8 @@ void RemoveContextDrawHook() {
     }
     g_hooked_context = nullptr;
     g_orig_context_vtable = nullptr;
-    g_orig_ps_set_shader = nullptr;
     g_orig_draw_indexed = nullptr;
     g_orig_draw = nullptr;
-    g_orig_om_set_render_targets = nullptr;
-    g_orig_om_set_rtvs_and_uavs = nullptr;
     ::ReleaseSRWLockExclusive(&g_draw_hook_lock);
 }
 

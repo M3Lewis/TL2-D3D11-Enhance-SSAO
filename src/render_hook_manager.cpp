@@ -1756,6 +1756,13 @@ void LogPipelineSurveySummary(PostLogFn logger) {
         d3d_st.last_dsv_tex_fmt,
         d3d_st.last_sample_count,
         d3d_st.shaders_ready ? 1 : 0);
+    logger(
+        "[WaterFunnel] setPass=%llu drawActive=%llu gateOpen=%llu canReplay=%llu bindOk=%llu",
+        static_cast<unsigned long long>(g_water_funnel_set_pass.load(std::memory_order_relaxed)),
+        static_cast<unsigned long long>(g_water_funnel_draw_active.load(std::memory_order_relaxed)),
+        static_cast<unsigned long long>(g_water_funnel_gate_open.load(std::memory_order_relaxed)),
+        static_cast<unsigned long long>(g_water_funnel_can_replay.load(std::memory_order_relaxed)),
+        static_cast<unsigned long long>(g_water_funnel_bind_ok.load(std::memory_order_relaxed)));
     if (d3d_st.bench_samples > 0) {
         logger(
             "[RouteC][C2][Bench] samples=%llu avgCopy=%.3fms avgAo=%.3fms avgBlurH=%.3fms avgBlurV=%.3fms avgComp=%.3fms avgTotal=%.3fms",

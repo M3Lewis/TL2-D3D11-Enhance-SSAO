@@ -1916,11 +1916,6 @@ const void* __fastcall HookSceneManagerSetPass(
         return used_pass;
     }
 
-    struct InSetPassScopeGuard {
-        InSetPassScopeGuard() { SetInSetPassScope(true); }
-        ~InSetPassScopeGuard() { SetInSetPassScope(false); }
-    } in_set_pass_guard;
-
     const bool suppressed = (*reinterpret_cast<const uint8_t*>(scene_mgr + kSmOffSuppressRenderState) != 0);
     if (suppressed && !even_if_suppressed) {
         return used_pass;
@@ -1942,6 +1937,7 @@ const void* __fastcall HookSceneManagerSetPass(
     const bool allow_water = is_water && IsP2SsrEnabled() && !IsMainMenuActive();
     SetWaterPassActive(allow_water);
     if (allow_water) {
+        g_water_funnel_set_pass.fetch_add(1, std::memory_order_relaxed);
         g_frame_water_pass_hint.store(true, std::memory_order_relaxed);
     }
     if (g_api.pass_get_num_tus && g_api.pass_get_tus && g_api.tus_get_texture_name) {

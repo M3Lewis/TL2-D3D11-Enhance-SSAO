@@ -106,7 +106,7 @@ bool ExecutePostWorldPass(const PostWorldRequest& req, PostLogFn logger) {
 
     // Item 5: Post-water SSR using depth snapshot from Ended86 and post-translucent color buffer (queues 0..94).
     const DepthVariantShaders* ds = g_st.post_world_msaa ? &g_st.shaders_msaa : &g_st.shaders_single;
-    if (req.ssr_enabled && g_st.post_world_depth_valid && g_st.depth_copy_srv &&
+    if (!req.is_menu && req.ssr_enabled && g_st.post_world_depth_valid && g_st.depth_copy_srv &&
         ds->ps_ssr && ds->ps_ssr_resolve && g_st.cb_params && g_st.blend_toast_alpha &&
         EnsureSsrTarget(dev, rt_desc.Width, rt_desc.Height) &&
         EnsureWaterDepthTarget(dev, rt_desc.Width, rt_desc.Height, rt_desc.SampleDesc.Count, rt_desc.SampleDesc.Quality) &&
@@ -154,8 +154,8 @@ bool ExecutePostWorldPass(const PostWorldRequest& req, PostLogFn logger) {
         did_any = true;
     }
 
-    // Multi-Mip Dual-Kawase Bloom (post-world + post-SSR, strictly pre-LUT & pre-UI)
-    if (req.bloom_enabled && req.bloom_strength_scale > 0.001f &&
+    // Multi-Mip Dual-Kawase Bloom (post-world + post-SSR, strictly pre-LUT & pre-UI; skipped in main menu)
+    if (!req.is_menu && req.bloom_enabled && req.bloom_strength_scale > 0.001f &&
         CopyRtvTextureToP2Copy(dev, req.ctx, src_rt_tex, rt_desc, rtv_desc)) {
         KawaseBloomRequest breq{};
         breq.dev = dev;

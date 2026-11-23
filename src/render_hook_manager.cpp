@@ -810,8 +810,9 @@ void TryDispatchPostWorldForFrame(ActiveSceneFrame& frame) {
     }
     const bool ao_on = g_ao_runtime_enabled.load(std::memory_order_relaxed);
     const int dbg_mode = ao_on ? g_ao_debug_mode.load(std::memory_order_relaxed) : -1;
-    const bool ssr_on = (dbg_mode <= 0) && g_p2_ssr_enabled.load(std::memory_order_relaxed);
-    const bool bloom_on = (dbg_mode <= 0) && g_p2_kawase_bloom_enabled.load(std::memory_order_relaxed);
+    const bool is_menu = IsMainMenuActive();
+    const bool ssr_on = (!is_menu && dbg_mode <= 0) && g_p2_ssr_enabled.load(std::memory_order_relaxed);
+    const bool bloom_on = (!is_menu && dbg_mode <= 0) && g_p2_kawase_bloom_enabled.load(std::memory_order_relaxed);
     const int lut_preset = (dbg_mode <= 0) ? g_p2_lut_preset.load(std::memory_order_relaxed) : 0;
     if (!ssr_on && !bloom_on && lut_preset <= 0) {
         return;
@@ -846,7 +847,7 @@ void TryDispatchPostWorldForFrame(ActiveSceneFrame& frame) {
     req.time_of_day = static_cast<float>(GetTimeOfDayHours());
     req.lut_strength_scale = static_cast<float>(GetP2LutStrengthPct()) * 0.01f;
     req.is_desert = IsDesertSceneActive();
-    req.is_menu = IsMainMenuActive();
+    req.is_menu = is_menu;
     (void)ExecutePostWorldPass(req, g_log);
     SafeRelease(ctx);
 }
@@ -1233,6 +1234,7 @@ void __fastcall HookRenderScene(void* sm, void* cam, void* vp, uint8_t show_over
                 ClearWaterDepthTargetForFrame(ctx);
                 EnsureContextDrawHooked(ctx);
             } else {
+                ClearWaterDepthTargetForFrame(ctx);
                 RemoveContextDrawHook();
             }
             SafeRelease(ctx);

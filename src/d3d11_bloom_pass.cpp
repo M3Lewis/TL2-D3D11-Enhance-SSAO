@@ -71,21 +71,19 @@ float KarisWeight(float3 linRgb)
 float3 ExtractBrightLinear(float3 srgb, float threshold, float knee, float maxClamp, float coreLift)
 {
     float3 lin = pow(max(srgb, 0.0f), 2.2f);
-    float peak = max(lin.r, max(lin.g, lin.b));
-    // Gentle HDR-like expansion for white-hot cores (torches, lava, spell flashes)
-    lin *= (1.0f + coreLift * smoothstep(0.62f, 1.0f, peak));
-    lin = min(lin, maxClamp);
-
     float luma = dot(lin, float3(0.2126f, 0.7152f, 0.0722f));
-    float minCh = min(lin.r, min(lin.g, lin.b));
-    float sat = (peak > 1e-4f) ? ((peak - minCh) / peak) : 0.0f;
-    // Favor saturated emissives (fire, magic, crystals) while restraining neutral sand/snow
-    float energy = lerp(luma, peak, 0.42f + 0.25f * sat);
+    float peak = max(lin.r, max(lin.g, lin.b));
+    // Restrict energy mainly to perceptual luminance so saturated warm desert sand stays below threshold,
+    // while white-hot flames, magic crystals, and specular sparks still pass through.
+    float energy = lerp(luma, peak, 0.18f);
 
     float soft = clamp(energy - threshold + knee, 0.0f, 2.0f * knee);
     soft = (soft * soft) / (4.0f * knee + 1e-5f);
     float contrib = max(soft, energy - threshold) / max(energy, 1e-4f);
-    return lin * saturate(contrib);
+
+    // Boost only genuine white-hot emissive cores (luma > 0.80) rather than diffuse orange/yellow terrain.
+    float hotCore = 1.0f + coreLift * smoothstep(0.80f, 1.0f, luma);
+    return min(lin * saturate(contrib) * hotCore, maxClamp);
 }
 
 float4 PS_BloomPrefilter(VS_OUT input) : SV_Target0
@@ -148,14 +146,24 @@ float4 PS_BloomComposite(VS_OUT input) : SV_Target0
     float3 sceneSrgb = saturate(gTex0.SampleLevel(gSamp, sceneUv, 0).rgb);
     float3 bloomLin = max(gBloomTex.SampleLevel(gSamp, bloomUv, 0).rgb, 0.0f) * gBloomParams.x;
 
-    // Preserve chromatic richness on warm fire & cool magic halos
+    // Keep zero-bloom pixels 100% untouched so terrain/stone sharpness and contrast never flatten.
+    float bPeak = max(bloomLin.r, max(bloomLin.g, bloomLin.b));
+    if (bPeak <= 1e-4f)
+    {
+        return float4(sceneSrgb, 1.0f);
+    }
+
+    // Preserve chromatic vibrancy on fire & arcane halos
     float bLum = dot(bloomLin, float3(0.2126f, 0.7152f, 0.0722f));
-    bloomLin = max(lerp(float3(bLum, bLum, bLum), bloomLin, 1.15f), 0.0f);
+    bloomLin = max(lerp(float3(bLum, bLum, bLum), bloomLin, 1.12f), 0.0f);
 
     float3 sceneLin = pow(sceneSrgb, 2.2f);
-    // Energy-attenuated addition + soft highlight shoulder prevents clipping bright areas to flat white
-    float3 combinedLin = sceneLin + bloomLin * rcp(1.0f + sceneLin * 0.45f);
-    combinedLin = combinedLin / (1.0f + max(combinedLin - 0.85f, 0.0f) * 0.42f);
+    // Attenuate bloom contribution over already-bright surfaces to avoid white clipping without dulling unbloomed areas
+    float3 addedBloom = bloomLin * rcp(1.0f + sceneLin * 0.85f);
+    float3 combinedLin = sceneLin + addedBloom;
+    float shoulderMask = saturate(bPeak * 12.0f);
+    float3 softRolled = combinedLin / (1.0f + max(combinedLin - 0.95f, 0.0f) * 0.35f);
+    combinedLin = lerp(combinedLin, softRolled, shoulderMask);
     return float4(saturate(pow(max(combinedLin, 0.0f), 1.0f / 2.2f)), 1.0f);
 }
 )HLSL";
@@ -449,7 +457,7 @@ bool VerifyBloomShadersCompile(PostLogFn logger) {
 
 bool ExecuteKawaseBloomPass(const KawaseBloomRequest& req, PostLogFn logger) {
     g_bloom_dispatches.fetch_add(1, std::memory_order_relaxed);
-    if (!req.dev || !req.ctx || !req.target_rtv || !req.scene_srv ||
+    if (!req.dev || !req.ctx || !req.target_rtv || !req.scene_srv || req.is_menu ||
         req.rt_w == 0 || req.rt_h == 0 || req.vp_width < 4 || req.vp_height < 4 ||
         req.strength_scale <= 0.001f) {
         return false;
@@ -471,14 +479,14 @@ bool ExecuteKawaseBloomPass(const KawaseBloomRequest& req, PostLogFn logger) {
     const float src_uw = vp_w / rt_w;
     const float src_vh = vp_h / rt_h;
 
-    // Linear-space soft-knee threshold calibrated per filter preset & desert brightness
-    float threshold = (req.filter_preset == 2) ? 0.38f : ((req.filter_preset == 1) ? 0.34f : 0.36f);
+    // Luminance-anchored soft-knee threshold so sunlit terrain stays sharp while true emissives bloom
+    float threshold = (req.filter_preset == 2) ? 0.68f : ((req.filter_preset == 1) ? 0.62f : 0.65f);
     if (req.is_desert) {
-        threshold += 0.08f;
+        threshold += 0.12f;
     }
-    constexpr float kKnee = 0.16f;
-    constexpr float kMaxClamp = 2.20f;
-    constexpr float kCoreLift = 0.55f;
+    constexpr float kKnee = 0.10f;
+    constexpr float kMaxClamp = 2.00f;
+    constexpr float kCoreLift = 0.45f;
 
     ID3D11ShaderResourceView* null_srvs[2] = {nullptr, nullptr};
     req.ctx->PSSetConstantBuffers(0, 1, &g_cb_bloom);
@@ -527,10 +535,10 @@ bool ExecuteKawaseBloomPass(const KawaseBloomRequest& req, PostLogFn logger) {
 
     // 3. Dual-Kawase 8-Tap Additive Upsample Pyramid: Mip 4 -> 3 -> 2 -> 1 -> 0
     static constexpr float kUpsampleScatter[kBloomMipCount - 1] = {
-        0.60f,  // 1 -> 0
-        0.66f,  // 2 -> 1
-        0.72f,  // 3 -> 2
-        0.78f,  // 4 -> 3
+        0.42f,  // 1 -> 0
+        0.48f,  // 2 -> 1
+        0.56f,  // 3 -> 2
+        0.64f,  // 4 -> 3
     };
     req.ctx->PSSetShader(g_ps_bloom_upsample, nullptr, 0);
     req.ctx->OMSetBlendState(g_blend_bloom_add, nullptr, 0xFFFFFFFFU);
@@ -544,7 +552,7 @@ bool ExecuteKawaseBloomPass(const KawaseBloomRequest& req, PostLogFn logger) {
                 0.0f, 0.0f, dst_w, dst_h,
                 0.0f, 0.0f, 1.0f, 1.0f,
                 1.0f / src_w, 1.0f / src_h,
-                0.0f, 0.0f, kUpsampleScatter[i - 1], 0.85f, kMaxClamp, 0.0f,
+                0.0f, 0.0f, kUpsampleScatter[i - 1], 0.75f, kMaxClamp, 0.0f,
                 1.0f / static_cast<float>(g_mip_w[0]), 1.0f / static_cast<float>(g_mip_h[0]))) {
             return false;
         }
@@ -556,8 +564,7 @@ bool ExecuteKawaseBloomPass(const KawaseBloomRequest& req, PostLogFn logger) {
     }
 
     // 4. Composite Mip 0 + Original Scene -> target_rtv (RGB write, Alpha preserved)
-    const float menu_scale = req.is_menu ? 0.65f : 1.0f;
-    const float composite_strength = 0.145f * (std::clamp)(req.strength_scale, 0.0f, 2.0f) * menu_scale;
+    const float composite_strength = 0.115f * (std::clamp)(req.strength_scale, 0.0f, 2.0f);
     if (!UploadBloomCb(
             req.ctx,
             vp_l, vp_t, vp_w, vp_h,
@@ -575,6 +582,10 @@ bool ExecuteKawaseBloomPass(const KawaseBloomRequest& req, PostLogFn logger) {
     req.ctx->PSSetShaderResources(0, 2, srvs_comp);
     req.ctx->Draw(3, 0);
     req.ctx->PSSetShaderResources(0, 2, null_srvs);
+    ID3D11SamplerState* null_samp = nullptr;
+    req.ctx->PSSetSamplers(0, 1, &null_samp);
+    ID3D11Buffer* null_cb = nullptr;
+    req.ctx->PSSetConstantBuffers(0, 1, &null_cb);
 
     g_bloom_executed.fetch_add(1, std::memory_order_relaxed);
     return true;

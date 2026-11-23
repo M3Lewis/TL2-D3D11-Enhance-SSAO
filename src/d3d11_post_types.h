@@ -14,7 +14,7 @@ using PostLogFn = void (*)(const char* fmt, ...);
 using RouteCD3DLogFn = PostLogFn;
 using RouteCLogFn = PostLogFn;
 
-// 192 bytes = 12 float4 HLSL registers matching cbuffer CbAoParams in hlsl
+// 240 bytes = 15 float4 HLSL registers matching cbuffer CbAoParams in hlsl
 struct alignas(16) CbAoParams {
     float proj_xy[4];              // (p00, p11, p02, p12)
     float proj_z_fade[4];          // (p22, p23, fadeEnd, invFadeRange)
@@ -28,8 +28,11 @@ struct alignas(16) CbAoParams {
     float view_up_and_water[4];    // (worldUpVs.xyz, waterHint)
     float inv_view_row0[4];        // (worldXBasisVs.xyz, camPosVsToWorldOffsetX)
     float inv_view_row2[4];        // (worldZBasisVs.xyz, camPosVsToWorldOffsetZ)
+    float inv_view_row1[4];        // (worldYBasisVs.xyz, camPosVsToWorldOffsetY)
+    float height_fog_color[4];     // (fogR, fogG, fogB, maxHeightFogAlpha)
+    float height_fog_shape[4];     // (heightFalloffK, distDensity, baseOffsetY, sunScatterStrength)
 };
-static_assert(sizeof(CbAoParams) == 192, "CbAoParams must match 12 float4 HLSL registers");
+static_assert(sizeof(CbAoParams) == 240, "CbAoParams must match 15 float4 HLSL registers");
 
 struct alignas(16) CbPanelParams {
     float rect[4];   // box_x, box_y, box_w, box_h
@@ -87,13 +90,18 @@ struct AoRenderRequest {
     bool sscs_enabled = true;
     bool capture_particle_depth = false;
     bool aerial_enabled = false;
+    bool height_fog_enabled = true;
     bool ssr_enabled = false;
+    bool ssgi_enabled = false;
     int lut_preset = 0;     // 0=OFF, 1=CinemaTealOrange, 2=ColdNordic, 3=Custom(.cube)
     bool water_hint = false;
+    bool is_desert = false;
+    bool is_menu = false;
     int filter_preset = 1;  // 0=OFF, 1=HOB, 2=DRK
     float ao_strength_scale = 1.0f;
     float sscs_strength_scale = 1.0f;
     float aerial_strength_scale = 1.0f;
+    float height_fog_strength_scale = 1.0f;
     float ssr_strength_scale = 1.0f;
     float rain_strength = 0.0f;
     float time_of_day = -1.0f;
@@ -115,12 +123,12 @@ struct PostWorldRequest {
     int vp_height = 0;
     int debug_mode = 0;
     bool ssr_enabled = false;
-    bool bloom_enabled = false;
+    bool ssgi_enabled = false;
     int lut_preset = 0;     // 0=OFF, 1=CinemaTealOrange, 2=ColdNordic, 3=Custom(.cube)
     bool water_hint = false;
     int filter_preset = 1;  // 0=OFF, 1=HOB, 2=DRK
     float ssr_strength_scale = 1.0f;
-    float bloom_strength_scale = 1.0f;
+    float ssgi_strength_scale = 1.0f;
     float rain_strength = 0.0f;
     float time_of_day = -1.0f;
     float lut_strength_scale = 1.0f;

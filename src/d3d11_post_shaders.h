@@ -7,6 +7,9 @@ namespace routeb {
 extern const char kAoShaderSource[];
 extern const size_t kAoShaderSourceLength;
 
+extern const char kAoAtmosSource[];
+extern const size_t kAoAtmosSourceLength;
+
 extern const char kAoSsrTailSource[];
 extern const size_t kAoSsrTailSourceLength;
 

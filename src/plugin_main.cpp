@@ -564,23 +564,31 @@ extern "C" __declspec(dllexport) int RouteB_RunConfigPanelSelfTest() {
     routeb::SetPhase3RuntimeEnhanceEnabled(true);
     routeb::SetF11VisualEnhanceEnabled(false);
     routeb::SetP0RimLitEnhanceEnabled(true);
+    routeb::SetPhase3PcfShadowEnabled(false);
+    routeb::SetPhase3PomEnabled(true);
+    routeb::SetPhase3AntiTileEnabled(false);
     routeb::SetRouteCAoRuntimeEnabled(false);
     routeb::SetRouteCSscsRuntimeEnabled(false);
     routeb::SetP1SoftParticlesEnabled(true);
     routeb::SetP2AerialVignetteEnabled(false);
+    routeb::SetP2HeightFogEnabled(true);
+    routeb::SetP2SsgiEnabled(false);
     routeb::SetP2SsrEnabled(false);
-    routeb::SetP2KawaseBloomEnabled(false);
     routeb::SetP2FilterPreset(2);
     routeb::SetP2LutPreset(1);
     routeb::SetPhase3StrengthPct(-25);      // clamps to 0
     routeb::SetF11PointLightStrengthPct(135);
     routeb::SetP0RimLitStrengthPct(150);
+    routeb::SetPhase3PcfShadowStrengthPct(110);
+    routeb::SetPhase3PomStrengthPct(125);
+    routeb::SetPhase3AntiTileStrengthPct(80);
     routeb::SetRouteCAoStrengthPct(85);
     routeb::SetRouteCSscsStrengthPct(120);
     routeb::SetP1SoftParticlesStrengthPct(160);
     routeb::SetP2AerialVignetteStrengthPct(75);
+    routeb::SetP2HeightFogStrengthPct(140);
+    routeb::SetP2SsgiStrengthPct(130);
     routeb::SetP2SsrStrengthPct(250);       // clamps to 200
-    routeb::SetP2KawaseBloomStrengthPct(145);
     routeb::SetP2FilterStrengthPct(115);
     routeb::SetP2LutStrengthPct(90);
     if (routeb::GetUiLanguage() != routeb::DetectSystemDefaultUiLanguage()) {
@@ -600,8 +608,10 @@ extern "C" __declspec(dllexport) int RouteB_RunConfigPanelSelfTest() {
     }
     const routeb::VisualConfig all_on = routeb::CaptureVisualConfigFromEngine();
     if (!all_on.phase3_enhance || !all_on.af_point_enhance || !all_on.p0_rimlit_enhance ||
+        !all_on.p3_pcf_shadow_enabled || !all_on.p3_pom_enabled || !all_on.p3_antitile_enabled ||
         !all_on.ao_enabled || !all_on.p0_sscs_enabled || !all_on.p1_soft_particles ||
-        !all_on.p2_aerial_vignette || !all_on.p2_ssr_enabled || !all_on.p2_kawase_bloom_enabled ||
+        !all_on.p2_aerial_vignette || !all_on.p2_height_fog_enabled || !all_on.p2_ssgi_enabled ||
+        !all_on.p2_ssr_enabled ||
         all_on.p2_filter_preset != 2 || all_on.p2_lut_preset != 1) {
         return 12;
     }
@@ -610,8 +620,10 @@ extern "C" __declspec(dllexport) int RouteB_RunConfigPanelSelfTest() {
     }
     const routeb::VisualConfig all_off = routeb::CaptureVisualConfigFromEngine();
     if (all_off.phase3_enhance || all_off.af_point_enhance || all_off.p0_rimlit_enhance ||
+        all_off.p3_pcf_shadow_enabled || all_off.p3_pom_enabled || all_off.p3_antitile_enabled ||
         all_off.ao_enabled || all_off.p0_sscs_enabled || all_off.p1_soft_particles ||
-        all_off.p2_aerial_vignette || all_off.p2_ssr_enabled || all_off.p2_kawase_bloom_enabled ||
+        all_off.p2_aerial_vignette || all_off.p2_height_fog_enabled || all_off.p2_ssgi_enabled ||
+        all_off.p2_ssr_enabled ||
         all_off.p2_filter_preset != 2 || all_off.p2_lut_preset != 1) {
         return 14;
     }
@@ -622,8 +634,10 @@ extern "C" __declspec(dllexport) int RouteB_RunConfigPanelSelfTest() {
     }
     const routeb::VisualConfig vanilla = routeb::CaptureVisualConfigFromEngine();
     if (vanilla.phase3_enhance || vanilla.af_point_enhance || vanilla.p0_rimlit_enhance ||
+        vanilla.p3_pcf_shadow_enabled || vanilla.p3_pom_enabled || vanilla.p3_antitile_enabled ||
         vanilla.ao_enabled || vanilla.p0_sscs_enabled || vanilla.p1_soft_particles ||
-        vanilla.p2_aerial_vignette || vanilla.p2_ssr_enabled || vanilla.p2_kawase_bloom_enabled ||
+        vanilla.p2_aerial_vignette || vanilla.p2_height_fog_enabled || vanilla.p2_ssgi_enabled ||
+        vanilla.p2_ssr_enabled ||
         vanilla.p2_filter_preset != 0 || vanilla.p2_lut_preset != 0) {
         return 4;
     }
@@ -634,14 +648,18 @@ extern "C" __declspec(dllexport) int RouteB_RunConfigPanelSelfTest() {
     }
     const routeb::VisualConfig applied = routeb::CaptureVisualConfigFromEngine();
     if (!applied.phase3_enhance || applied.af_point_enhance || !applied.p0_rimlit_enhance ||
+        applied.p3_pcf_shadow_enabled || !applied.p3_pom_enabled || applied.p3_antitile_enabled ||
         applied.ao_enabled || applied.p0_sscs_enabled || !applied.p1_soft_particles ||
-        applied.p2_aerial_vignette || applied.p2_ssr_enabled || applied.p2_kawase_bloom_enabled ||
+        applied.p2_aerial_vignette || !applied.p2_height_fog_enabled || applied.p2_ssgi_enabled ||
+        applied.p2_ssr_enabled ||
         applied.p2_filter_preset != 2 || applied.p2_lut_preset != 1 ||
         applied.phase3_strength != 0 || applied.af_point_strength != 135 ||
-        applied.p0_rimlit_strength != 150 || applied.ao_strength != 85 ||
-        applied.p0_sscs_strength != 120 || applied.p1_soft_strength != 160 ||
-        applied.p2_aerial_strength != 75 || applied.p2_ssr_strength != 200 ||
-        applied.p2_kawase_bloom_strength != 145 ||
+        applied.p0_rimlit_strength != 150 || applied.p3_pcf_shadow_strength != 110 ||
+        applied.p3_pom_strength != 125 || applied.p3_antitile_strength != 80 ||
+        applied.ao_strength != 85 || applied.p0_sscs_strength != 120 ||
+        applied.p1_soft_strength != 160 || applied.p2_aerial_strength != 75 ||
+        applied.p2_height_fog_strength != 140 || applied.p2_ssgi_strength != 130 ||
+        applied.p2_ssr_strength != 200 ||
         applied.p2_filter_strength != 115 || applied.p2_lut_strength != 90) {
         return 6;
     }

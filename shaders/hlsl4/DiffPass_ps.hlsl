@@ -72,6 +72,13 @@ float4 p3Flags2 = float4(0.0, 0.0, 0.0, 0.0);
 //   w = Dynamic weather rain wetness scale (0..1)
 float4 p3EnhanceFlags = float4(0.0, 0.0, 1.0, 0.0);
 
+// p3ExtraFlags:
+//   x = ProjectorRTT 8-tap rotated Poisson PCF radius in texels (0 disables PCF)
+//   y = Cool sky shadow tint strength (0 disables tint)
+//   z = Steep POM + micro-self-shadow strength (0..2, 0 disables POM)
+//   w = World-space anti-tiling + near-camera micro-grain strength (0..2, 0 disables)
+float4 p3ExtraFlags = float4(2.2, 0.75, 1.0, 1.0);
+
 float2 ResolveFixedFuncUv(float4 rawUv, bool isProjective)
 {
     if (isProjective)
@@ -94,6 +101,83 @@ float3 ApplyTextureStageOp(float3 baseColor, float4 tSample, int op)
     if (op == 5)
         return saturate(baseColor * (tSample.rgb * 4.0));
     return baseColor;
+}
+
+float ShadowIgnHash(float2 pos)
+{
+    return frac(52.9829189 * frac(dot(pos, float2(0.06711056, 0.00583715))));
+}
+
+float4 SampleProjectiveShadowPcf(Texture2D tex, SamplerState samp, float2 uv, float2 screenPos, float radiusTexels)
+{
+    uint texW = 1, texH = 1;
+    tex.GetDimensions(texW, texH);
+    float4 result = float4(1.0, 1.0, 1.0, 1.0);
+    if (radiusTexels <= 0.01 || texW < 16 || texH < 16)
+    {
+        result = tex.Sample(samp, uv);
+    }
+    else
+    {
+        float2 texelScale = radiusTexels / float2((float)texW, (float)texH);
+        float ang = ShadowIgnHash(screenPos) * 6.2831853;
+        float s, c;
+        sincos(ang, s, c);
+        float2x2 rot = float2x2(c, -s, s, c);
+
+        static const float2 kPoisson[8] = {
+            float2(-0.7071,  0.7071),
+            float2(-0.0000,  0.8750),
+            float2( 0.5303,  0.5303),
+            float2(-0.9239, -0.3827),
+            float2( 0.8750, -0.0000),
+            float2(-0.3827, -0.9239),
+            float2( 0.3536, -0.3536),
+            float2(-0.3536,  0.1464)
+        };
+
+        float4 sum = float4(0.0, 0.0, 0.0, 0.0);
+        [unroll]
+        for (int i = 0; i < 8; ++i)
+        {
+            float2 off = mul(kPoisson[i], rot) * texelScale;
+            sum += tex.Sample(samp, uv + off);
+        }
+        result = sum * 0.125;
+    }
+    return result;
+}
+
+float4 ApplyShadowCoolTint(float4 stageSample, int op, float tintStrength)
+{
+    if ((op != 1 && op != 4) || tintStrength <= 0.005)
+        return stageSample;
+
+    float3 effRgb = (op == 4) ? (stageSample.rgb * 2.0) : stageSample.rgb;
+    float lum = saturate(dot(effRgb, float3(0.299, 0.587, 0.114)));
+    float shadowMask = saturate((1.0 - lum) * 1.15);
+    float3 coolBias = lerp(float3(1.0, 1.0, 1.0), float3(0.88, 0.96, 1.12), clamp(shadowMask * tintStrength, 0.0, 1.0));
+    stageSample.rgb = saturate(stageSample.rgb * coolBias);
+    return stageSample;
+}
+
+float Hash21At(float2 p)
+{
+    float3 p3 = frac(float3(p.xyx) * 0.1031);
+    p3 += dot(p3, p3.yzx + 33.33);
+    return frac((p3.x + p3.y) * p3.z);
+}
+
+float ValueNoise2DAt(float2 p)
+{
+    float2 i = floor(p);
+    float2 f = frac(p);
+    float2 u = f * f * (3.0 - 2.0 * f);
+    float a = Hash21At(i);
+    float b = Hash21At(i + float2(1.0, 0.0));
+    float c = Hash21At(i + float2(0.0, 1.0));
+    float d = Hash21At(i + float2(1.0, 1.0));
+    return lerp(lerp(a, b, u.x), lerp(c, d, u.x), u.y);
 }
 
 float3 ApplyOgreFog(float3 color, float rawFogDist, int fogMode)
@@ -292,13 +376,10 @@ SurfaceDetail AnalyzeSurfaceDetail(
     return sd;
 }
 
-float3 PerturbNormalFromMap(float3 N, float3 V_unnorm, float2 uv, float3 tsNormal, float bumpScale)
+bool BuildCotangentFrame(float3 N, float3 V_unnorm, float2 duv1, float2 duv2, out float3 outT, out float3 outB)
 {
     float3 dp1 = ddx(-V_unnorm);
     float3 dp2 = ddy(-V_unnorm);
-    float2 duv1 = ddx(uv);
-    float2 duv2 = ddy(uv);
-
     float3 dp2perp = cross(N, dp2);
     float3 dp1perp = cross(dp1, N);
     float3 T = dp2perp * duv1.x + dp1perp * duv2.x;
@@ -306,10 +387,41 @@ float3 PerturbNormalFromMap(float3 N, float3 V_unnorm, float2 uv, float3 tsNorma
 
     float maxSq = max(dot(T, T), dot(B, B));
     if (maxSq < 1e-10)
-        return N;
+    {
+        outT = float3(1.0, 0.0, 0.0);
+        outB = float3(0.0, 1.0, 0.0);
+        return false;
+    }
 
     float invmax = rsqrt(maxSq);
-    float3x3 tbn = float3x3(T * invmax, B * invmax, N);
+    outT = T * invmax;
+    outB = B * invmax;
+    return true;
+}
+
+float SamplePomHeight(float2 sampleUv, float2 duvX, float2 duvY, bool hasSpecMap)
+{
+    float h = 0.5;
+    if (hasSpecMap)
+    {
+        float4 sp = Texture4.SampleGrad(Sampler0, sampleUv, duvX, duvY);
+        h = (sp.a < 0.995) ? sp.a : saturate((sp.b - 0.18) / 0.82);
+    }
+    else
+    {
+        float3 alb = Texture0.SampleGrad(Sampler0, sampleUv, duvX, duvY).rgb;
+        h = saturate(dot(alb, float3(0.299, 0.587, 0.114)) * 1.15 - 0.10);
+    }
+    return h;
+}
+
+float3 PerturbNormalFromMap(float3 N, float3 V_unnorm, float2 duv1, float2 duv2, float3 tsNormal, float bumpScale)
+{
+    float3 T, B;
+    if (!BuildCotangentFrame(N, V_unnorm, duv1, duv2, T, B))
+        return N;
+
+    float3x3 tbn = float3x3(T, B, N);
     float3 scaled = float3(tsNormal.x * bumpScale, tsNormal.y * bumpScale, max(tsNormal.z, 0.05));
     return normalize(mul(scaled, tbn));
 }
@@ -418,7 +530,57 @@ float4 ShadeDiffPass(VS_OUTPUT input, bool doAlphaReject)
     bool hasSpecMap = (p3Flags2.w > 0.5);
     bool hasCompanionMaps = (hasNormMap && hasSpecMap);
 
-    SurfaceDetail sd = AnalyzeSurfaceDetail(input.Texcoord0.xy, duvX, duvY, albedo.rgb, N, hasNormal, detailWeight, hasCompanionMaps, p3Scale);
+    float2 sampleUv = input.Texcoord0.xy;
+    float pomHeight = 1.0;
+    float pomFade = 0.0;
+    float pomScale = max(p3ExtraFlags.z, 0.0);
+    float3 tbnT = float3(1.0, 0.0, 0.0);
+    float3 tbnB = float3(0.0, 1.0, 0.0);
+    bool hasTbn = false;
+
+    if (hasNormal && !doAlphaReject && pomScale > 0.001)
+    {
+        float uvFootPom = max(length(duvX), length(duvY));
+        pomFade = (1.0 - smoothstep(0.012, 0.048, uvFootPom)) * smoothstep(0.22, 0.55, dot(N, V));
+        if (pomFade > 0.03)
+        {
+            hasTbn = BuildCotangentFrame(N, input.Texcoord7.xyz, duvX, duvY, tbnT, tbnB);
+            if (hasTbn)
+            {
+                float2 pDir = float2(dot(V, tbnT), dot(V, tbnB)) / max(dot(V, N), 0.28);
+                float2 maxOffset = pDir * (0.015 * min(pomScale, 1.8) * pomFade);
+                static const int kPomSteps = 6;
+                float layerStep = 1.0 / (float)kPomSteps;
+                float2 deltaUv = maxOffset * layerStep;
+
+                float2 curUv = sampleUv;
+                float curLayerDepth = 0.0;
+                float curHeight = SamplePomHeight(curUv, duvX, duvY, hasSpecMap);
+
+                [unroll]
+                for (int ps = 0; ps < kPomSteps; ++ps)
+                {
+                    if (curLayerDepth < (1.0 - curHeight))
+                    {
+                        curUv -= deltaUv;
+                        curLayerDepth += layerStep;
+                        curHeight = SamplePomHeight(curUv, duvX, duvY, hasSpecMap);
+                    }
+                }
+
+                float2 prevUv = curUv + deltaUv;
+                float afterDepth = (1.0 - curHeight) - curLayerDepth;
+                float beforeDepth = (1.0 - SamplePomHeight(prevUv, duvX, duvY, hasSpecMap)) - (curLayerDepth - layerStep);
+                float denom = afterDepth - beforeDepth;
+                float wSec = (abs(denom) > 1e-4) ? saturate(afterDepth / denom) : 0.5;
+                sampleUv = lerp(curUv, prevUv, wSec);
+                pomHeight = saturate(1.0 - lerp(curLayerDepth, curLayerDepth - layerStep, wSec));
+                albedo = Texture0.SampleGrad(Sampler0, sampleUv, duvX, duvY);
+            }
+        }
+    }
+
+    SurfaceDetail sd = AnalyzeSurfaceDetail(sampleUv, duvX, duvY, albedo.rgb, N, hasNormal, detailWeight, hasCompanionMaps, p3Scale);
 
     if (hasNormMap || hasSpecMap)
     {
@@ -428,7 +590,7 @@ float4 ShadeDiffPass(VS_OUTPUT input, bool doAlphaReject)
 
         if (hasSpecMap)
         {
-            float3 spSample = Texture4.SampleGrad(Sampler0, input.Texcoord0.xy, duvX, duvY).rgb;
+            float3 spSample = Texture4.SampleGrad(Sampler0, sampleUv, duvX, duvY).rgb;
             sd.smoothness = saturate(spSample.r);
             sd.metalMask = saturate(spSample.g);
             float cavityAO = saturate(spSample.b);
@@ -439,10 +601,10 @@ float4 ShadeDiffPass(VS_OUTPUT input, bool doAlphaReject)
 
         if (hasNormMap && hasNormal && sd.reliefFade > 0.01 && p3Scale > 0.001)
         {
-            float4 nSample = Texture3.SampleGrad(Sampler0, input.Texcoord0.xy, duvX, duvY);
+            float4 nSample = Texture3.SampleGrad(Sampler0, sampleUv, duvX, duvY);
             float2 xy = float2(nSample.a, nSample.g) * 2.0 - 1.0;
             float nz = sqrt(saturate(1.0 - dot(xy, xy)));
-            sd.microNormal = PerturbNormalFromMap(N, input.Texcoord7.xyz, input.Texcoord0.xy, float3(xy, nz), 1.45 * sd.reliefFade * p3Scale);
+            sd.microNormal = PerturbNormalFromMap(N, input.Texcoord7.xyz, duvX, duvY, float3(xy, nz), 1.45 * sd.reliefFade * p3Scale);
         }
     }
 
@@ -456,7 +618,16 @@ float4 ShadeDiffPass(VS_OUTPUT input, bool doAlphaReject)
     if (op1 > 0)
     {
         float2 uv1 = ResolveFixedFuncUv(input.Texcoord1, isProj1);
-        tSample1 = Texture1.Sample(Sampler1, uv1);
+        if (isProj1 && (op1 == 1 || op1 == 4 || op1 == 2) && p3ExtraFlags.x > 0.01)
+        {
+            float rad1 = (op1 == 2) ? (p3ExtraFlags.x * 0.55) : p3ExtraFlags.x;
+            tSample1 = SampleProjectiveShadowPcf(Texture1, Sampler1, uv1, input.Pos.xy, rad1);
+            tSample1 = ApplyShadowCoolTint(tSample1, op1, p3ExtraFlags.y);
+        }
+        else
+        {
+            tSample1 = Texture1.Sample(Sampler1, uv1);
+        }
     }
 
     int op2 = (int)(p3Flags2.x + 0.5);
@@ -465,7 +636,16 @@ float4 ShadeDiffPass(VS_OUTPUT input, bool doAlphaReject)
     if (op2 > 0)
     {
         float2 uv2 = ResolveFixedFuncUv(input.Texcoord2, isProj2);
-        tSample2 = Texture2.Sample(Sampler2, uv2);
+        if (isProj2 && (op2 == 1 || op2 == 4 || op2 == 2) && p3ExtraFlags.x > 0.01)
+        {
+            float rad2 = (op2 == 2) ? (p3ExtraFlags.x * 0.55) : p3ExtraFlags.x;
+            tSample2 = SampleProjectiveShadowPcf(Texture2, Sampler2, uv2, input.Pos.xy, rad2);
+            tSample2 = ApplyShadowCoolTint(tSample2, op2, p3ExtraFlags.y);
+        }
+        else
+        {
+            tSample2 = Texture2.Sample(Sampler2, uv2);
+        }
     }
 
     // Directional shadow attenuation from projective shadow maps (ProjectorRTT_104 / ProjectorRTTLight_105)
@@ -496,6 +676,41 @@ float4 ShadeDiffPass(VS_OUTPUT input, bool doAlphaReject)
         // View-up hemisphere micro-relief replaces camera-headlight bevel
         float3 viewUp = normalize(mul(float3(0.0, 1.0, 0.0), (float3x3)View));
         float worldUpY = dot(Nmicro, viewUp);
+
+        // Module 6: World-space anti-tiling macro variation (8m & 2.8m) + near-camera micro-grain (<14m)
+        float antiTileScale = max(p3ExtraFlags.w, 0.0);
+        if (antiTileScale > 0.001)
+        {
+            float3 PviewGeo = -input.Texcoord7.xyz;
+            float camDist = length(PviewGeo);
+            float groundMask = smoothstep(0.55, 0.85, worldUpY) * detailWeight * (1.0 - sd.metalMask);
+            if (groundMask > 0.01)
+            {
+                float3 Pworld = mul((float3x3)View, PviewGeo - float3(View[3].x, View[3].y, View[3].z));
+                float n8 = ValueNoise2DAt(Pworld.xz * 0.125) - 0.5;
+                float n28 = ValueNoise2DAt(Pworld.xz * 0.357 + 19.4) - 0.5;
+                float macroShift = n8 * 0.65 + n28 * 0.35;
+                float str = min(antiTileScale, 2.0) * groundMask;
+
+                float3 macroTint = lerp(float3(0.955, 0.980, 1.035), float3(1.045, 1.015, 0.955), saturate(macroShift + 0.5));
+                sd.albedo = saturate(sd.albedo * lerp(float3(1.0, 1.0, 1.0), macroTint, str * 0.85) * (1.0 + macroShift * 0.09 * str));
+                sd.smoothness = saturate(sd.smoothness + macroShift * 0.08 * str);
+
+                float nearFade = (1.0 - smoothstep(4.5, 13.5, camDist)) * str;
+                if (nearFade > 0.01)
+                {
+                    float mgA = ValueNoise2DAt(Pworld.xz * 9.5) - 0.5;
+                    float mgB = ValueNoise2DAt(Pworld.xz * 9.5 + float2(7.3, 13.7)) - 0.5;
+                    sd.albedo = saturate(sd.albedo * (1.0 + mgA * 0.075 * nearFade));
+                    if (hasTbn)
+                    {
+                        Nmicro = normalize(Nmicro + (tbnT * mgA + tbnB * mgB) * (0.18 * nearFade));
+                        worldUpY = dot(Nmicro, viewUp);
+                    }
+                }
+            }
+        }
+
         float skyRelief = worldUpY - dot(N, viewUp);
         litEnv *= saturate(1.0 + skyRelief * (0.22 * sd.reliefFade * p3Scale));
 
@@ -529,10 +744,28 @@ float4 ShadeDiffPass(VS_OUTPUT input, bool doAlphaReject)
                 float ndl0 = saturate(dot(Nmicro, L0));
                 shadowWeight = saturate(1.0 - ndl0 * (0.35 + 0.65 * dirShadowAtten));
 
+                float pomSelfShadow = 1.0;
+                if (hasTbn && pomFade > 0.05 && pomHeight < 0.96 && ndl0 > 0.05)
+                {
+                    float ldotN = max(dot(N, L0), 0.22);
+                    float2 lStepUv = float2(dot(L0, tbnT), dot(L0, tbnB)) * (0.012 * min(pomScale, 1.8) / (ldotN * 4.0));
+                    float rayH = pomHeight;
+                    float hStep = (1.0 - pomHeight) * 0.25;
+                    float maxOcc = 0.0;
+                    [unroll]
+                    for (int ss = 1; ss <= 4; ++ss)
+                    {
+                        rayH += hStep;
+                        float hS = SamplePomHeight(sampleUv + lStepUv * (float)ss, duvX, duvY, hasSpecMap);
+                        maxOcc = max(maxOcc, (hS - rayH) * (1.0 - (float)(ss - 1) * 0.18));
+                    }
+                    pomSelfShadow = lerp(1.0, saturate(1.0 - maxOcc * 2.8), saturate(pomScale) * pomFade);
+                }
+
                 // Saturated back-face truncation eliminates ghost relief in shadow
                 float relief = ndl0 - saturate(dot(N, L0));
                 float effectiveRelief = relief * (0.35 + 0.65 * dirShadowAtten);
-                litEnv *= saturate(1.0 + effectiveRelief * (0.60 * sd.reliefFade * p3Scale));
+                litEnv *= saturate(1.0 + effectiveRelief * (0.60 * sd.reliefFade * p3Scale)) * lerp(0.76, 1.0, pomSelfShadow);
 
                 float ndlRaw = dot(Nmicro, L0);
                 float3 H = normalize(L0 + V);
@@ -541,7 +774,7 @@ float4 ShadeDiffPass(VS_OUTPUT input, bool doAlphaReject)
                 float ndh = max(dot(Nmicro, H), 0.0);
                 float ggx = EvaluateGgxLobe(ndh, effSmoothness);
                 float termMask = saturate(ndlRaw * 2.5 + 0.15);
-                float specShadowMask = smoothstep(0.25, 0.85, dirShadowAtten);
+                float specShadowMask = smoothstep(0.25, 0.85, dirShadowAtten) * pomSelfShadow;
                 float specScalar = ggx * matScale * fresnel * termMask * detailWeight * p3Scale * specShadowMask;
 
                 specAdd = DirectionalLight0_Diffuse.rgb * MaterialDiffuse.rgb * surfTint * specScalar;

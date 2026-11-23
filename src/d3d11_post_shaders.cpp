@@ -17,6 +17,9 @@ cbuffer CbAoParams : register(b0)
     float4 gViewUpAndWater;  // xyz=worldUpVs, w=waterHint
     float4 gInvViewRow0;     // xyz=worldXBasisVs, w=worldXOffset
     float4 gInvViewRow2;     // xyz=worldZBasisVs, w=worldZOffset
+    float4 gInvViewRow1;     // xyz=worldYBasisVs, w=worldYOffset
+    float4 gHeightFogColor;  // rgb=todHeightFogRgb, a=maxHeightFogAlpha
+    float4 gHeightFogShape;  // x=heightFalloffK, y=distDensity, z=baseOffsetY, w=sunScatter
 };
 
 #if MSAA_DEPTH
@@ -404,20 +407,96 @@ float3 ComputeAoCompositeRgb(int2 pix, float rawC)
     return float3(ao, ao, ao);
 }
 
-void ComputeAerialPerspective(float rawC, out float3 hazeRgb, out float hazeA)
+)HLSL";
+const size_t kAoShaderSourceLength = sizeof(kAoShaderSource) - 1;
+
+const char kAoAtmosSource[] = R"HLSL(
+float3 ReconstructPosFromDist(int2 pix, float d)
+{
+    float2 pixelCenter = float2(pix) + 0.5f;
+    float2 uv = (pixelCenter - gVpRect.xy) / gVpRect.zw;
+    float2 ndc = float2(uv.x * 2.0f - 1.0f, 1.0f - uv.y * 2.0f);
+    return float3(
+        d * (ndc.x + gProjXY.z) / gProjXY.x,
+        d * (ndc.y + gProjXY.w) / gProjXY.y,
+        -d);
+}
+
+float EstimateGroundAnchorY()
+{
+    static const float2 kAnchorUvs[5] = {
+        float2(0.50f, 0.54f),
+        float2(0.47f, 0.54f),
+        float2(0.53f, 0.54f),
+        float2(0.50f, 0.51f),
+        float2(0.50f, 0.57f),
+    };
+    float minGroundY = 1e6f;
+    [unroll]
+    for (int i = 0; i < 5; ++i)
+    {
+        int2 apix = clamp(int2(gVpRect.xy + kAnchorUvs[i] * gVpRect.zw), gVpClamp.xy, gVpClamp.zw);
+        float aRaw = LoadRawDepth(apix);
+        if (aRaw < 0.99998f)
+        {
+            float3 ap = ReconstructPosFromDist(apix, max(RawToLinearDist(aRaw), 1e-3f));
+            float wy = dot(ap, gInvViewRow1.xyz) + gInvViewRow1.w;
+            minGroundY = min(minGroundY, wy);
+        }
+    }
+    return (minGroundY < 1e5f) ? minGroundY : 0.0f;
+}
+
+void ComputeAerialPerspective(int2 pix, float rawC, out float3 hazeRgb, out float hazeA)
 {
     hazeRgb = float3(0.0f, 0.0f, 0.0f);
     hazeA = 0.0f;
-    if (rawC >= 0.99998f || gSscsParams.w < 0.5f || gAerialFogParams.a <= 1e-4f)
+    if (rawC >= 0.99998f)
     {
         return;
     }
 
     float dC = max(RawToLinearDist(rawC), 1e-3f);
-    float t = saturate((dC - gSscsKeyAndRange.z) * gSscsKeyAndRange.w);
-    float smoothT = t * t * (3.0f - 2.0f * t);
-    hazeRgb = gAerialFogParams.rgb;
-    hazeA = smoothT * gAerialFogParams.a;
+
+    float3 aRgb = float3(0.0f, 0.0f, 0.0f);
+    float aA = 0.0f;
+    if (gSscsParams.w >= 0.5f && gAerialFogParams.a > 1e-4f)
+    {
+        float t = saturate((dC - gSscsKeyAndRange.z) * gSscsKeyAndRange.w);
+        float smoothT = t * t * (3.0f - 2.0f * t);
+        aRgb = gAerialFogParams.rgb;
+        aA = smoothT * gAerialFogParams.a;
+    }
+
+    float3 hRgb = float3(0.0f, 0.0f, 0.0f);
+    float hA = 0.0f;
+    if (gHeightFogColor.a > 1e-4f)
+    {
+        float3 P = ReconstructPosFromDist(pix, dC);
+        float worldY = dot(P, gInvViewRow1.xyz) + gInvViewRow1.w;
+        float anchorY = EstimateGroundAnchorY();
+        float relH = max(worldY - anchorY + gHeightFogShape.z, -0.45f);
+        float heightAtten = exp(-relH * gHeightFogShape.x);
+        float distAtten = 1.0f - exp(-max(dC - 5.5f, 0.0f) * gHeightFogShape.y);
+        hA = clamp(gHeightFogColor.a * heightAtten * distAtten, 0.0f, gHeightFogColor.a);
+
+        float2 uv = (float2(pix) + 0.5f - gVpRect.xy) / max(gVpRect.zw, float2(1.0f, 1.0f));
+        float2 toPx = uv - float2(0.5f, 0.5f);
+        float toLenSq = dot(toPx, toPx);
+        float scatter = 0.0f;
+        if (toLenSq > 1e-5f)
+        {
+            float2 ray2d = toPx * rsqrt(toLenSq);
+            scatter = smoothstep(0.15f, 0.95f, dot(ray2d, -gSscsKeyAndRange.xy)) * gHeightFogShape.w;
+        }
+        hRgb = gHeightFogColor.rgb * (1.0f + scatter * 0.22f);
+    }
+
+    hazeA = saturate(aA + hA - aA * hA);
+    if (hazeA > 1e-5f)
+    {
+        hazeRgb = (aRgb * (aA * (1.0f - hA)) + hRgb * hA) / hazeA;
+    }
 }
 
 float4 PS_AoComposite(VsOut input) : SV_Target0
@@ -440,7 +519,7 @@ AoDualOut PS_AoCompositeDual(VsOut input)
     float3 aoRgb = ComputeAoCompositeRgb(pix, rawC);
     float3 hazeRgb;
     float hazeA;
-    ComputeAerialPerspective(rawC, hazeRgb, hazeA);
+    ComputeAerialPerspective(pix, rawC, hazeRgb, hazeA);
     AoDualOut o;
     o.hazePremul = float4(hazeRgb * hazeA, 0.0f);
     o.destFactor = float4(aoRgb * (1.0f - hazeA), 1.0f);
@@ -453,11 +532,11 @@ float4 PS_AerialPerspective(VsOut input) : SV_Target0
     float rawC = LoadRawDepth(pix);
     float3 hazeRgb;
     float hazeA;
-    ComputeAerialPerspective(rawC, hazeRgb, hazeA);
+    ComputeAerialPerspective(pix, rawC, hazeRgb, hazeA);
     return float4(hazeRgb, hazeA);
 }
 )HLSL";
-const size_t kAoShaderSourceLength = sizeof(kAoShaderSource) - 1;
+const size_t kAoAtmosSourceLength = sizeof(kAoAtmosSource) - 1;
 
 const char kAoSsrTailSource[] = R"HLSL(
 float SsrHash21(float2 p)

@@ -1,5 +1,5 @@
 #include "d3d11_ssr_pass.h"
-#include "d3d11_bloom_pass.h"
+#include "d3d11_ssgi_pass.h"
 #include "d3d11_post_renderer.h"
 
 #define WIN32_LEAN_AND_MEAN
@@ -23,7 +23,7 @@ void ResetPostWorldDepthSnapshot() {
 
 bool ExecutePostWorldPass(const PostWorldRequest& req, PostLogFn logger) {
     if (!req.ctx || req.vp_width <= 0 || req.vp_height <= 0 || req.debug_mode > 0 ||
-        (!req.ssr_enabled && !req.bloom_enabled && req.lut_preset <= 0)) {
+        (!req.ssgi_enabled && !req.ssr_enabled && req.lut_preset <= 0)) {
         return false;
     }
 
@@ -104,6 +104,39 @@ bool ExecutePostWorldPass(const PostWorldRequest& req, PostLogFn logger) {
     ID3D11ShaderResourceView* null_srvs[2] = {nullptr, nullptr};
     bool did_any = false;
 
+    // 1-Bounce Horizon-Aware SSGI (first in PostWorld: post-world color+depth, strictly pre-SSR & pre-LUT & pre-UI)
+    if (!req.is_menu && req.ssgi_enabled && req.ssgi_strength_scale > 0.001f &&
+        g_st.post_world_depth_valid && g_st.depth_copy_srv && g_st.cb_params &&
+        EnsureWaterDepthTarget(dev, rt_desc.Width, rt_desc.Height, rt_desc.SampleDesc.Count, rt_desc.SampleDesc.Quality) &&
+        CopyRtvTextureToP2Copy(dev, req.ctx, src_rt_tex, rt_desc, rtv_desc)) {
+        D3D11_MAPPED_SUBRESOURCE mapped_cb{};
+        if (SUCCEEDED(req.ctx->Map(g_st.cb_params, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped_cb)) && mapped_cb.pData) {
+            std::memcpy(mapped_cb.pData, g_st.post_world_cb_bytes, sizeof(CbAoParams));
+            req.ctx->Unmap(g_st.cb_params, 0);
+        }
+        SsgiRequest ssgi_req{};
+        ssgi_req.dev = dev;
+        ssgi_req.ctx = req.ctx;
+        ssgi_req.target_rtv = target_rtv;
+        ssgi_req.scene_srv = g_st.p2_copy_srv;
+        ssgi_req.depth_srv = g_st.depth_copy_srv;
+        ssgi_req.water_depth_srv = g_st.water_depth_srv;
+        ssgi_req.rt_w = rt_desc.Width;
+        ssgi_req.rt_h = rt_desc.Height;
+        ssgi_req.vp_left = req.vp_left;
+        ssgi_req.vp_top = req.vp_top;
+        ssgi_req.vp_width = req.vp_width;
+        ssgi_req.vp_height = req.vp_height;
+        ssgi_req.strength_scale = req.ssgi_strength_scale;
+        ssgi_req.use_msaa_depth = g_st.post_world_msaa;
+        ssgi_req.is_desert = req.is_desert;
+        ssgi_req.is_menu = req.is_menu;
+        if (ExecuteSsgiPass(ssgi_req, logger)) {
+            did_any = true;
+        }
+        req.ctx->PSSetSamplers(0, 1, &g_st.samp_linear);
+    }
+
     // Item 5: Post-water SSR using depth snapshot from Ended86 and post-translucent color buffer (queues 0..94).
     const DepthVariantShaders* ds = g_st.post_world_msaa ? &g_st.shaders_msaa : &g_st.shaders_single;
     if (!req.is_menu && req.ssr_enabled && g_st.post_world_depth_valid && g_st.depth_copy_srv &&
@@ -154,31 +187,7 @@ bool ExecutePostWorldPass(const PostWorldRequest& req, PostLogFn logger) {
         did_any = true;
     }
 
-    // Multi-Mip Dual-Kawase Bloom (post-world + post-SSR, strictly pre-LUT & pre-UI; skipped in main menu)
-    if (!req.is_menu && req.bloom_enabled && req.bloom_strength_scale > 0.001f &&
-        CopyRtvTextureToP2Copy(dev, req.ctx, src_rt_tex, rt_desc, rtv_desc)) {
-        KawaseBloomRequest breq{};
-        breq.dev = dev;
-        breq.ctx = req.ctx;
-        breq.target_rtv = target_rtv;
-        breq.scene_srv = g_st.p2_copy_srv;
-        breq.rt_w = rt_desc.Width;
-        breq.rt_h = rt_desc.Height;
-        breq.vp_left = req.vp_left;
-        breq.vp_top = req.vp_top;
-        breq.vp_width = req.vp_width;
-        breq.vp_height = req.vp_height;
-        breq.filter_preset = req.filter_preset;
-        breq.strength_scale = req.bloom_strength_scale;
-        breq.is_desert = req.is_desert;
-        breq.is_menu = req.is_menu;
-        if (ExecuteKawaseBloomPass(breq, logger)) {
-            did_any = true;
-        }
-        req.ctx->PSSetSamplers(0, 1, &g_st.samp_linear);
-    }
-
-    // Item 7: 3D LUT Color Grading (post-world + post-SSR + post-Bloom, strictly pre-UI)
+    // Item 7: 3D LUT Color Grading (post-world + post-SSGI + post-SSR, strictly pre-UI)
     if (req.lut_preset > 0 &&
         g_st.ps_lut_grade && g_st.cb_bloom_lut && g_st.blend_debug_rgb &&
         EnsureLutReady(dev, req.lut_preset, logger) &&

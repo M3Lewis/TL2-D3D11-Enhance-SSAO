@@ -45,9 +45,58 @@ float4 p3Flags2 = float4(0.0, 0.0, 0.0, 0.0);
 //   w = Dynamic weather rain wetness scale (0..1)
 float4 p3EnhanceFlags = float4(0.0, 0.0, 1.0, 0.0);
 
-float3 ApplyStage1Op(float3 baseColor, float2 uv, int op)
+// p3ExtraFlags:
+//   x = ProjectorRTT 8-tap rotated Poisson PCF radius in texels (0 disables PCF)
+//   y = Cool sky shadow tint strength (0 disables tint)
+float4 p3ExtraFlags = float4(2.2, 0.75, 0.0, 0.0);
+
+float SkinnedShadowIgnHash(float2 pos)
 {
-    float4 t1 = Texture1.Sample(Sampler1, uv);
+    return frac(52.9829189 * frac(dot(pos, float2(0.06711056, 0.00583715))));
+}
+
+float4 SampleSkinnedProjectivePcf(float2 uv, float2 screenPos, float radiusTexels)
+{
+    uint texW = 1, texH = 1;
+    Texture1.GetDimensions(texW, texH);
+    float4 result = float4(1.0, 1.0, 1.0, 1.0);
+    if (radiusTexels <= 0.01 || texW < 16 || texH < 16)
+    {
+        result = Texture1.Sample(Sampler1, uv);
+    }
+    else
+    {
+        float2 texelScale = radiusTexels / float2((float)texW, (float)texH);
+        float ang = SkinnedShadowIgnHash(screenPos) * 6.2831853;
+        float s, c;
+        sincos(ang, s, c);
+        float2x2 rot = float2x2(c, -s, s, c);
+
+        static const float2 kPoisson[8] = {
+            float2(-0.7071,  0.7071),
+            float2(-0.0000,  0.8750),
+            float2( 0.5303,  0.5303),
+            float2(-0.9239, -0.3827),
+            float2( 0.8750, -0.0000),
+            float2(-0.3827, -0.9239),
+            float2( 0.3536, -0.3536),
+            float2(-0.3536,  0.1464)
+        };
+
+        float4 sum = float4(0.0, 0.0, 0.0, 0.0);
+        [unroll]
+        for (int i = 0; i < 8; ++i)
+        {
+            float2 off = mul(kPoisson[i], rot) * texelScale;
+            sum += Texture1.Sample(Sampler1, uv + off);
+        }
+        result = sum * 0.125;
+    }
+    return result;
+}
+
+float3 ApplyStage1OpSample(float3 baseColor, float4 t1, int op)
+{
     if (op == 1)
         return baseColor * t1.rgb;
     if (op == 2)
@@ -59,6 +108,11 @@ float3 ApplyStage1Op(float3 baseColor, float2 uv, int op)
     if (op == 5)
         return saturate(baseColor * (t1.rgb * 4.0));
     return baseColor;
+}
+
+float3 ApplyStage1Op(float3 baseColor, float2 uv, int op)
+{
+    return ApplyStage1OpSample(baseColor, Texture1.Sample(Sampler1, uv), op);
 }
 
 float3 ApplyOgreFog(float3 color, float rawFogDist, int fogMode)
@@ -420,12 +474,39 @@ float4 ShadeSkinnedDiff(VS_OUTPUT input, bool doAlphaReject)
     if (texOp > 0)
     {
         int uvSel = (int)(p3Flags.w + 0.5);
-        float2 uv1 = input.Texcoord0.xy;
-        if (uvSel == 1)
-            uv1 = input.Texcoord1.xy;
-        else if (uvSel == 2)
-            uv1 = input.Texcoord2.xy;
-        color = ApplyStage1Op(color, uv1, texOp);
+        bool isProj1 = (p3Flags2.y > 0.5);
+        float4 t1;
+        if (isProj1 && uvSel == 1)
+        {
+            float2 puv = (abs(input.Texcoord1.w) > 1e-5) ? (input.Texcoord1.xy / input.Texcoord1.w) : float2(-1.0, -1.0);
+            if ((texOp == 1 || texOp == 4 || texOp == 2) && p3ExtraFlags.x > 0.01)
+            {
+                float rad = (texOp == 2) ? (p3ExtraFlags.x * 0.55) : p3ExtraFlags.x;
+                t1 = SampleSkinnedProjectivePcf(puv, input.Pos.xy, rad);
+                if ((texOp == 1 || texOp == 4) && p3ExtraFlags.y > 0.005)
+                {
+                    float3 effRgb = (texOp == 4) ? (t1.rgb * 2.0) : t1.rgb;
+                    float lum = saturate(dot(effRgb, float3(0.299, 0.587, 0.114)));
+                    float shadowMask = saturate((1.0 - lum) * 1.15);
+                    float3 coolBias = lerp(float3(1.0, 1.0, 1.0), float3(0.88, 0.96, 1.12), clamp(shadowMask * p3ExtraFlags.y, 0.0, 1.0));
+                    t1.rgb = saturate(t1.rgb * coolBias);
+                }
+            }
+            else
+            {
+                t1 = Texture1.Sample(Sampler1, puv);
+            }
+        }
+        else
+        {
+            float2 uv1 = input.Texcoord0.xy;
+            if (uvSel == 1)
+                uv1 = input.Texcoord1.xy;
+            else if (uvSel == 2)
+                uv1 = input.Texcoord2.xy;
+            t1 = Texture1.Sample(Sampler1, uv1);
+        }
+        color = ApplyStage1OpSample(color, t1, texOp);
     }
 
     color = saturate(color + input.ColorSpec.rgb);

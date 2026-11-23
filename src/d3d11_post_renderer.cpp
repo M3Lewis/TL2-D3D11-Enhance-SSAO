@@ -1,6 +1,6 @@
 #include "d3d11_post_renderer.h"
 #include "d3d11_post_shaders.h"
-#include "d3d11_bloom_pass.h"
+#include "d3d11_ssgi_pass.h"
 #include "d3d11_smaa_pass.h"
 #include "d3d11_smaa_shaders.h"
 #include "phase3_scene_pipeline.h"
@@ -197,7 +197,7 @@ void ReleaseTargets() {
     g_st.particle_depth_valid = false;
     g_st.post_world_depth_valid = false;
     g_st.post_world_msaa = false;
-    ReleaseBloomTargets();
+    ReleaseSsgiTargets();
     ReleaseSmaaTargets();
 }
 
@@ -216,7 +216,7 @@ void ReleaseAllDeviceObjects() {
     ReleaseBenchQueries();
     ReleaseTargets();
     ReleaseLutResources();
-    ReleaseBloomAllObjects();
+    ReleaseSsgiAllObjects();
     ReleaseSmaaAllObjects();
     SafeRelease(g_st.rs_fullscreen);
     SafeRelease(g_st.dss_disabled);
@@ -293,7 +293,8 @@ bool CompileShaderBlob(
     const D3D_SHADER_MACRO* defines,
     ID3DBlob** out_blob,
     PostLogFn logger) {
-    static const std::string kCombined = std::string(kAoShaderSource) + kAoSsrTailSource + kSsrResolveShaderSource;
+    static const std::string kCombined =
+        std::string(kAoShaderSource) + kAoAtmosSource + kAoSsrTailSource + kSsrResolveShaderSource;
     return CompileShaderBlobFromSource(
         compile_fn, kCombined.data(), kCombined.size(), "post_process.hlsl",
         entry, target, defines, out_blob, logger);
@@ -1953,8 +1954,8 @@ bool VerifyPostShadersCompile(PostLogFn logger) {
         smaa_ok = smaa_ok && ok_one;
     }
 
-    const bool bloom_ok = VerifyBloomShadersCompile(logger);
-    return toast_ok && p2_ok && panel_ok && cursor_ok && bloom_lut_ok && water_ok && smaa_ok && bloom_ok;
+    const bool ssgi_ok = VerifySsgiShadersCompile(logger);
+    return toast_ok && p2_ok && panel_ok && cursor_ok && bloom_lut_ok && water_ok && smaa_ok && ssgi_ok;
 }
 
 bool IsCustomCubeLutLoaded() {

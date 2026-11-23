@@ -351,6 +351,32 @@ int GetTimeOfDayHours() {
     return 12;
 }
 
+float GetEffectiveTimeOfDayFloat() {
+    const int val = g_time_of_day_hours.load(std::memory_order_relaxed);
+    if (val >= 0) {
+        return static_cast<float>((std::clamp)(val, 0, 24));
+    }
+    EnsureEngineWeatherTimeFuncs();
+    const float dt = DirectGetTimeOfDay();
+    if (dt >= 0.0f && dt <= 24.0f) {
+        return dt;
+    }
+    if (g_fnGetTimeOfDay) {
+        DWORD excCode = 0;
+        __try {
+            const float t = g_fnGetTimeOfDay();
+            if (t >= 0.0f && t <= 24.0f) {
+                return t;
+            }
+        } __except (excCode = GetExceptionCode(), EXCEPTION_EXECUTE_HANDLER) {
+            if (g_log) {
+                g_log("[RouteC][TimeOfDay] EXCEPTION 0x%08X during GetEffectiveTimeOfDayFloat!", excCode);
+            }
+        }
+    }
+    return 12.0f;
+}
+
 void SetTimeOfDayLocked(bool locked) {
     g_time_of_day_locked.store(locked, std::memory_order_relaxed);
     EnsureEngineWeatherTimeFuncs();

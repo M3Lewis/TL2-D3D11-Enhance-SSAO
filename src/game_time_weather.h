@@ -14,6 +14,7 @@ int GetWeatherRainStrengthPct();
 
 void SetTimeOfDayHours(int hours);  // -1 = Auto/Follow Engine, 0..24
 int GetTimeOfDayHours();
+float GetEffectiveTimeOfDayFloat();
 void SetTimeOfDayLocked(bool locked);
 bool IsTimeOfDayLocked();
 bool ToggleTimeOfDayLocked();

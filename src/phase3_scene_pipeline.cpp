@@ -337,12 +337,18 @@ std::atomic<bool> g_sampler_hooked{false};
 std::atomic<bool> g_runtime_enhance_enabled{true};
 std::atomic<bool> g_f11_enhance_enabled{true};
 std::atomic<bool> g_p0_rimlit_enhance_enabled{true};
+std::atomic<bool> g_p3_pcf_shadow_enabled{true};
+std::atomic<bool> g_p3_pom_enabled{true};
+std::atomic<bool> g_p3_antitile_enabled{true};
 std::atomic<bool> g_frame_water_pass_hint{false};
 std::atomic<int> g_p2_filter_preset{1};
 std::atomic<int> g_phase3_strength_pct{100};
 std::atomic<int> g_f11_point_light_strength_pct{100};
 std::atomic<int> g_p0_rimlit_strength_pct{100};
 std::atomic<int> g_p2_filter_strength_pct{100};
+std::atomic<int> g_p3_pcf_shadow_strength_pct{100};
+std::atomic<int> g_p3_pom_strength_pct{100};
+std::atomic<int> g_p3_antitile_strength_pct{100};
 std::atomic<uint64_t> g_p2_bloom_last_tick_ms{0};
 std::atomic<uint64_t> g_p2_fxaa_last_tick_ms{0};
 std::atomic<Phase3PassObserverFn> g_pass_observer{nullptr};
@@ -618,7 +624,7 @@ void MaybeApplyP2FilterUniformsToPass(const void* pass) {
     const float vig_scale =
         (is_fxaa && IsP2AerialVignetteEnabled())
             ? (static_cast<float>(GetP2AerialVignetteStrengthPct()) * 0.01f)
-            : ((is_bloom_blend && !IsMainMenuActive() && IsKawaseBloomEnabled() && GetKawaseBloomStrengthPct() > 0) ? 1.0f : 0.0f);
+            : 0.0f;
     const float filter_scale =
         static_cast<float>((std::clamp)(g_p2_filter_strength_pct.load(std::memory_order_relaxed), 0, 200)) * 0.01f;
     const float params[4] = {
@@ -1363,6 +1369,7 @@ PassArchetype ClassifyPass(
                 *out_reason = SkipReason::StageNot2DOrBlank;
                 return PassArchetype::None;
             }
+            float skinned_proj1 = 0.0f;
             if (num_tus >= 2) {
                 if (!tus1 ||
                     (g_api.tus_get_tex_type && g_api.tus_get_tex_type(tus1) != kTexType2D) ||
@@ -1394,6 +1401,7 @@ PassArchetype ClassifyPass(
                     *out_reason = SkipReason::StageTexTransform;
                     return PassArchetype::None;
                 }
+                skinned_proj1 = (!is_enviro && (is_lightpass || has_texgen)) ? 1.0f : 0.0f;
                 if (is_enviro || is_lightpass || has_texgen) {
                     out_flags[3] = 1.0f;
                 } else {
@@ -1406,7 +1414,7 @@ PassArchetype ClassifyPass(
                 }
             }
             out_flags2[0] = 0.0f;
-            out_flags2[1] = 0.0f;
+            out_flags2[1] = skinned_proj1;
             out_flags2[2] = 0.0f;
             out_flags2[3] = 0.0f;
             return has_alpha_reject ? PassArchetype::SkinnedDiffAlpha : PassArchetype::SkinnedDiffOpaque;
@@ -1538,6 +1546,27 @@ void ApplyPassFogAndAlphaToExplicitPs(
             rain_wetness,
         };
         WriteExplicitPsNamedFloat4(ps_params, "p3EnhanceFlags", enhance_flags);
+        if (!is_rim) {
+            const float pcf_scale =
+                g_p3_pcf_shadow_enabled.load(std::memory_order_relaxed)
+                    ? (static_cast<float>((std::clamp)(g_p3_pcf_shadow_strength_pct.load(std::memory_order_relaxed), 0, 200)) * 0.01f)
+                    : 0.0f;
+            const float pom_scale =
+                g_p3_pom_enabled.load(std::memory_order_relaxed)
+                    ? (static_cast<float>((std::clamp)(g_p3_pom_strength_pct.load(std::memory_order_relaxed), 0, 200)) * 0.01f)
+                    : 0.0f;
+            const float antitile_scale =
+                g_p3_antitile_enabled.load(std::memory_order_relaxed)
+                    ? (static_cast<float>((std::clamp)(g_p3_antitile_strength_pct.load(std::memory_order_relaxed), 0, 200)) * 0.01f)
+                    : 0.0f;
+            const float extra_flags[4] = {
+                2.2f * pcf_scale,
+                0.75f * pcf_scale,
+                pom_scale,
+                antitile_scale,
+            };
+            WriteExplicitPsNamedFloat4(ps_params, "p3ExtraFlags", extra_flags);
+        }
     }
 
     const float fc[4] = {fog_color.r, fog_color.g, fog_color.b, fog_color.a};
@@ -2689,6 +2718,75 @@ void SetP2FilterStrengthPct(int pct) {
 
 int GetP2FilterStrengthPct() {
     return (std::clamp)(g_p2_filter_strength_pct.load(std::memory_order_relaxed), 0, 200);
+}
+
+void SetPhase3PcfShadowEnabled(bool enabled) {
+    g_p3_pcf_shadow_enabled.store(enabled, std::memory_order_relaxed);
+}
+
+bool IsPhase3PcfShadowEnabled() {
+    return g_p3_pcf_shadow_enabled.load(std::memory_order_relaxed);
+}
+
+bool TogglePhase3PcfShadowEnabled() {
+    bool expected = g_p3_pcf_shadow_enabled.load(std::memory_order_relaxed);
+    while (!g_p3_pcf_shadow_enabled.compare_exchange_weak(expected, !expected, std::memory_order_relaxed)) {
+    }
+    return !expected;
+}
+
+void SetPhase3PcfShadowStrengthPct(int pct) {
+    g_p3_pcf_shadow_strength_pct.store((std::clamp)(pct, 0, 200), std::memory_order_relaxed);
+}
+
+int GetPhase3PcfShadowStrengthPct() {
+    return (std::clamp)(g_p3_pcf_shadow_strength_pct.load(std::memory_order_relaxed), 0, 200);
+}
+
+void SetPhase3PomEnabled(bool enabled) {
+    g_p3_pom_enabled.store(enabled, std::memory_order_relaxed);
+}
+
+bool IsPhase3PomEnabled() {
+    return g_p3_pom_enabled.load(std::memory_order_relaxed);
+}
+
+bool TogglePhase3PomEnabled() {
+    bool expected = g_p3_pom_enabled.load(std::memory_order_relaxed);
+    while (!g_p3_pom_enabled.compare_exchange_weak(expected, !expected, std::memory_order_relaxed)) {
+    }
+    return !expected;
+}
+
+void SetPhase3PomStrengthPct(int pct) {
+    g_p3_pom_strength_pct.store((std::clamp)(pct, 0, 200), std::memory_order_relaxed);
+}
+
+int GetPhase3PomStrengthPct() {
+    return (std::clamp)(g_p3_pom_strength_pct.load(std::memory_order_relaxed), 0, 200);
+}
+
+void SetPhase3AntiTileEnabled(bool enabled) {
+    g_p3_antitile_enabled.store(enabled, std::memory_order_relaxed);
+}
+
+bool IsPhase3AntiTileEnabled() {
+    return g_p3_antitile_enabled.load(std::memory_order_relaxed);
+}
+
+bool TogglePhase3AntiTileEnabled() {
+    bool expected = g_p3_antitile_enabled.load(std::memory_order_relaxed);
+    while (!g_p3_antitile_enabled.compare_exchange_weak(expected, !expected, std::memory_order_relaxed)) {
+    }
+    return !expected;
+}
+
+void SetPhase3AntiTileStrengthPct(int pct) {
+    g_p3_antitile_strength_pct.store((std::clamp)(pct, 0, 200), std::memory_order_relaxed);
+}
+
+int GetPhase3AntiTileStrengthPct() {
+    return (std::clamp)(g_p3_antitile_strength_pct.load(std::memory_order_relaxed), 0, 200);
 }
 
 bool WasP2PostShaderSeenRecently() {

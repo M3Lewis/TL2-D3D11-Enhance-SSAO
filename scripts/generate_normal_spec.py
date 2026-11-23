@@ -1,9 +1,19 @@
 #!/usr/bin/env python3
-"""Offline multi-scale normal (_tl2n.dds) and material/cavity (_tl2s.dds) generator for Torchlight II.
+"""Offline multi-scale normal (_tl2n.dds) and semantic material/cavity (_tl2s.dds) generator for Torchlight II.
 
 Produces Ogre 1.7 + D3D11 compatible -dx9 linear DDS maps:
   - <stem>_tl2n.dds : BC3_UNORM (DXT5nm: A = nx, G = ny; R=G=B=ny for clean BC3 green precision)
-  - <stem>_tl2s.dds : BC1_UNORM (DXT1: R = Smoothness, G = Metalness, B = CavityAO)
+  - <stem>_tl2s.dds : BC1_UNORM (DXT1: R = Smoothness, G = Metalness, B = Dark-only CavityAO)
+
+Architecture (Item 1 upgrade, performance-optimized):
+  1. Native 2x resolution for normals (--max-norm-dim 1024, --half-large OFF) and crisp 512px
+     for material/cavity (--max-spec-dim 512, 4x faster & leaner VRAM while preserving bevels).
+  2. Fused in-place CIELab-guided separable bilateral structure decomposition (zero brush/DXT
+     sandpaper grit, crisp stone/metal transitions).
+  3. Chromatic boundary seam carving for inlaid trim where luminance contrast alone is weak.
+  4. C-accelerated Pillow morphological closing for dark-only Cavity AO (zero white rim halos).
+  5. Path-prior + CIELab semantic material classifier separating steel, gunmetal, enchanted runic
+     metal, bronze/gold filigree, gem/crystal clearcoat, and dielectric stone/wood/cloth.
 """
 
 from __future__ import annotations
@@ -20,7 +30,7 @@ from pathlib import Path
 from typing import Iterable
 
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageFilter
 
 SKIP_NAME_SUBSTRS = (
     "_GLOW",
@@ -57,6 +67,95 @@ SKIP_PATH_PARTS = (
     "/SKY/",
 )
 
+FLORA_WOOD_HINTS = (
+    "/FOLIAGE/",
+    "/FLORA/",
+    "/TREE",
+    "/LEAF",
+    "/LEAVES/",
+    "/GRASS",
+    "/BUSH",
+    "/BARK",
+    "/WOOD",
+    "/PLANK",
+    "/VINE",
+    "/SHRUB",
+)
+
+MASONRY_TERRAIN_HINTS = (
+    "/TERRAIN/",
+    "/GROUND/",
+    "/DIRT/",
+    "/SAND/",
+    "/SNOW/",
+    "/MUD/",
+    "/ROCK",
+    "/CLIFF",
+    "/STONE",
+    "/BRICK",
+    "/COBBLE",
+    "/FLOOR",
+    "/WALL",
+    "/RUIN",
+    "/CATACOMB",
+    "/CAVE",
+)
+
+SOFT_ORGANIC_HINTS = (
+    "/CLOTH",
+    "/CAPE",
+    "/BANNER",
+    "/FUR",
+    "/LEATHER",
+    "/SKIN",
+    "/HAIR",
+    "/FEATHER",
+)
+
+GEM_GLASS_HINTS = (
+    "/GEM",
+    "/CRYSTAL",
+    "/EMBER",
+    "/GLASS",
+    "/ICE",
+    "/JEWEL",
+    "CRYSTAL",
+    "EMBER",
+    "GEM",
+)
+
+METAL_PROP_HINTS = (
+    "/ARMOR",
+    "/WEAPON",
+    "/SHIELD",
+    "/STEEL",
+    "/IRON",
+    "/METAL",
+    "/BRASS",
+    "/COPPER",
+    "/BRONZE",
+    "/GOLD",
+    "/DWARF",
+    "/DWARVEN",
+    "/AUTOMATON",
+    "/CLOCKWORK",
+    "/ROBOT",
+    "/CHEST",
+    "/ANVIL",
+    "/PIPE",
+    "_METAL",
+    "METAL_",
+    "_STEEL",
+    "_IRON",
+    "_BRASS",
+    "_BRONZE",
+    "_COPPER",
+    "_ARMOR",
+    "DWARVEN",
+    "CLOCKWORK",
+    "AUTOMATON",
+)
+
 
 def is_eligible_albedo(rel_posix: str) -> bool:
     upper = rel_posix.upper()
@@ -79,7 +178,7 @@ def is_eligible_albedo(rel_posix: str) -> bool:
 def gaussian_kernel_1d(sigma: float) -> np.ndarray:
     if sigma <= 0.15:
         return np.array([1.0], dtype=np.float32)
-    radius = max(1, int(np.ceil(sigma * 2.8)))
+    radius = max(1, int(np.ceil(sigma * 2.6)))
     x = np.arange(-radius, radius + 1, dtype=np.float32)
     k = np.exp(-0.5 * (x / sigma) ** 2)
     k /= k.sum()
@@ -89,9 +188,9 @@ def gaussian_kernel_1d(sigma: float) -> np.ndarray:
 def blur_1d_separable(arr: np.ndarray, sigma: float, wrap: bool) -> np.ndarray:
     if sigma <= 0.15:
         return arr
-    # Fast pyramid blur for wide Gaussians (sigma > 3.5): downsample, blur at smaller sigma, bilinearly upsample.
-    if sigma > 3.5 and min(arr.shape[0], arr.shape[1]) >= 64:
-        factor = 4 if (sigma > 10.0 and min(arr.shape[0], arr.shape[1]) >= 128) else 2
+    # Pyramid downsample for wide Gaussians (sigma > 2.6) slashes memory/loop overhead.
+    if sigma > 2.6 and min(arr.shape[0], arr.shape[1]) >= 48:
+        factor = 4 if (sigma > 9.0 and min(arr.shape[0], arr.shape[1]) >= 128) else 2
         h, w = arr.shape[:2]
         dw, dh = max(8, w // factor), max(8, h // factor)
         small = np.asarray(
@@ -122,6 +221,131 @@ def blur_1d_separable(arr: np.ndarray, sigma: float, wrap: bool) -> np.ndarray:
     return out
 
 
+def bilateral_separable_multi(
+    vals: list[np.ndarray],
+    guide_l: np.ndarray,
+    guide_a: np.ndarray,
+    guide_b: np.ndarray,
+    radius: int,
+    step: int,
+    sigma_s: float,
+    sigma_r: float,
+    wrap: bool,
+) -> list[np.ndarray]:
+    """Fused in-place 2-pass separable joint bilateral filter sharing range weights across channels."""
+    pad_mode = "wrap" if wrap else "edge"
+    h, w = guide_l.shape
+    pad = radius * step
+    inv_2s2 = np.float32(0.5 / max(sigma_s * sigma_s, 1e-6))
+    inv_2r2 = np.float32(0.5 / max(sigma_r * sigma_r, 1e-6))
+    chroma_w = np.float32(0.55)
+
+    # Preallocate work buffers to eliminate L3 cache thrashing across taps
+    d2 = np.empty((h, w), dtype=np.float32)
+    diff = np.empty((h, w), dtype=np.float32)
+    wt = np.empty((h, w), dtype=np.float32)
+    wsum = np.empty((h, w), dtype=np.float32)
+    accs = [np.empty((h, w), dtype=np.float32) for _ in vals]
+
+    # --- Horizontal pass ---
+    pl = np.pad(guide_l, ((0, 0), (pad, pad)), mode=pad_mode)
+    pa = np.pad(guide_a, ((0, 0), (pad, pad)), mode=pad_mode)
+    pb = np.pad(guide_b, ((0, 0), (pad, pad)), mode=pad_mode)
+    pvs = [np.pad(v, ((0, 0), (pad, pad)), mode=pad_mode) for v in vals]
+
+    wsum.fill(0.0)
+    for a in accs:
+        a.fill(0.0)
+
+    for k in range(-radius, radius + 1):
+        off = pad + k * step
+        ws = np.float32(np.exp(-((k * step) ** 2) * inv_2s2))
+        if k == 0:
+            wt.fill(ws)
+        else:
+            np.subtract(pa[:, off : off + w], guide_a, out=diff)
+            np.multiply(diff, diff, out=d2)
+            np.subtract(pb[:, off : off + w], guide_b, out=diff)
+            np.multiply(diff, diff, out=diff)
+            d2 += diff
+            d2 *= chroma_w
+            np.subtract(pl[:, off : off + w], guide_l, out=diff)
+            np.multiply(diff, diff, out=diff)
+            d2 += diff
+            d2 *= inv_2r2
+            d2 += np.float32(1.0)
+            np.divide(ws, d2, out=wt)
+
+        wsum += wt
+        for idx, pv in enumerate(pvs):
+            np.multiply(wt, pv[:, off : off + w], out=diff)
+            accs[idx] += diff
+
+    np.maximum(wsum, np.float32(1e-6), out=wsum)
+    tmps = [a / wsum for a in accs]
+
+    # --- Vertical pass ---
+    pl = np.pad(guide_l, ((pad, pad), (0, 0)), mode=pad_mode)
+    pa = np.pad(guide_a, ((pad, pad), (0, 0)), mode=pad_mode)
+    pb = np.pad(guide_b, ((pad, pad), (0, 0)), mode=pad_mode)
+    pvs = [np.pad(t, ((pad, pad), (0, 0)), mode=pad_mode) for t in tmps]
+
+    wsum.fill(0.0)
+    for a in accs:
+        a.fill(0.0)
+
+    for k in range(-radius, radius + 1):
+        off = pad + k * step
+        ws = np.float32(np.exp(-((k * step) ** 2) * inv_2s2))
+        if k == 0:
+            wt.fill(ws)
+        else:
+            np.subtract(pa[off : off + h, :], guide_a, out=diff)
+            np.multiply(diff, diff, out=d2)
+            np.subtract(pb[off : off + h, :], guide_b, out=diff)
+            np.multiply(diff, diff, out=diff)
+            d2 += diff
+            d2 *= chroma_w
+            np.subtract(pl[off : off + h, :], guide_l, out=diff)
+            np.multiply(diff, diff, out=diff)
+            d2 += diff
+            d2 *= inv_2r2
+            d2 += np.float32(1.0)
+            np.divide(ws, d2, out=wt)
+
+        wsum += wt
+        for idx, pv in enumerate(pvs):
+            np.multiply(wt, pv[off : off + h, :], out=diff)
+            accs[idx] += diff
+
+    np.maximum(wsum, np.float32(1e-6), out=wsum)
+    return [a / wsum for a in accs]
+
+
+def morph_closing_fast(arr: np.ndarray, filter_size: int, wrap: bool) -> np.ndarray:
+    """Fast C-level morphological closing via Pillow MaxFilter -> MinFilter."""
+    pad = filter_size // 2 + 1
+    pad_mode = "wrap" if wrap else "edge"
+    h, w = arr.shape
+    u8 = np.clip(arr * np.float32(255.0) + np.float32(0.5), 0.0, 255.0).astype(np.uint8)
+    pu8 = np.pad(u8, ((pad, pad), (pad, pad)), mode=pad_mode)
+    closed = (
+        Image.fromarray(pu8, mode="L")
+        .filter(ImageFilter.MaxFilter(size=filter_size))
+        .filter(ImageFilter.MinFilter(size=filter_size))
+    )
+    return np.asarray(closed, dtype=np.float32)[pad : pad + h, pad : pad + w] / np.float32(255.0)
+
+
+def resize_f32(arr: np.ndarray, tw: int, th: int) -> np.ndarray:
+    if arr.shape[1] == tw and arr.shape[0] == th:
+        return arr
+    return np.asarray(
+        Image.fromarray(arr, mode="F").resize((tw, th), Image.Resampling.BILINEAR),
+        dtype=np.float32,
+    )
+
+
 def bleed_transparent_pixels(rgb: np.ndarray, alpha: np.ndarray) -> np.ndarray:
     """Prevent hard background color bleeding across alpha-cutout edges."""
     if alpha is None:
@@ -131,7 +355,7 @@ def bleed_transparent_pixels(rgb: np.ndarray, alpha: np.ndarray) -> np.ndarray:
         return rgb
     work = rgb.copy()
     mask = opaque.astype(np.float32)
-    for _ in range(3):
+    for _ in range(4):
         sum_rgb = np.zeros_like(work)
         sum_w = np.zeros_like(mask)
         for dy, dx in ((-1, 0), (1, 0), (0, -1), (0, 1)):
@@ -148,7 +372,7 @@ def bleed_transparent_pixels(rgb: np.ndarray, alpha: np.ndarray) -> np.ndarray:
     return work
 
 
-def smoothstep(e0: float, e1: float, x: np.ndarray) -> np.ndarray:
+def smoothstep(e0: float, e1: float, x: np.ndarray | float) -> np.ndarray:
     t = np.clip((x - e0) / max(e1 - e0, 1e-6), 0.0, 1.0)
     return t * t * (3.0 - 2.0 * t)
 
@@ -184,21 +408,48 @@ def compute_target_size(w: int, h: int, max_dim: int, half_large: bool) -> tuple
     return tw, th
 
 
+def path_material_priors(upper_rel: str) -> tuple[float, float, float]:
+    """Return (metal_cap, smooth_bias, crystal_hint) from asset path semantics."""
+    metal_cap = 0.65
+    smooth_bias = 0.0
+    crystal_hint = 0.0
+
+    if any(h in upper_rel for h in METAL_PROP_HINTS):
+        metal_cap = 1.0
+        smooth_bias = 0.06
+    elif any(h in upper_rel for h in GEM_GLASS_HINTS):
+        metal_cap = 0.15
+        smooth_bias = 0.25
+        crystal_hint = 0.85
+    elif any(h in upper_rel for h in FLORA_WOOD_HINTS):
+        metal_cap = 0.06
+        smooth_bias = -0.06
+    elif any(h in upper_rel for h in SOFT_ORGANIC_HINTS):
+        metal_cap = 0.12
+        smooth_bias = -0.05
+    elif any(h in upper_rel for h in MASONRY_TERRAIN_HINTS):
+        metal_cap = 0.22
+        smooth_bias = -0.02
+
+    return metal_cap, smooth_bias, crystal_hint
+
+
 def synthesize_maps(
     src_path: Path,
     rel_posix: str,
     max_norm_dim: int = 1024,
     max_spec_dim: int = 512,
-    half_large: bool = True,
+    half_large: bool = False,
+    want_preview: bool = False,
 ) -> tuple[Image.Image, Image.Image, Image.Image | None]:
-    """Generate (dxt5nm_rgba_img, spec_rgb_img, preview_xyz_normal_img)."""
+    """Generate (dxt5nm_rgba_img, spec_rgb_img, optional preview_xyz_normal_img)."""
     with Image.open(src_path) as im:
         has_alpha = im.mode in ("RGBA", "LA", "PA") or (
             im.mode == "P" and "transparency" in im.info
         )
         orig_w, orig_h = im.size
         nw, nh = compute_target_size(orig_w, orig_h, max_norm_dim, half_large=half_large)
-        sw, sh = compute_target_size(orig_w, orig_h, max_spec_dim, half_large=True)
+        sw, sh = compute_target_size(orig_w, orig_h, max_spec_dim, half_large=half_large)
         work_im = im.convert("RGBA" if has_alpha else "RGB")
         if (orig_w, orig_h) != (nw, nh):
             work_im = work_im.resize((nw, nh), Image.Resampling.BILINEAR)
@@ -214,84 +465,196 @@ def synthesize_maps(
     h, w = rgb.shape[:2]
     upper_rel = rel_posix.upper()
     is_world_tile = ("LEVELSETS/" in upper_rel) and ("/PROPS/" not in upper_rel)
-
-    # Luminance + gentle chromatic boundary term so painted brass/stone borders carve crisp seams
-    luma = 0.299 * rgb[..., 0] + 0.587 * rgb[..., 1] + 0.114 * rgb[..., 2]
     scale = float(np.clip(min(w, h) / 1024.0, 0.5, 1.8))
 
-    g_fine = blur_1d_separable(luma, 1.0 * scale, wrap=is_world_tile)
-    g_meso = blur_1d_separable(luma, 3.0 * scale, wrap=is_world_tile)
-    g_macro = blur_1d_separable(luma, 9.0 * scale, wrap=is_world_tile)
-    g_broad = blur_1d_separable(luma, 22.0 * scale, wrap=is_world_tile)
+    # Perceptual sRGB opponent coordinates (sRGB is already ~1/2.2 compressed, avoiding costly cbrt/pow)
+    luma = np.float32(0.299) * rgb[..., 0] + np.float32(0.587) * rgb[..., 1] + np.float32(0.114) * rgb[..., 2]
+    a_op = np.float32(0.75) * (rgb[..., 0] - rgb[..., 1])
+    b_op = np.float32(0.45) * (np.float32(0.5) * (rgb[..., 0] + rgb[..., 1]) - rgb[..., 2])
 
-    hf_fine = luma - g_fine
+    # Fused Pass 1 (3x3 fine cleanup): filter (luma, a_op, b_op) together using shared algebraic bilateral weights
+    step_s1 = max(1, int(round(scale)))
+    struct_l, a_s1, b_s1 = bilateral_separable_multi(
+        [luma, a_op, b_op],
+        luma,
+        a_op,
+        b_op,
+        radius=1,
+        step=step_s1,
+        sigma_s=1.5 * scale,
+        sigma_r=0.060,
+        wrap=is_world_tile,
+    )
+    # Pass 2 (strided 7x7 effective support): flatten broad painted gradients while freezing Pass-1 seams
+    step_s2 = max(2, int(round(2.0 * scale)))
+    [struct_l] = bilateral_separable_multi(
+        [struct_l],
+        struct_l,
+        a_s1,
+        b_s1,
+        radius=1,
+        step=step_s2,
+        sigma_s=2.8 * scale,
+        sigma_r=0.070,
+        wrap=is_world_tile,
+    )
+
+    # Soft-shrink residual brush grit, retaining real deep pores/weave (> 0.015)
+    raw_grain = luma - struct_l
+    clean_grain = np.sign(raw_grain) * np.maximum(np.abs(raw_grain) - np.float32(0.015), np.float32(0.0))
+    clean_grain = np.clip(clean_grain, np.float32(-0.075), np.float32(0.075))
+
+    # Multi-scale DoG height pyramid computed over edge-preserved structure luminance
+    g_fine = blur_1d_separable(struct_l, 1.15 * scale, wrap=is_world_tile)
+    g_meso = blur_1d_separable(struct_l, 3.2 * scale, wrap=is_world_tile)
+    g_macro = blur_1d_separable(struct_l, 8.8 * scale, wrap=is_world_tile)
+    g_broad = blur_1d_separable(struct_l, 21.0 * scale, wrap=is_world_tile)
+
+    hf_fine = (struct_l - g_fine) + np.float32(0.38) * clean_grain
     hf_meso = g_fine - g_meso
     hf_macro = g_meso - g_macro
     hf_broad = g_macro - g_broad
 
-    # Combine octaves into balanced height field; preserve dark crevices while taming bright glare spikes
-    height = 0.28 * hf_fine + 0.45 * hf_meso + 0.58 * hf_macro + 0.24 * hf_broad
-    height = np.where(height < 0.0, height * np.float32(1.18), np.tanh(height * np.float32(2.2)) / np.float32(2.2))
+    # Balanced octave height + chromatic boundary seam carving
+    height = np.float32(0.24) * hf_fine + np.float32(0.46) * hf_meso + np.float32(0.58) * hf_macro + np.float32(0.22) * hf_broad
+    height = np.where(height < 0.0, height * np.float32(1.25), np.tanh(height * np.float32(2.35)) / np.float32(2.35))
+
+    agx, agy = scharr_grad(a_s1, wrap=is_world_tile)
+    bgx, bgy = scharr_grad(b_s1, wrap=is_world_tile)
+    chroma_edge = np.sqrt(agx * agx + agy * agy + bgx * bgx + bgy * bgy)
+    seam_groove = smoothstep(0.018, 0.065, chroma_edge) * smoothstep(0.0, 0.025, np.maximum(g_meso - struct_l + 0.008, 0.0))
+    height -= seam_groove * np.float32(0.016)
 
     gx, gy = scharr_grad(height, wrap=is_world_tile)
-    strength = 10.5 * ((max(w, h) / 1024.0) ** 0.30)
+    strength = 10.8 * ((max(w, h) / 1024.0) ** 0.30)
     raw_nx = -gx * strength
     raw_ny = -gy * strength
-    grad_mag = np.sqrt(raw_nx * raw_nx + raw_ny * raw_ny) + 1e-8
-    capped_mag = 1.65 * np.tanh(grad_mag / 1.65)
+    grad_mag = np.sqrt(raw_nx * raw_nx + raw_ny * raw_ny) + np.float32(1e-8)
+    capped_mag = np.float32(1.65) * np.tanh(grad_mag / np.float32(1.65))
     slope_gain = capped_mag / grad_mag
     nx = raw_nx * slope_gain
     ny = raw_ny * slope_gain
     nz = np.ones_like(nx, dtype=np.float32)
 
     if alpha_mask is not None:
-        # Soften normal perturbation on thin alpha fringes to avoid silhouette ringing
         edge_weight = smoothstep(0.25, 0.85, alpha_mask)
         nx *= edge_weight
         ny *= edge_weight
 
-    norm_len = np.sqrt(nx * nx + ny * ny + nz * nz) + 1e-8
+    norm_len = np.sqrt(nx * nx + ny * ny + nz * nz) + np.float32(1e-8)
     nx /= norm_len
     ny /= norm_len
     nz /= norm_len
 
-    # Re-normalize & pack DXT5nm directly (input is already at target normal resolution nw x nh)
-    xyz_u8 = np.stack(
-        [
-            np.clip(nx * 0.5 + 0.5, 0.0, 1.0) * 255.0,
-            np.clip(ny * 0.5 + 0.5, 0.0, 1.0) * 255.0,
-            np.clip(nz * 0.5 + 0.5, 0.0, 1.0) * 255.0,
-        ],
-        axis=-1,
-    ).astype(np.uint8)
-    xyz_img = Image.fromarray(xyz_u8, mode="RGB")
+    if want_preview:
+        xyz_u8 = np.stack(
+            [
+                np.clip(nx * 0.5 + 0.5, 0.0, 1.0) * 255.0,
+                np.clip(ny * 0.5 + 0.5, 0.0, 1.0) * 255.0,
+                np.clip(nz * 0.5 + 0.5, 0.0, 1.0) * 255.0,
+            ],
+            axis=-1,
+        ).astype(np.uint8)
+        xyz_img: Image.Image | None = Image.fromarray(xyz_u8, mode="RGB")
+    else:
+        xyz_img = None
 
     a_u8 = (np.clip(nx * 0.5 + 0.5, 0.0, 1.0) * 255.0).astype(np.uint8)
     g_u8 = (np.clip(ny * 0.5 + 0.5, 0.0, 1.0) * 255.0).astype(np.uint8)
-    # DXT5nm: store Y in RGB (R=G=B=ny -> zero cross-channel BC3 endpoint conflict) and X in Alpha
     dxt5nm_arr = np.stack([g_u8, g_u8, g_u8, a_u8], axis=-1)
     dxt5nm_img = Image.fromarray(dxt5nm_arr, mode="RGBA")
 
-    # Specular / Roughness / Cavity map (_tl2s)
-    micro_var = blur_1d_separable(np.abs(luma - g_fine), max(1.2, 2.0 * scale), wrap=is_world_tile)
-    maxc = np.max(rgb, axis=-1)
-    minc = np.min(rgb, axis=-1)
+    # Compute _tl2s directly at target spec resolution (sw, sh) for 4x speed when max_spec_dim=512
+    spec_l = resize_f32(struct_l, sw, sh)
+    spec_luma = resize_f32(luma, sw, sh)
+    spec_a = resize_f32(a_s1, sw, sh)
+    spec_b = resize_f32(b_s1, sw, sh)
+    spec_hf_meso = resize_f32(hf_meso, sw, sh)
+    spec_hf_macro = resize_f32(hf_macro, sw, sh)
+    if (sw, sh) != (w, h):
+        rgb_s = np.stack(
+            [resize_f32(rgb[..., 0], sw, sh), resize_f32(rgb[..., 1], sw, sh), resize_f32(rgb[..., 2], sw, sh)],
+            axis=-1,
+        )
+    else:
+        rgb_s = rgb
+
+    spec_scale = float(np.clip(min(sw, sh) / 1024.0, 0.4, 1.8))
+    metal_cap, smooth_bias, crystal_hint = path_material_priors(upper_rel)
+    micro_var = blur_1d_separable(np.abs(spec_luma - spec_l), max(1.0, 2.2 * spec_scale), wrap=is_world_tile)
+
+    maxc = np.max(rgb_s, axis=-1)
+    minc = np.min(rgb_s, axis=-1)
     sat = np.where(maxc > 1e-4, (maxc - minc) / np.maximum(maxc, 1e-4), 0.0)
+    chroma_mag = np.sqrt(spec_a * spec_a + spec_b * spec_b)
 
-    # Neutral steel/iron + bright metallic gold/brass heuristic (avoid tagging warm brown stone as metal)
-    steel_mask = (1.0 - smoothstep(0.08, 0.22, sat)) * smoothstep(0.22, 0.38, luma) * (1.0 - smoothstep(0.75, 0.90, luma))
-    warm_gold = smoothstep(0.14, 0.28, rgb[..., 0] - rgb[..., 2]) * smoothstep(0.03, 0.12, rgb[..., 0] - rgb[..., 1])
-    gold_mask = warm_gold * smoothstep(0.32, 0.50, luma) * smoothstep(0.25, 0.45, sat) * (1.0 - smoothstep(0.72, 0.90, sat))
-    metalness = np.clip(np.maximum(steel_mask, gold_mask * 0.85) * (1.0 - smoothstep(0.028, 0.095, micro_var)), 0.0, 1.0)
+    low_grain = 1.0 - smoothstep(0.025, 0.085, micro_var)
+    is_explicit_metal = metal_cap >= 0.9
 
-    # Calibrated smoothness: keep non-metallic painted stone/wood/cloth satin-matte (0.14..0.40), boost worn highlights & metals
-    base_smooth = (1.0 - np.clip(micro_var * 10.0, 0.0, 0.88)) * smoothstep(0.07, 0.36, luma)
-    bevel_sheen = smoothstep(0.02, 0.14, np.maximum(hf_meso + hf_macro, 0.0))
-    smoothness = np.clip(0.14 + 0.24 * base_smooth + 0.14 * bevel_sheen + 0.40 * metalness, 0.05, 0.92)
-    smoothness *= smoothstep(0.05, 0.20, luma)
+    # 1. Neutral Steel / Iron / Gunmetal / Silver
+    steel_l_lo = 0.09 if is_explicit_metal else 0.16
+    steel_l_hi = 0.22 if is_explicit_metal else 0.32
+    steel_mask = (
+        (1.0 - smoothstep(0.09, 0.24, sat))
+        * smoothstep(steel_l_lo, steel_l_hi, spec_l)
+        * (1.0 - smoothstep(0.76, 0.92, spec_l))
+    )
 
-    valley = hf_meso * 0.55 + hf_macro * 0.85
-    cavity = np.clip(0.92 + valley * 2.5, 0.18, 1.0)
+    # 2. Cool Enchanted / Runic Steel
+    cool_l_lo = 0.11 if is_explicit_metal else 0.20
+    cool_l_hi = 0.24 if is_explicit_metal else 0.38
+    cool_steel = (
+        smoothstep(0.020, 0.08, rgb_s[..., 2] - rgb_s[..., 0])
+        * smoothstep(0.09, 0.22, sat)
+        * (1.0 - smoothstep(0.32, 0.50, sat))
+        * smoothstep(cool_l_lo, cool_l_hi, spec_l)
+        * (1.0 - crystal_hint * 0.85)
+    )
+
+    # 3. Warm Gold / Brass / Bronze / Copper filigree
+    warm_l_lo = 0.10 if is_explicit_metal else 0.24
+    warm_l_hi = 0.24 if is_explicit_metal else 0.42
+    warm_rb_lo = 0.05 if is_explicit_metal else 0.11
+    warm_rb_hi = 0.16 if is_explicit_metal else 0.25
+    warm_gold = (
+        smoothstep(warm_rb_lo, warm_rb_hi, rgb_s[..., 0] - rgb_s[..., 2])
+        * smoothstep(0.005, 0.09, rgb_s[..., 0] - rgb_s[..., 1])
+        * smoothstep(warm_l_lo, warm_l_hi, spec_l)
+        * smoothstep(0.16, 0.38, sat)
+        * (1.0 - smoothstep(0.68, 0.86, sat))
+    )
+
+    raw_metal = np.maximum(steel_mask, np.maximum(cool_steel * 0.82, warm_gold * 0.92)) * low_grain * np.float32(metal_cap)
+    if is_explicit_metal:
+        metal_base_lift = smoothstep(0.08, 0.18, spec_l) * (1.0 - smoothstep(0.55, 0.78, sat)) * low_grain * np.float32(0.55)
+        raw_metal = np.maximum(raw_metal, metal_base_lift)
+
+    [metalness] = bilateral_separable_multi(
+        [raw_metal],
+        spec_l,
+        spec_a,
+        spec_b,
+        radius=1,
+        step=1,
+        sigma_s=1.4 * spec_scale,
+        sigma_r=0.06,
+        wrap=is_world_tile,
+    )
+    metalness = np.clip(metalness, 0.0, 1.0)
+
+    # Dark-only Morphological Cavity AO via fast Pillow C MaxFilter -> MinFilter
+    morph_sz = 5 if min(sw, sh) >= 512 else 3
+    closed_l = morph_closing_fast(spec_l, filter_size=morph_sz, wrap=is_world_tile)
+    crevice_depth = np.maximum(closed_l - spec_l, np.float32(0.0))
+    valley_dark = np.maximum(-(spec_hf_meso * np.float32(0.50) + spec_hf_macro * np.float32(0.78)), np.float32(0.0))
+    cavity = np.clip(np.float32(1.0) - crevice_depth * np.float32(2.85) - valley_dark * np.float32(1.55), np.float32(0.16), np.float32(1.0))
+
+    base_smooth = (1.0 - np.clip(micro_var * 9.5, 0.0, 0.88)) * smoothstep(0.07, 0.36, spec_l)
+    bevel_sheen = smoothstep(0.015, 0.12, np.maximum(spec_hf_meso + spec_hf_macro, 0.0))
+    gem_sheen = crystal_hint * smoothstep(0.22, 0.50, spec_l) * smoothstep(0.06, 0.16, chroma_mag)
+    smoothness = 0.12 + 0.24 * base_smooth + 0.14 * bevel_sheen + 0.42 * metalness + 0.45 * gem_sheen + smooth_bias
+    smoothness = np.clip(smoothness, 0.05, 0.92)
+    smoothness *= smoothstep(0.04, 0.18, spec_l) * np.clip(cavity * 0.90 + 0.12, 0.15, 1.0)
 
     spec_u8 = np.stack(
         [
@@ -302,17 +665,15 @@ def synthesize_maps(
         axis=-1,
     ).astype(np.uint8)
     spec_img = Image.fromarray(spec_u8, mode="RGB")
-    if (sw, sh) != (w, h):
-        spec_img = spec_img.resize((sw, sh), Image.Resampling.BILINEAR)
 
     return dxt5nm_img, spec_img, xyz_img
 
 
-def run_texconv_batch(texconv: Path, src_pngs: list[Path], out_dir: Path, fmt: str) -> None:
-    if not src_pngs:
+def run_texconv_batch(texconv: Path, src_files: list[Path], out_dir: Path, fmt: str) -> None:
+    if not src_files:
         return
     flist = out_dir / f"flist_{fmt}.txt"
-    flist.write_text("\n".join(str(p) for p in src_pngs) + "\n", encoding="utf-8")
+    flist.write_text("\n".join(p.name for p in src_files) + "\n", encoding="ascii")
     cmd = [
         str(texconv),
         "-nologo",
@@ -325,11 +686,11 @@ def run_texconv_batch(texconv: Path, src_pngs: list[Path], out_dir: Path, fmt: s
         "-m",
         "0",
         "-o",
-        str(out_dir),
+        ".",
         "-flist",
-        str(flist),
+        flist.name,
     ]
-    res = subprocess.run(cmd, capture_output=True)
+    res = subprocess.run(cmd, cwd=str(out_dir), capture_output=True)
     if res.returncode != 0:
         err_msg = (res.stderr or res.stdout or b"").decode("utf-8", errors="ignore")
         raise RuntimeError(f"texconv batch failed ({fmt}): {err_msg}")
@@ -357,9 +718,11 @@ def collect_sources(src_roots: Iterable[Path]) -> list[tuple[Path, str]]:
 def process_batch(
     batch: list[tuple[Path, str]],
     out_root: Path,
+    tmp_root: Path,
     texconv: Path,
     max_norm_dim: int,
     max_spec_dim: int,
+    half_large: bool,
     preview_dir: Path | None,
     skip_existing: bool,
 ) -> tuple[int, int, int, list[tuple[str, str]]]:
@@ -369,10 +732,12 @@ def process_batch(
     errors: list[tuple[str, str]] = []
     pending: list[tuple[int, str, Path, Path]] = []
 
-    with tempfile.TemporaryDirectory(prefix="tl2ns_") as tmp:
+    tmp_root.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="tl2ns_", dir=str(tmp_root)) as tmp:
         tmp_dir = Path(tmp)
-        n_pngs: list[Path] = []
-        s_pngs: list[Path] = []
+        n_tgas: list[Path] = []
+        s_tgas: list[Path] = []
+        want_preview = preview_dir is not None
 
         for idx, (src_path, rel_posix) in enumerate(batch):
             rel_no_ext = str(Path(rel_posix).with_suffix("")).replace("\\", "/")
@@ -387,7 +752,12 @@ def process_batch(
 
             try:
                 dxt5nm_img, spec_img, preview_img = synthesize_maps(
-                    src_path, rel_posix, max_norm_dim=max_norm_dim, max_spec_dim=max_spec_dim
+                    src_path,
+                    rel_posix,
+                    max_norm_dim=max_norm_dim,
+                    max_spec_dim=max_spec_dim,
+                    half_large=half_large,
+                    want_preview=want_preview,
                 )
                 if preview_dir is not None and preview_img is not None:
                     preview_dir.mkdir(parents=True, exist_ok=True)
@@ -395,12 +765,13 @@ def process_batch(
                     preview_img.save(preview_dir / f"{safe_tag}_norm_preview.png")
                     spec_img.save(preview_dir / f"{safe_tag}_spec_preview.png")
 
-                n_png = tmp_dir / f"n_{idx}.png"
-                s_png = tmp_dir / f"s_{idx}.png"
-                dxt5nm_img.save(n_png, compress_level=0)
-                spec_img.save(s_png, compress_level=0)
-                n_pngs.append(n_png)
-                s_pngs.append(s_png)
+                # Uncompressed TGA avoids slow PNG zlib wrap/WIC decode while keeping 100% lossless 32-bit/24-bit input
+                n_tga = tmp_dir / f"n_{idx}.tga"
+                s_tga = tmp_dir / f"s_{idx}.tga"
+                dxt5nm_img.save(n_tga)
+                spec_img.save(s_tga)
+                n_tgas.append(n_tga)
+                s_tgas.append(s_tga)
                 pending.append((idx, rel_posix, norm_dst, spec_dst))
             except Exception as ex:
                 done += 1
@@ -408,8 +779,8 @@ def process_batch(
 
         if pending:
             try:
-                run_texconv_batch(texconv, n_pngs, tmp_dir, "BC3_UNORM")
-                run_texconv_batch(texconv, s_pngs, tmp_dir, "BC1_UNORM")
+                run_texconv_batch(texconv, n_tgas, tmp_dir, "BC3_UNORM")
+                run_texconv_batch(texconv, s_tgas, tmp_dir, "BC1_UNORM")
                 for idx, rel_posix, norm_dst, spec_dst in pending:
                     n_dds = tmp_dir / f"n_{idx}.dds"
                     s_dds = tmp_dir / f"s_{idx}.dds"
@@ -438,11 +809,13 @@ def main() -> int:
     ap.add_argument("--texconv", default="texconv.exe", help="Path to texconv.exe")
     ap.add_argument("--filter", default="", help="Only process paths containing substring")
     ap.add_argument("--limit", type=int, default=0, help="Process at most N textures")
-    ap.add_argument("--workers", type=int, default=min(12, os.cpu_count() or 4))
+    ap.add_argument("--workers", type=int, default=min(6, os.cpu_count() or 4))
     ap.add_argument("--batch-size", type=int, default=16)
     ap.add_argument("--max-norm-dim", type=int, default=1024)
     ap.add_argument("--max-spec-dim", type=int, default=512)
+    ap.add_argument("--half-large", action="store_true", help="Downsample >=1024px textures by 2x before synthesis")
     ap.add_argument("--preview-dir", default="", help="Optional directory to save readable PNG previews")
+    ap.add_argument("--tmp-root", default="", help="Optional workspace temp directory (avoids %TEMP%)")
     ap.add_argument("--no-skip", action="store_true", help="Overwrite existing output DDS files")
     args = ap.parse_args()
 
@@ -459,11 +832,16 @@ def main() -> int:
     if args.limit > 0:
         items = items[: args.limit]
 
-    print(f"Selected {len(items)} eligible textures (max_norm={args.max_norm_dim}, max_spec={args.max_spec_dim}, workers={args.workers})")
+    print(
+        f"Selected {len(items)} eligible textures "
+        f"(max_norm={args.max_norm_dim}, max_spec={args.max_spec_dim}, half_large={args.half_large}, "
+        f"workers={args.workers}, batch_size={args.batch_size})"
+    )
     if not items:
         return 0
 
     out_root = Path(args.out).resolve()
+    tmp_root = Path(args.tmp_root).resolve() if args.tmp_root else (out_root.parent / "_tmp_ns_work")
     preview_dir = Path(args.preview_dir).resolve() if args.preview_dir else None
     t0 = time.time()
     total_norm_bytes = 0
@@ -480,9 +858,11 @@ def main() -> int:
                 process_batch,
                 b,
                 out_root,
+                tmp_root,
                 texconv,
                 args.max_norm_dim,
                 args.max_spec_dim,
+                args.half_large,
                 preview_dir,
                 not args.no_skip,
             )
@@ -501,6 +881,12 @@ def main() -> int:
                 rate = done / dt
                 mb = (total_norm_bytes + total_spec_bytes) / (1024.0 * 1024.0)
                 print(f"[{done}/{len(items)}] {rate:.1f} tex/s | {mb:.1f} MB | errors={len(errors)}", flush=True)
+
+    try:
+        if tmp_root.exists() and not any(tmp_root.iterdir()):
+            tmp_root.rmdir()
+    except OSError:
+        pass
 
     if errors:
         for rel, err in errors[:10]:

@@ -24,7 +24,7 @@ constexpr uint8_t kExpectedRenderScene[15] = {
 constexpr uint8_t kExpectedFireQueue[15] = {
     0x48, 0x89, 0x5C, 0x24, 0x10, 0x48, 0x89, 0x6C, 0x24, 0x18, 0x48, 0x89, 0x74, 0x24, 0x20};
 
-static_assert(sizeof(routeb::CbAoParams) == 256, "CbAoParams must be 256 bytes");
+static_assert(sizeof(routeb::CbAoParams) == 192, "CbAoParams must be 192 bytes");
 static_assert(alignof(routeb::CbAoParams) == 16, "CbAoParams must be 16-byte aligned");
 static_assert(offsetof(routeb::CbAoParams, proj_xy) == 0, "b0[0] mismatch");
 static_assert(offsetof(routeb::CbAoParams, proj_z_fade) == 16, "b0[1] mismatch");
@@ -38,9 +38,6 @@ static_assert(offsetof(routeb::CbAoParams, aerial_fog_params) == 128, "b0[8] mis
 static_assert(offsetof(routeb::CbAoParams, view_up_and_water) == 144, "b0[9] mismatch");
 static_assert(offsetof(routeb::CbAoParams, inv_view_row0) == 160, "b0[10] mismatch");
 static_assert(offsetof(routeb::CbAoParams, inv_view_row2) == 176, "b0[11] mismatch");
-static_assert(offsetof(routeb::CbAoParams, inv_view_row1) == 192, "b0[12] mismatch");
-static_assert(offsetof(routeb::CbAoParams, height_fog_color) == 208, "b0[13] mismatch");
-static_assert(offsetof(routeb::CbAoParams, height_fog_shape) == 224, "b0[14] mismatch");
 
 float RawToLinearDistCpu(float z_ndc, float p22, float p23) {
     const float denom = (std::min)(z_ndc + p22, -1e-6f);
@@ -205,6 +202,6 @@ int main() {
     ::FreeLibrary(gui);
     ::FreeLibrary(ogre);
 
-    std::printf("[PASS] Route C verification succeeded (CbAoParams=256B, projection roundtrip/clamp, 3 OgreMain detours & clean restore, all HLSL shaders compiled, config panel INI/presets OK)!\n");
+    std::printf("[PASS] Route C verification succeeded (CbAoParams=192B, projection roundtrip/clamp, 3 OgreMain detours & clean restore, all HLSL shaders compiled, config panel INI/presets OK)!\n");
     return 0;
 }

@@ -153,32 +153,7 @@ bool ExecutePostWorldPass(const PostWorldRequest& req, PostLogFn logger) {
         did_any = true;
     }
 
-    // N2: CAS Depth-Aware Micro-Contrast Sharpening (post-SSR, pre-3D LUT / SMAA, skipped in menu)
-    if (!req.is_menu && req.cas_enabled && req.cas_strength_scale > 0.005f &&
-        g_st.post_world_depth_valid && g_st.depth_copy_srv &&
-        ds->ps_cas && g_st.cb_params && g_st.blend_debug_rgb &&
-        CopyRtvTextureToP2Copy(dev, req.ctx, src_rt_tex, rt_desc, rtv_desc)) {
-        CbAoParams cb_cas{};
-        std::memcpy(&cb_cas, g_st.post_world_cb_bytes, sizeof(cb_cas));
-        cb_cas.extra_n234[0] = (std::clamp)(req.cas_strength_scale, 0.0f, 2.0f);
-        D3D11_MAPPED_SUBRESOURCE mapped_cas{};
-        if (SUCCEEDED(req.ctx->Map(g_st.cb_params, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped_cas)) && mapped_cas.pData) {
-            std::memcpy(mapped_cas.pData, &cb_cas, sizeof(cb_cas));
-            req.ctx->Unmap(g_st.cb_params, 0);
-        }
-        req.ctx->PSSetConstantBuffers(0, 1, &g_st.cb_params);
-        req.ctx->RSSetViewports(1, &ao_vp);
-        req.ctx->OMSetRenderTargets(1, &target_rtv, nullptr);
-        req.ctx->OMSetBlendState(g_st.blend_debug_rgb, nullptr, 0xFFFFFFFFU);
-        req.ctx->PSSetShader(ds->ps_cas, nullptr, 0);
-        ID3D11ShaderResourceView* srvs_cas[2] = {g_st.depth_copy_srv, g_st.p2_copy_srv};
-        req.ctx->PSSetShaderResources(0, 2, srvs_cas);
-        req.ctx->Draw(3, 0);
-        req.ctx->PSSetShaderResources(0, 2, null_srvs);
-        did_any = true;
-    }
-
-    // Item 7: 3D LUT Color Grading (post-world + post-SSR + post-CAS, strictly pre-UI)
+    // Item 7: 3D LUT Color Grading (post-world + post-SSR, strictly pre-UI)
     if (req.lut_preset > 0 &&
         g_st.ps_lut_grade && g_st.cb_bloom_lut && g_st.blend_debug_rgb &&
         EnsureLutReady(dev, req.lut_preset, logger) &&

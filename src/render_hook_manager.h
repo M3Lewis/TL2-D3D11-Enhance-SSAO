@@ -31,22 +31,6 @@ void SetSsrEnabled(bool enabled);
 bool IsSsrEnabled();
 bool ToggleSsrEnabled();
 
-void SetHeightFogEnabled(bool enabled);
-bool IsHeightFogEnabled();
-bool ToggleHeightFogEnabled();
-
-void SetCasSharpenEnabled(bool enabled);
-bool IsCasSharpenEnabled();
-bool ToggleCasSharpenEnabled();
-
-void SetLightShaftsEnabled(bool enabled);
-bool IsLightShaftsEnabled();
-bool ToggleLightShaftsEnabled();
-
-void SetBentAoDynSscsEnabled(bool enabled);
-bool IsBentAoDynSscsEnabled();
-bool ToggleBentAoDynSscsEnabled();
-
 void SetLutPreset(int preset);
 int GetLutPreset();
 const char* LutPresetName(int preset);
@@ -61,16 +45,8 @@ void SetAerialVignetteStrengthPct(int pct);
 int GetAerialVignetteStrengthPct();
 void SetSsrStrengthPct(int pct);
 int GetSsrStrengthPct();
-void SetHeightFogStrengthPct(int pct);
-int GetHeightFogStrengthPct();
 void SetLutStrengthPct(int pct);
 int GetLutStrengthPct();
-void SetCasSharpenStrengthPct(int pct);
-int GetCasSharpenStrengthPct();
-void SetLightShaftsStrengthPct(int pct);
-int GetLightShaftsStrengthPct();
-void SetBentAoDynSscsStrengthPct(int pct);
-int GetBentAoDynSscsStrengthPct();
 
 bool IsWorldDepthReadyForParticles();
 void TriggerToastForTest();
@@ -106,9 +82,6 @@ inline bool ToggleP2AerialVignetteEnabled() { return ToggleAerialVignetteEnabled
 inline void SetP2SsrEnabled(bool e) { SetSsrEnabled(e); }
 inline bool IsP2SsrEnabled() { return IsSsrEnabled(); }
 inline bool ToggleP2SsrEnabled() { return ToggleSsrEnabled(); }
-inline void SetP2HeightFogEnabled(bool e) { SetHeightFogEnabled(e); }
-inline bool IsP2HeightFogEnabled() { return IsHeightFogEnabled(); }
-inline bool ToggleP2HeightFogEnabled() { return ToggleHeightFogEnabled(); }
 inline void SetP2LutPreset(int p) { SetLutPreset(p); }
 inline int GetP2LutPreset() { return GetLutPreset(); }
 inline const char* P2LutPresetName(int p) { return LutPresetName(p); }
@@ -123,8 +96,6 @@ inline void SetP2AerialVignetteStrengthPct(int p) { SetAerialVignetteStrengthPct
 inline int GetP2AerialVignetteStrengthPct() { return GetAerialVignetteStrengthPct(); }
 inline void SetP2SsrStrengthPct(int p) { SetSsrStrengthPct(p); }
 inline int GetP2SsrStrengthPct() { return GetSsrStrengthPct(); }
-inline void SetP2HeightFogStrengthPct(int p) { SetHeightFogStrengthPct(p); }
-inline int GetP2HeightFogStrengthPct() { return GetHeightFogStrengthPct(); }
 inline void SetP2LutStrengthPct(int p) { SetLutStrengthPct(p); }
 inline int GetP2LutStrengthPct() { return GetLutStrengthPct(); }
 

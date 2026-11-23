@@ -23,11 +23,7 @@ struct VisualConfig {
     bool p0_sscs_enabled = true;
     bool p1_soft_particles = true;
     bool p2_aerial_vignette = true;
-    bool p2_height_fog_enabled = true;
     bool p2_ssr_enabled = true;
-    bool n2_cas_enabled = true;
-    bool n3_light_shafts_enabled = true;
-    bool n4_bent_ao_enabled = true;
     bool n5_ibl_wrap_enabled = true;
     int p2_filter_preset = 1;  // 0=Off, 1=Hob, 2=Dark Film
     int p2_lut_preset = 0;     // 0=Off, 1=CinemaTealOrange, 2=ColdNordic, 3=CustomCube
@@ -47,10 +43,6 @@ struct VisualConfig {
     int p2_ssr_strength = 100;         // 0..200 (%)
     int p2_filter_strength = 100;      // 0..200 (%)
     int p2_lut_strength = 100;         // 0..200 (%)
-    int p2_height_fog_strength = 100;  // 0..200 (%)
-    int n2_cas_strength = 100;         // 0..200 (%)
-    int n3_light_shafts_strength = 100;// 0..200 (%)
-    int n4_bent_ao_strength = 100;     // 0..200 (%)
     int n5_ibl_wrap_strength = 100;    // 0..200 (%)
 
     bool operator==(const VisualConfig& other) const = default;

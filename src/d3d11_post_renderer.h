@@ -180,7 +180,6 @@ struct DepthVariantShaders {
     ID3D11PixelShader* ps_aerial = nullptr;
     ID3D11PixelShader* ps_ssr = nullptr;
     ID3D11PixelShader* ps_ssr_resolve = nullptr;
-    ID3D11PixelShader* ps_cas = nullptr;
 };
 
 struct BenchSlot {

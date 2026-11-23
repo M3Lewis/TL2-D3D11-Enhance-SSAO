@@ -128,7 +128,6 @@ DepthCopyFormats MapDepthCopyFormats(DXGI_FORMAT tex_fmt, DXGI_FORMAT dsv_fmt) {
 }
 
 void ReleaseDepthVariantShaders(DepthVariantShaders& s) {
-    SafeRelease(s.ps_cas);
     SafeRelease(s.ps_ssr_resolve);
     SafeRelease(s.ps_ssr);
     SafeRelease(s.ps_aerial);
@@ -350,8 +349,7 @@ bool CreateDepthVariantShaders(
         CompileAndCreatePixelShader(dev, compile_fn, "PS_AoCompositeDual", ps_profile, defines, &out.ps_comp_dual, logger) &&
         CompileAndCreatePixelShader(dev, compile_fn, "PS_AerialPerspective", ps_profile, defines, &out.ps_aerial, logger) &&
         CompileAndCreatePixelShader(dev, compile_fn, "PS_WetFloorSsr", ps_profile, defines, &out.ps_ssr, logger) &&
-        CompileAndCreatePixelShader(dev, compile_fn, "PS_SsrSpatialResolve", ps_profile, defines, &out.ps_ssr_resolve, logger) &&
-        CompileAndCreatePixelShader(dev, compile_fn, "PS_CasMicroContrast", ps_profile, defines, &out.ps_cas, logger);
+        CompileAndCreatePixelShader(dev, compile_fn, "PS_SsrSpatialResolve", ps_profile, defines, &out.ps_ssr_resolve, logger);
     if (!ok) {
         ReleaseDepthVariantShaders(out);
     }
@@ -370,7 +368,7 @@ bool EnsurePipelineObjects(ID3D11Device* dev, RouteCD3DLogFn logger) {
     }
     if (g_st.vs_fullscreen && g_st.shaders_single.ps_ao_raw && g_st.shaders_single.ps_composite &&
         g_st.shaders_single.ps_comp_dual && g_st.shaders_single.ps_aerial && g_st.shaders_single.ps_ssr &&
-        g_st.shaders_single.ps_ssr_resolve && g_st.shaders_single.ps_cas &&
+        g_st.shaders_single.ps_ssr_resolve &&
         g_st.ps_lut_grade && g_st.cb_bloom_lut &&
         g_st.ps_toast && g_st.cb_toast && g_st.blend_toast_alpha &&
         g_st.ps_panel && g_st.ps_cursor && g_st.cb_panel && g_st.samp_linear &&
@@ -579,7 +577,7 @@ bool EnsurePipelineObjects(ID3D11Device* dev, RouteCD3DLogFn logger) {
     return true;
 }
 
-bool CreateAoRgba16fTarget(
+bool CreateR8AoTarget(
     ID3D11Device* dev,
     uint32_t w,
     uint32_t h,
@@ -591,7 +589,7 @@ bool CreateAoRgba16fTarget(
     td.Height = h;
     td.MipLevels = 1;
     td.ArraySize = 1;
-    td.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
+    td.Format = DXGI_FORMAT_R8_UNORM;
     td.SampleDesc.Count = 1;
     td.SampleDesc.Quality = 0;
     td.Usage = D3D11_USAGE_DEFAULT;
@@ -662,10 +660,10 @@ bool EnsureAoTargets(
 
     const uint32_t ao_w = (std::max)(1U, (src_desc.Width + 1U) / 2U);
     const uint32_t ao_h = (std::max)(1U, (src_desc.Height + 1U) / 2U);
-    if (!CreateAoRgba16fTarget(dev, ao_w, ao_h, &g_st.ao_rt_tex, &g_st.ao_rt_rtv, &g_st.ao_rt_srv) ||
-        !CreateAoRgba16fTarget(dev, ao_w, ao_h, &g_st.ao_blur_tex, &g_st.ao_blur_rtv, &g_st.ao_blur_srv)) {
+    if (!CreateR8AoTarget(dev, ao_w, ao_h, &g_st.ao_rt_tex, &g_st.ao_rt_rtv, &g_st.ao_rt_srv) ||
+        !CreateR8AoTarget(dev, ao_w, ao_h, &g_st.ao_blur_tex, &g_st.ao_blur_rtv, &g_st.ao_blur_srv)) {
         if (logger) {
-            logger("[RouteC][D3D11] FAILED creating R16G16B16A16_FLOAT half-res AO targets (%ux%u).", ao_w, ao_h);
+            logger("[RouteC][D3D11] FAILED creating R8_UNORM half-res AO targets (%ux%u).", ao_w, ao_h);
         }
         ReleaseTargets();
         return false;

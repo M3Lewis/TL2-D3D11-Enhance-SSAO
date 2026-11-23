@@ -178,6 +178,11 @@ void SetP0RimLitStrengthPct(int pct);
 int GetP0RimLitStrengthPct();
 void SetP2FilterStrengthPct(int pct);
 int GetP2FilterStrengthPct();
+void SetPhase3IblWrapEnabled(bool enabled);
+bool IsPhase3IblWrapEnabled();
+bool TogglePhase3IblWrap();
+void SetPhase3IblWrapStrengthPct(int pct);
+int GetPhase3IblWrapStrengthPct();
 
 bool WasP2PostShaderSeenRecently();
 bool ConsumeFrameWaterPassHint();

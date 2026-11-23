@@ -14,7 +14,7 @@ using PostLogFn = void (*)(const char* fmt, ...);
 using RouteCD3DLogFn = PostLogFn;
 using RouteCLogFn = PostLogFn;
 
-// 240 bytes = 15 float4 HLSL registers matching cbuffer CbAoParams in hlsl
+// 256 bytes = 16 float4 HLSL registers matching cbuffer CbAoParams in hlsl
 struct alignas(16) CbAoParams {
     float proj_xy[4];              // (p00, p11, p02, p12)
     float proj_z_fade[4];          // (p22, p23, fadeEnd, invFadeRange)
@@ -31,8 +31,9 @@ struct alignas(16) CbAoParams {
     float inv_view_row1[4];        // (worldYBasisVs.xyz, camPosVsToWorldOffsetY)
     float height_fog_color[4];     // (fogR, fogG, fogB, maxHeightFogAlpha)
     float height_fog_shape[4];     // (heightFalloffK, distDensity, baseOffsetY, sunScatterStrength)
+    float extra_n234[4];           // (casStrength, lightShaftStrength, bentNormalStrength, timeOfDayHours)
 };
-static_assert(sizeof(CbAoParams) == 240, "CbAoParams must match 15 float4 HLSL registers");
+static_assert(sizeof(CbAoParams) == 256, "CbAoParams must match 16 float4 HLSL registers");
 
 struct alignas(16) CbPanelParams {
     float rect[4];   // box_x, box_y, box_w, box_h
@@ -92,6 +93,9 @@ struct AoRenderRequest {
     bool aerial_enabled = false;
     bool height_fog_enabled = true;
     bool ssr_enabled = false;
+    bool light_shafts_enabled = true;
+    bool bent_ao_enabled = true;
+    bool cas_enabled = true;
     int lut_preset = 0;     // 0=OFF, 1=CinemaTealOrange, 2=ColdNordic, 3=Custom(.cube)
     bool water_hint = false;
     bool is_desert = false;
@@ -102,6 +106,9 @@ struct AoRenderRequest {
     float aerial_strength_scale = 1.0f;
     float height_fog_strength_scale = 1.0f;
     float ssr_strength_scale = 1.0f;
+    float light_shafts_strength_scale = 1.0f;
+    float bent_ao_strength_scale = 1.0f;
+    float cas_strength_scale = 1.0f;
     float rain_strength = 0.0f;
     float time_of_day = -1.0f;
     float sscs_key_dir[2] = {0.42f, -0.907f};
@@ -122,10 +129,12 @@ struct PostWorldRequest {
     int vp_height = 0;
     int debug_mode = 0;
     bool ssr_enabled = false;
+    bool cas_enabled = true;
     int lut_preset = 0;     // 0=OFF, 1=CinemaTealOrange, 2=ColdNordic, 3=Custom(.cube)
     bool water_hint = false;
     int filter_preset = 1;  // 0=OFF, 1=HOB, 2=DRK
     float ssr_strength_scale = 1.0f;
+    float cas_strength_scale = 1.0f;
     float rain_strength = 0.0f;
     float time_of_day = -1.0f;
     float lut_strength_scale = 1.0f;

@@ -212,6 +212,9 @@ std::atomic<bool> g_p1_soft_particles_enabled{true};
 std::atomic<bool> g_p2_aerial_vignette_enabled{true};
 std::atomic<bool> g_p2_ssr_enabled{true};
 std::atomic<bool> g_p2_height_fog_enabled{true};
+std::atomic<bool> g_n2_cas_enabled{true};
+std::atomic<bool> g_n3_light_shafts_enabled{true};
+std::atomic<bool> g_n4_bent_ao_enabled{true};
 std::atomic<int> g_p2_lut_preset{0};  // 0=OFF, 1=CinemaTealOrange, 2=ColdNordic, 3=CustomCube
 std::atomic<int> g_ao_strength_pct{100};
 std::atomic<int> g_sscs_strength_pct{100};
@@ -220,6 +223,9 @@ std::atomic<int> g_p2_aerial_vignette_strength_pct{100};
 std::atomic<int> g_p2_ssr_strength_pct{100};
 std::atomic<int> g_p2_height_fog_strength_pct{100};
 std::atomic<int> g_p2_lut_strength_pct{100};
+std::atomic<int> g_n2_cas_strength_pct{100};
+std::atomic<int> g_n3_light_shafts_strength_pct{100};
+std::atomic<int> g_n4_bent_ao_strength_pct{100};
 std::atomic<bool> g_weather_rain_enabled{false};
 std::atomic<int> g_weather_rain_strength_pct{100};
 std::atomic<int> g_time_of_day_hours{-1};  // -1 = Auto
@@ -692,7 +698,10 @@ void TryDispatchAoForFrame(ActiveSceneFrame& frame, const char* trigger_src, uin
     const bool aerial_on = g_p2_aerial_vignette_enabled.load(std::memory_order_relaxed);
     const bool hfog_on = (!is_menu && dbg_mode <= 0) && g_p2_height_fog_enabled.load(std::memory_order_relaxed);
     const bool ssr_on = g_p2_ssr_enabled.load(std::memory_order_relaxed);
-    if (dbg_mode < 0 && !sp_on && !aerial_on && !hfog_on && !ssr_on) {
+    const bool cas_on = (!is_menu && dbg_mode <= 0) && g_n2_cas_enabled.load(std::memory_order_relaxed);
+    const bool shafts_on = (!is_menu && dbg_mode <= 0) && g_n3_light_shafts_enabled.load(std::memory_order_relaxed);
+    const bool bent_ao_on = (!is_menu && dbg_mode <= 0) && g_n4_bent_ao_enabled.load(std::memory_order_relaxed);
+    if (dbg_mode < 0 && !sp_on && !aerial_on && !hfog_on && !ssr_on && !cas_on && !shafts_on) {
         return;
     }
     frame.ao_injected = true;
@@ -726,6 +735,9 @@ void TryDispatchAoForFrame(ActiveSceneFrame& frame, const char* trigger_src, uin
     req.aerial_enabled = (dbg_mode <= 0) && aerial_on;
     req.height_fog_enabled = hfog_on;
     req.ssr_enabled = (dbg_mode <= 0) && ssr_on;
+    req.light_shafts_enabled = shafts_on;
+    req.bent_ao_enabled = bent_ao_on;
+    req.cas_enabled = cas_on;
     req.lut_preset = 0;
     req.water_hint = water_hint;
     req.is_desert = IsDesertSceneActive();
@@ -736,6 +748,9 @@ void TryDispatchAoForFrame(ActiveSceneFrame& frame, const char* trigger_src, uin
     req.aerial_strength_scale = static_cast<float>(GetP2AerialVignetteStrengthPct()) * 0.01f;
     req.height_fog_strength_scale = static_cast<float>(GetHeightFogStrengthPct()) * 0.01f;
     req.ssr_strength_scale = static_cast<float>(GetP2SsrStrengthPct()) * 0.01f;
+    req.light_shafts_strength_scale = static_cast<float>(GetLightShaftsStrengthPct()) * 0.01f;
+    req.bent_ao_strength_scale = static_cast<float>(GetBentAoDynSscsStrengthPct()) * 0.01f;
+    req.cas_strength_scale = static_cast<float>(GetCasSharpenStrengthPct()) * 0.01f;
     req.rain_strength = GetEffectiveRainStrength();
     req.time_of_day = GetEffectiveTimeOfDayFloat();
     req.sscs_key_dir[0] = 0.42f;
@@ -768,6 +783,39 @@ void TryDispatchAoForFrame(ActiveSceneFrame& frame, const char* trigger_src, uin
                     req.sscs_key_dir[0] = bx / blen;
                     req.sscs_key_dir[1] = by / blen;
                     req.has_sscs_key_dir = true;
+                }
+            }
+        }
+        // N4: Blend brightest nearby PointLight direction into SSCS key_dir near campfires/torches/portals
+        if (bent_ao_on) {
+            float pt_world[3]{};
+            float pt_lum = 0.0f;
+            if (GetCapturedDominantPointLight(pt_world, &pt_lum) && pt_lum > 0.25f) {
+                const float pt_vs_x = frame.view.m[0][0] * pt_world[0] + frame.view.m[0][1] * pt_world[1] +
+                                      frame.view.m[0][2] * pt_world[2] + frame.view.m[0][3];
+                const float pt_vs_y = frame.view.m[1][0] * pt_world[0] + frame.view.m[1][1] * pt_world[1] +
+                                      frame.view.m[1][2] * pt_world[2] + frame.view.m[1][3];
+                const float pt_vs_z = frame.view.m[2][0] * pt_world[0] + frame.view.m[2][1] * pt_world[1] +
+                                      frame.view.m[2][2] * pt_world[2] + frame.view.m[2][3];
+                const float pt_dist = std::sqrt(pt_vs_x * pt_vs_x + pt_vs_y * pt_vs_y);
+                const float ppx = pt_vs_x;
+                const float ppy = -pt_vs_y;
+                if (pt_vs_z < -1.0f && pt_dist > 0.35f && pt_dist < 18.0f && std::isfinite(pt_dist)) {
+                    const float pnx = ppx / pt_dist;
+                    const float pny = ppy / pt_dist;
+                    const float str_scale = (std::clamp)(req.bent_ao_strength_scale, 0.0f, 2.0f);
+                    const float w_pt = (std::clamp)(
+                        (pt_lum - 0.20f) * 0.65f * (1.0f - pt_dist / 18.0f) * str_scale,
+                        0.0f,
+                        0.75f);
+                    const float bx = req.sscs_key_dir[0] * (1.0f - w_pt) + pnx * w_pt;
+                    const float by = req.sscs_key_dir[1] * (1.0f - w_pt) + pny * w_pt;
+                    const float blen = std::sqrt(bx * bx + by * by);
+                    if (blen > 1e-4f) {
+                        req.sscs_key_dir[0] = bx / blen;
+                        req.sscs_key_dir[1] = by / blen;
+                        req.has_sscs_key_dir = true;
+                    }
                 }
             }
         }
@@ -817,8 +865,9 @@ void TryDispatchPostWorldForFrame(ActiveSceneFrame& frame) {
     const int dbg_mode = ao_on ? g_ao_debug_mode.load(std::memory_order_relaxed) : -1;
     const bool is_menu = IsMainMenuActive();
     const bool ssr_on = (!is_menu && dbg_mode <= 0) && g_p2_ssr_enabled.load(std::memory_order_relaxed);
+    const bool cas_on = (!is_menu && dbg_mode <= 0) && g_n2_cas_enabled.load(std::memory_order_relaxed);
     const int lut_preset = (dbg_mode <= 0) ? g_p2_lut_preset.load(std::memory_order_relaxed) : 0;
-    if (!ssr_on && lut_preset <= 0) {
+    if (!ssr_on && !cas_on && lut_preset <= 0) {
         return;
     }
     frame.post_world_injected = true;
@@ -841,10 +890,12 @@ void TryDispatchPostWorldForFrame(ActiveSceneFrame& frame) {
     req.vp_height = frame.vp_h;
     req.debug_mode = (dbg_mode >= 0) ? dbg_mode : 0;
     req.ssr_enabled = ssr_on;
+    req.cas_enabled = cas_on;
     req.lut_preset = lut_preset;
     req.water_hint = water_hint;
     req.filter_preset = GetP2FilterPreset();
     req.ssr_strength_scale = static_cast<float>(GetP2SsrStrengthPct()) * 0.01f;
+    req.cas_strength_scale = static_cast<float>(GetCasSharpenStrengthPct()) * 0.01f;
     req.rain_strength = GetEffectiveRainStrength();
     req.time_of_day = GetEffectiveTimeOfDayFloat();
     req.lut_strength_scale = static_cast<float>(GetP2LutStrengthPct()) * 0.01f;
@@ -1117,8 +1168,11 @@ void __fastcall HookRenderScene(void* sm, void* cam, void* vp, uint8_t show_over
     const bool aerial_on = g_p2_aerial_vignette_enabled.load(std::memory_order_relaxed);
     const bool hfog_on = g_p2_height_fog_enabled.load(std::memory_order_relaxed);
     const bool ssr_on = g_p2_ssr_enabled.load(std::memory_order_relaxed);
+    const bool cas_on = g_n2_cas_enabled.load(std::memory_order_relaxed);
+    const bool shafts_on = g_n3_light_shafts_enabled.load(std::memory_order_relaxed);
     const int lut_preset = g_p2_lut_preset.load(std::memory_order_relaxed);
-    const bool need_depth_pipeline = (dbg_mode >= 0) || sp_on || aerial_on || hfog_on || ssr_on || (lut_preset > 0);
+    const bool need_depth_pipeline =
+        (dbg_mode >= 0) || sp_on || aerial_on || hfog_on || ssr_on || cas_on || shafts_on || (lut_preset > 0);
     const bool need_filter_fallback = ((GetP2FilterPreset() > 0) || aerial_on) && !WasP2PostShaderSeenRecently();
     if ((!survey_on && !need_depth_pipeline && !need_filter_fallback) || g_scene_depth >= kMaxSceneStack || !sm || !vp) {
         const bool prev_ready = g_world_depth_ready_for_particles.exchange(false, std::memory_order_acq_rel);
@@ -1704,6 +1758,51 @@ bool ToggleHeightFogEnabled() {
     return !expected;
 }
 
+void SetCasSharpenEnabled(bool enabled) {
+    g_n2_cas_enabled.store(enabled, std::memory_order_relaxed);
+}
+
+bool IsCasSharpenEnabled() {
+    return g_n2_cas_enabled.load(std::memory_order_relaxed);
+}
+
+bool ToggleCasSharpenEnabled() {
+    bool expected = g_n2_cas_enabled.load(std::memory_order_relaxed);
+    while (!g_n2_cas_enabled.compare_exchange_weak(expected, !expected, std::memory_order_relaxed)) {
+    }
+    return !expected;
+}
+
+void SetLightShaftsEnabled(bool enabled) {
+    g_n3_light_shafts_enabled.store(enabled, std::memory_order_relaxed);
+}
+
+bool IsLightShaftsEnabled() {
+    return g_n3_light_shafts_enabled.load(std::memory_order_relaxed);
+}
+
+bool ToggleLightShaftsEnabled() {
+    bool expected = g_n3_light_shafts_enabled.load(std::memory_order_relaxed);
+    while (!g_n3_light_shafts_enabled.compare_exchange_weak(expected, !expected, std::memory_order_relaxed)) {
+    }
+    return !expected;
+}
+
+void SetBentAoDynSscsEnabled(bool enabled) {
+    g_n4_bent_ao_enabled.store(enabled, std::memory_order_relaxed);
+}
+
+bool IsBentAoDynSscsEnabled() {
+    return g_n4_bent_ao_enabled.load(std::memory_order_relaxed);
+}
+
+bool ToggleBentAoDynSscsEnabled() {
+    bool expected = g_n4_bent_ao_enabled.load(std::memory_order_relaxed);
+    while (!g_n4_bent_ao_enabled.compare_exchange_weak(expected, !expected, std::memory_order_relaxed)) {
+    }
+    return !expected;
+}
+
 void SetLutPreset(int preset) {
     const int clamped = (preset < 0 || preset > 3) ? 0 : preset;
     g_p2_lut_preset.store(clamped, std::memory_order_relaxed);
@@ -1776,6 +1875,30 @@ void SetLutStrengthPct(int pct) {
 
 int GetLutStrengthPct() {
     return (std::clamp)(g_p2_lut_strength_pct.load(std::memory_order_relaxed), 0, 200);
+}
+
+void SetCasSharpenStrengthPct(int pct) {
+    g_n2_cas_strength_pct.store((std::clamp)(pct, 0, 200), std::memory_order_relaxed);
+}
+
+int GetCasSharpenStrengthPct() {
+    return (std::clamp)(g_n2_cas_strength_pct.load(std::memory_order_relaxed), 0, 200);
+}
+
+void SetLightShaftsStrengthPct(int pct) {
+    g_n3_light_shafts_strength_pct.store((std::clamp)(pct, 0, 200), std::memory_order_relaxed);
+}
+
+int GetLightShaftsStrengthPct() {
+    return (std::clamp)(g_n3_light_shafts_strength_pct.load(std::memory_order_relaxed), 0, 200);
+}
+
+void SetBentAoDynSscsStrengthPct(int pct) {
+    g_n4_bent_ao_strength_pct.store((std::clamp)(pct, 0, 200), std::memory_order_relaxed);
+}
+
+int GetBentAoDynSscsStrengthPct() {
+    return (std::clamp)(g_n4_bent_ao_strength_pct.load(std::memory_order_relaxed), 0, 200);
 }
 
 

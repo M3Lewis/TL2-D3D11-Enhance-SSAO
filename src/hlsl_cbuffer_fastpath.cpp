@@ -140,6 +140,11 @@ bool g_cap_has_dir_light = false;
 bool g_cap_has_dir_diffuse = false;
 float g_cap_dir_light[3] = {0.0f, 0.0f, 0.0f};
 float g_cap_dir_lum = 0.0f;
+bool g_cap_has_pt0 = false;
+bool g_cap_has_pt0_pending_pos = false;
+float g_cap_pt0_pending_pos[3] = {0.0f, 0.0f, 0.0f};
+float g_cap_pt0_best_pos[3] = {0.0f, 0.0f, 0.0f};
+float g_cap_pt0_best_lum = 0.0f;
 
 constexpr size_t kL1CacheSlots = 2048;
 constexpr size_t kL1MaxNameLen = 46;
@@ -337,7 +342,8 @@ void MaybeCaptureDirectionalLight(const void* msvc_str, const void* src, size_t 
         return;
     }
     const auto* raw_str = reinterpret_cast<const MsvcStringRaw*>(msvc_str);
-    if (raw_str->size != 27 && raw_str->size != 25) {
+    if (raw_str->size != 27 && raw_str->size != 25 &&
+        raw_str->size != 20 && raw_str->size != 19) {
         return;
     }
     const std::string_view name = raw_str->View();
@@ -354,6 +360,26 @@ void MaybeCaptureDirectionalLight(const void* msvc_str, const void* src, size_t 
         g_cap_dir_lum = 0.299f * f[0] + 0.587f * f[1] + 0.114f * f[2];
         g_cap_has_dir_diffuse = true;
         ::ReleaseSRWLockExclusive(&g_dir_light_lock);
+    } else if (name == "PointLight0_Position") {
+        ::AcquireSRWLockExclusive(&g_dir_light_lock);
+        g_cap_pt0_pending_pos[0] = f[0];
+        g_cap_pt0_pending_pos[1] = f[1];
+        g_cap_pt0_pending_pos[2] = f[2];
+        g_cap_has_pt0_pending_pos = true;
+        ::ReleaseSRWLockExclusive(&g_dir_light_lock);
+    } else if (name == "PointLight0_Diffuse") {
+        const float pt_lum = 0.299f * f[0] + 0.587f * f[1] + 0.114f * f[2];
+        if (pt_lum > 0.20f) {
+            ::AcquireSRWLockExclusive(&g_dir_light_lock);
+            if (g_cap_has_pt0_pending_pos && pt_lum >= g_cap_pt0_best_lum) {
+                g_cap_pt0_best_pos[0] = g_cap_pt0_pending_pos[0];
+                g_cap_pt0_best_pos[1] = g_cap_pt0_pending_pos[1];
+                g_cap_pt0_best_pos[2] = g_cap_pt0_pending_pos[2];
+                g_cap_pt0_best_lum = pt_lum;
+                g_cap_has_pt0 = true;
+            }
+            ::ReleaseSRWLockExclusive(&g_dir_light_lock);
+        }
     }
 }
 
@@ -635,6 +661,15 @@ void ResetCapturedDirectionalLight() {
     g_cap_dir_light[1] = 0.0f;
     g_cap_dir_light[2] = 0.0f;
     g_cap_dir_lum = 0.0f;
+    g_cap_has_pt0 = false;
+    g_cap_has_pt0_pending_pos = false;
+    g_cap_pt0_pending_pos[0] = 0.0f;
+    g_cap_pt0_pending_pos[1] = 0.0f;
+    g_cap_pt0_pending_pos[2] = 0.0f;
+    g_cap_pt0_best_pos[0] = 0.0f;
+    g_cap_pt0_best_pos[1] = 0.0f;
+    g_cap_pt0_best_pos[2] = 0.0f;
+    g_cap_pt0_best_lum = 0.0f;
     ::ReleaseSRWLockExclusive(&g_dir_light_lock);
 }
 
@@ -648,6 +683,20 @@ bool GetCapturedDirectionalLight(float out_dir[3], float* out_lum) {
     out_dir[1] = g_cap_dir_light[1];
     out_dir[2] = g_cap_dir_light[2];
     *out_lum = g_cap_has_dir_diffuse ? g_cap_dir_lum : 1.0f;
+    ::ReleaseSRWLockShared(&g_dir_light_lock);
+    return ok;
+}
+
+bool GetCapturedDominantPointLight(float out_world_pos[3], float* out_lum) {
+    if (!out_world_pos || !out_lum) {
+        return false;
+    }
+    ::AcquireSRWLockShared(&g_dir_light_lock);
+    const bool ok = g_cap_has_pt0;
+    out_world_pos[0] = g_cap_pt0_best_pos[0];
+    out_world_pos[1] = g_cap_pt0_best_pos[1];
+    out_world_pos[2] = g_cap_pt0_best_pos[2];
+    *out_lum = g_cap_pt0_best_lum;
     ::ReleaseSRWLockShared(&g_dir_light_lock);
     return ok;
 }

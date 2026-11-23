@@ -35,6 +35,18 @@ void SetHeightFogEnabled(bool enabled);
 bool IsHeightFogEnabled();
 bool ToggleHeightFogEnabled();
 
+void SetCasSharpenEnabled(bool enabled);
+bool IsCasSharpenEnabled();
+bool ToggleCasSharpenEnabled();
+
+void SetLightShaftsEnabled(bool enabled);
+bool IsLightShaftsEnabled();
+bool ToggleLightShaftsEnabled();
+
+void SetBentAoDynSscsEnabled(bool enabled);
+bool IsBentAoDynSscsEnabled();
+bool ToggleBentAoDynSscsEnabled();
+
 void SetLutPreset(int preset);
 int GetLutPreset();
 const char* LutPresetName(int preset);
@@ -53,6 +65,12 @@ void SetHeightFogStrengthPct(int pct);
 int GetHeightFogStrengthPct();
 void SetLutStrengthPct(int pct);
 int GetLutStrengthPct();
+void SetCasSharpenStrengthPct(int pct);
+int GetCasSharpenStrengthPct();
+void SetLightShaftsStrengthPct(int pct);
+int GetLightShaftsStrengthPct();
+void SetBentAoDynSscsStrengthPct(int pct);
+int GetBentAoDynSscsStrengthPct();
 
 bool IsWorldDepthReadyForParticles();
 void TriggerToastForTest();

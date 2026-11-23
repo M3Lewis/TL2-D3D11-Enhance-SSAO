@@ -25,4 +25,6 @@ float DirectGetTimeOfDay();
 uintptr_t GetActiveGameLevelPtr();
 bool IsActiveGameLevelLoaded();
 
+void ComputeContinuousTodSkyRgb(float tod_hours, bool is_desert, bool is_dark, float out_rgb[3]);
+
 }  // namespace routeb

@@ -20,6 +20,7 @@ cbuffer CbAoParams : register(b0)
     float4 gInvViewRow1;     // xyz=worldYBasisVs, w=worldYOffset
     float4 gHeightFogColor;  // rgb=todHeightFogRgb, a=maxHeightFogAlpha
     float4 gHeightFogShape;  // x=heightFalloffK, y=distDensity, z=baseOffsetY, w=sunScatter
+    float4 gExtraN234;       // x=casStrength, y=lightShaftStrength, z=bentNormalStrength, w=todHours
 };
 
 #if MSAA_DEPTH
@@ -151,18 +152,19 @@ float4 PS_AoRaw(VsOut input) : SV_Target0
     // Pass 1 executes at half resolution; map hpix -> exact even full-res depth pixel.
     int2 hpix = int2(input.pos.xy);
     int2 pix = clamp(hpix * 2, gVpClamp.xy, gVpClamp.zw);
+    float3 upFallback = normalize(gViewUpAndWater.xyz + float3(0.0f, 1e-4f, 0.0f));
     float rawDepth = 1.0f;
     float3 P = ReconstructPosVS(pix, rawDepth);
     if (rawDepth >= 0.99998f)
     {
-        return float4(1.0f, 1.0f, 1.0f, 1.0f);
+        return float4(1.0f, upFallback);
     }
 
     float d = -P.z;
     float fade = saturate((gProjZAndFade.z - d) * gProjZAndFade.w);
     if (fade <= 0.001f)
     {
-        return float4(1.0f, 1.0f, 1.0f, 1.0f);
+        return float4(1.0f, upFallback);
     }
 
     float3 n = ReconstructNormalVS(pix, P);
@@ -183,6 +185,7 @@ float4 PS_AoRaw(VsOut input) : SV_Target0
     };
 
     float occSum = 0.0f;
+    float3 bentAcc = n * 0.40f;
     float biasCos = gAoParams.y;
     float invOneMinusBias = 1.0f / max(1.0f - biasCos, 1e-3f);
     float invR2 = 1.0f / max(R * R, 1e-5f);
@@ -217,6 +220,12 @@ float4 PS_AoRaw(VsOut input) : SV_Target0
                     float sampleOcc = angleOcc * heightGate * falloff;
                     maxDirOcc = max(maxDirOcc, sampleOcc);
                     sumDirOcc += sampleOcc;
+                    float unocc = saturate(1.0f - sampleOcc * 1.35f);
+                    bentAcc += normalize(n + (V * invDist) * 0.55f) * unocc;
+                }
+                else
+                {
+                    bentAcc += n;
                 }
             }
         }
@@ -226,23 +235,25 @@ float4 PS_AoRaw(VsOut input) : SV_Target0
     float occ = occSum * 0.25f;
     float darkened = saturate(occ * gAoParams.z) * (1.0f - gAoParams.w) * fade;
     float ao = 1.0f - darkened;
-    return float4(ao, ao, ao, 1.0f);
+    float3 bentN = normalize(bentAcc + float3(0.0f, 0.0f, 1e-5f));
+    return float4(ao, bentN);
 }
 
-float BilateralBlur1D(int2 hpix, int2 axisDir)
+float4 BilateralBlur1D(int2 hpix, int2 axisDir)
 {
     int2 vpHalfMin = gVpClamp.xy >> 1;
     int2 vpHalfMax = gVpClamp.zw >> 1;
     int2 chpix = clamp(hpix, vpHalfMin, vpHalfMax);
     int2 cpix = clamp(chpix * 2, gVpClamp.xy, gVpClamp.zw);
+    float3 upFallback = normalize(gViewUpAndWater.xyz + float3(0.0f, 1e-4f, 0.0f));
     float rawC = LoadRawDepth(cpix);
     if (rawC >= 0.99998f)
     {
-        return 1.0f;
+        return float4(1.0f, upFallback);
     }
 
     float dCenter = max(RawToLinearDist(rawC), 1e-3f);
-    float sumAo = gAoInputTex.Load(int3(chpix, 0)).r;
+    float4 sumVal = gAoInputTex.Load(int3(chpix, 0));
     float sumW = 1.0f;
     float edgeScale = gBlurAndMode.z;
 
@@ -260,24 +271,23 @@ float BilateralBlur1D(int2 hpix, int2 axisDir)
                 float relDiff = abs(dS - dCenter) / dCenter;
                 float ed = relDiff * edgeScale;
                 float w = exp(-0.22f * float(i * i) - ed * ed);
-                sumAo += gAoInputTex.Load(int3(shpix, 0)).r * w;
+                sumVal += gAoInputTex.Load(int3(shpix, 0)) * w;
                 sumW += w;
             }
         }
     }
-    return sumAo / max(sumW, 1e-5f);
+    float4 avg = sumVal / max(sumW, 1e-5f);
+    return float4(avg.x, normalize(avg.yzw + float3(0.0f, 0.0f, 1e-5f)));
 }
 
 float4 PS_BlurH(VsOut input) : SV_Target0
 {
-    float v = BilateralBlur1D(int2(input.pos.xy), int2(1, 0));
-    return float4(v, v, v, 1.0f);
+    return BilateralBlur1D(int2(input.pos.xy), int2(1, 0));
 }
 
 float4 PS_BlurV(VsOut input) : SV_Target0
 {
-    float v = BilateralBlur1D(int2(input.pos.xy), int2(0, 1));
-    return float4(v, v, v, 1.0f);
+    return BilateralBlur1D(int2(input.pos.xy), int2(0, 1));
 }
 
 float4 PS_ResolveDepthMsaa(VsOut input) : SV_Target0
@@ -302,7 +312,7 @@ float3 ComputeAoCompositeRgb(int2 pix, float rawC)
     float wx[2] = {1.0f - fx, fx};
     float wy[2] = {1.0f - fy, fy};
 
-    float sumAo = 0.0f;
+    float4 sumVal = float4(0.0f, 0.0f, 0.0f, 0.0f);
     float sumW = 0.0f;
 
     [unroll]
@@ -322,13 +332,15 @@ float3 ComputeAoCompositeRgb(int2 pix, float rawC)
                 float ed = relDiff * edgeScale;
                 float wDepth = (rawS < 0.99998f) ? exp(-(ed * ed)) : 0.0f;
                 float w = wSpat * (wDepth + 1e-4f);
-                sumAo += gAoInputTex.Load(int3(shpix, 0)).r * w;
+                sumVal += gAoInputTex.Load(int3(shpix, 0)) * w;
                 sumW += w;
             }
         }
     }
 
-    float ao = (sumW > 1e-5f) ? (sumAo / sumW) : 1.0f;
+    float4 avgVal = (sumW > 1e-5f) ? (sumVal / sumW) : float4(1.0f, gViewUpAndWater.xyz);
+    float ao = saturate(avgVal.x);
+    float3 bentN = normalize(avgVal.yzw + float3(0.0f, 0.0f, 1e-5f));
 
     if (gSscsParams.x > 0.5f && gBlurAndMode.w < 0.5f)
     {
@@ -399,9 +411,24 @@ float3 ComputeAoCompositeRgb(int2 pix, float rawC)
             ao = max(min(ao, ao * microAtten), floorMin);
         }
 
-        // P0-2C: Hob-style cool-tinted crevice AO curve (avoid neutral muddy gray)
+        // P0-2C + N4: Cool crevice AO + Bent-Normal sky/ground color bounce
         float3 coolAo = pow(max(ao, 1e-4f), float3(1.18f, 1.04f, 0.85f));
-        return lerp(float3(ao, ao, ao), coolAo, saturate(gSscsParams.z));
+        float3 aoRgb = lerp(float3(ao, ao, ao), coolAo, saturate(gSscsParams.z));
+
+        float bentStr = clamp(gExtraN234.z, 0.0f, 2.0f);
+        if (bentStr > 0.005f && gBlurAndMode.w < 0.5f)
+        {
+            float3 upVS = normalize(gViewUpAndWater.xyz + float3(0.0f, 1e-4f, 0.0f));
+            float bentWorldUp = dot(bentN, upVS);
+            float skyLum = max(dot(gHeightFogColor.rgb, float3(0.299f, 0.587f, 0.114f)), 0.08f);
+            float3 skyHue = gHeightFogColor.rgb / skyLum;
+            float3 skyCrevice = lerp(float3(0.76f, 0.92f, 1.22f), clamp(skyHue * 0.55f + 0.55f, 0.65f, 1.35f), 0.70f);
+            float3 earthBounce = float3(1.18f, 0.95f, 0.76f);
+            float3 bounceTint = lerp(earthBounce, skyCrevice, smoothstep(-0.35f, 0.55f, bentWorldUp));
+            float occWeight = saturate((1.0f - ao) * 2.2f) * saturate(bentStr * 0.65f);
+            aoRgb *= lerp(float3(1.0f, 1.0f, 1.0f), bounceTint, occWeight);
+        }
+        return aoRgb;
     }
 
     return float3(ao, ao, ao);
@@ -491,6 +518,59 @@ void ComputeAerialPerspective(int2 pix, float rawC, out float3 hazeRgb, out floa
             scatter = smoothstep(0.15f, 0.95f, dot(ray2d, -gSscsKeyAndRange.xy)) * gHeightFogShape.w;
         }
         hRgb = gHeightFogColor.rgb * (1.0f + scatter * 0.22f);
+    }
+
+    // N3: Shadowed Height-Fog Volumetric Light Shafts (crepuscular rays along key light)
+    float shaftStr = clamp(gExtraN234.y, 0.0f, 2.0f);
+    if (shaftStr > 0.005f && dC < 68.0f)
+    {
+        float2 uv = (float2(pix) + 0.5f - gVpRect.xy) / max(gVpRect.zw, float2(1.0f, 1.0f));
+        float heroClear = lerp(0.55f, 1.0f, smoothstep(0.06f, 0.25f, length(uv - float2(0.50f, 0.52f))));
+        float3 P = ReconstructPosFromDist(pix, dC);
+        float worldY = dot(P, gInvViewRow1.xyz) + gInvViewRow1.w;
+        float2 rayDirUv = normalize(gSscsKeyAndRange.xy + float2(1e-5f, 0.0f));
+        float ign = frac(52.9829189f * frac(dot(float2(pix), float2(0.06711056f, 0.00583715f))));
+
+        float shadowAcc = 0.0f;
+        float litAcc = 0.0f;
+        [unroll]
+        for (int s = 1; s <= 8; ++s)
+        {
+            float fracS = (float(s) - 0.5f + 0.55f * ign) * 0.125f;
+            float2 sampleUv = uv + rayDirUv * (fracS * 0.075f);
+            if (sampleUv.x > 0.005f && sampleUv.x < 0.995f && sampleUv.y > 0.005f && sampleUv.y < 0.995f)
+            {
+                int2 spix = clamp(int2(gVpRect.xy + sampleUv * gVpRect.zw), gVpClamp.xy, gVpClamp.zw);
+                float sRaw = LoadRawDepth(spix);
+                if (sRaw < 0.99998f)
+                {
+                    float sD = RawToLinearDist(sRaw);
+                    float3 sP = ReconstructPosFromDist(spix, sD);
+                    float sWorldY = dot(sP, gInvViewRow1.xyz) + gInvViewRow1.w;
+                    float rayHeight = worldY + fracS * 2.15f;
+                    float occHeight = sWorldY - rayHeight;
+                    float occ = smoothstep(0.20f, 0.95f, occHeight) * (1.0f - smoothstep(14.0f, 34.0f, abs(sD - dC)));
+                    float w = 1.0f - fracS * 0.45f;
+                    shadowAcc += occ * w;
+                    litAcc += (1.0f - occ) * w;
+                }
+            }
+        }
+        float shaftTrans = saturate(litAcc / max(litAcc + shadowAcc, 1e-4f));
+        float shaftContrast = smoothstep(0.22f, 0.88f, shaftTrans);
+        float3 beamTint = lerp(gHeightFogColor.rgb * 1.45f, float3(1.00f, 0.86f, 0.62f), 0.38f);
+        float distRamp = 1.0f - exp(-max(dC - 9.0f, 0.0f) * 0.060f);
+        if (hA > 1e-4f)
+        {
+            hA = clamp(hA * lerp(1.18f, 0.85f + 0.55f * shaftStr, shaftContrast) +
+                       shaftContrast * 0.065f * shaftStr * distRamp * heroClear, 0.0f, 0.66f);
+            hRgb = lerp(hRgb * float3(0.76f, 0.84f, 1.02f), max(hRgb, beamTint), shaftContrast * saturate(0.55f * shaftStr));
+        }
+        else
+        {
+            hA = clamp(shaftContrast * 0.13f * shaftStr * distRamp * heroClear, 0.0f, 0.36f);
+            hRgb = beamTint;
+        }
     }
 
     hazeA = saturate(aA + hA - aA * hA);
@@ -936,6 +1016,51 @@ float4 PS_SsrSpatialResolve(VsOut input) : SV_Target0
     }
     float3 outRgb = sumPremulRgb / max(sumAlpha, 1e-4f);
     return float4(saturate(outRgb), saturate(outA));
+}
+
+// N2: CAS Edge-Aware Micro-Contrast Sharpening (Depth-Gradient Guarded, Pre-LUT & Pre-SMAA)
+float4 PS_CasMicroContrast(VsOut input) : SV_Target0
+{
+    int2 pix = clamp(int2(input.pos.xy), gVpClamp.xy, gVpClamp.zw);
+    float3 c = gAoInputTex.Load(int3(pix, 0)).rgb;
+    float casStr = clamp(gExtraN234.x, 0.0f, 2.0f);
+    if (casStr <= 0.005f)
+    {
+        return float4(c, 1.0f);
+    }
+
+    float rawC = LoadRawDepth(pix);
+    if (rawC >= 0.99998f)
+    {
+        return float4(c, 1.0f);
+    }
+    float dC = RawToLinearDist(rawC);
+    float distMask = 1.0f - smoothstep(32.0f, 65.0f, dC);
+
+    int2 pN = clamp(pix + int2( 0, -1), gVpClamp.xy, gVpClamp.zw);
+    int2 pS = clamp(pix + int2( 0,  1), gVpClamp.xy, gVpClamp.zw);
+    int2 pW = clamp(pix + int2(-1,  0), gVpClamp.xy, gVpClamp.zw);
+    int2 pE = clamp(pix + int2( 1,  0), gVpClamp.xy, gVpClamp.zw);
+
+    float3 n = gAoInputTex.Load(int3(pN, 0)).rgb;
+    float3 s = gAoInputTex.Load(int3(pS, 0)).rgb;
+    float3 w = gAoInputTex.Load(int3(pW, 0)).rgb;
+    float3 e = gAoInputTex.Load(int3(pE, 0)).rgb;
+
+    float dN = RawToLinearDist(LoadRawDepth(pN));
+    float dS = RawToLinearDist(LoadRawDepth(pS));
+    float dW = RawToLinearDist(LoadRawDepth(pW));
+    float dE = RawToLinearDist(LoadRawDepth(pE));
+    float maxDz = max(max(abs(dN - dC), abs(dS - dC)), max(abs(dW - dC), abs(dE - dC)));
+    float silhouetteGuard = lerp(1.0f, 0.20f, smoothstep(0.08f, 0.45f, maxDz / max(dC * 0.03f, 0.15f)));
+
+    float3 minRgb = min(c, min(min(n, s), min(w, e)));
+    float3 maxRgb = max(c, max(max(n, s), max(w, e)));
+    float3 amp = saturate(min(minRgb, 1.0f - maxRgb) / max(maxRgb, 1e-4f));
+    float3 casW = sqrt(amp) * (-0.165f * casStr * silhouetteGuard * distMask);
+    float3 res = (c + (n + s + w + e) * casW) / max(1.0f + 4.0f * casW, 1e-4f);
+    res = clamp(res, minRgb * 0.96f, min(maxRgb * 1.04f, 1.0f));
+    return float4(saturate(res), 1.0f);
 }
 )HLSL";
 const size_t kSsrResolveShaderSourceLength = sizeof(kSsrResolveShaderSource) - 1;

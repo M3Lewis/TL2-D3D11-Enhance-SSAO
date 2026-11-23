@@ -408,4 +408,38 @@ bool ToggleTimeOfDayLocked() {
     return next;
 }
 
+void ComputeContinuousTodSkyRgb(float tod_hours, bool is_desert, bool is_dark, float out_rgb[3]) {
+    static const float kTodKeyColors[4][3] = {
+        {0.085f, 0.145f, 0.265f},  // 00:00 Midnight twilight blue
+        {0.420f, 0.310f, 0.255f},  // 06:00 Dawn warm rose gold
+        {0.235f, 0.310f, 0.395f},  // 12:00 Noon clear sky blue
+        {0.460f, 0.265f, 0.185f},  // 18:00 Dusk amber violet
+    };
+    float tod = (tod_hours >= 0.0f) ? std::fmod(tod_hours, 24.0f) : 12.0f;
+    if (tod < 0.0f) tod += 24.0f;
+    const float scaled = tod / 6.0f;
+    const int seg0 = static_cast<int>(scaled) & 3;
+    const int seg1 = (seg0 + 1) & 3;
+    const float frac = scaled - std::floor(scaled);
+    const float smooth_t = frac * frac * (3.0f - 2.0f * frac);
+
+    float r = kTodKeyColors[seg0][0] + (kTodKeyColors[seg1][0] - kTodKeyColors[seg0][0]) * smooth_t;
+    float g = kTodKeyColors[seg0][1] + (kTodKeyColors[seg1][1] - kTodKeyColors[seg0][1]) * smooth_t;
+    float b = kTodKeyColors[seg0][2] + (kTodKeyColors[seg1][2] - kTodKeyColors[seg0][2]) * smooth_t;
+
+    if (is_desert) {
+        r = r * 0.62f + 0.400f * 0.38f;
+        g = g * 0.62f + 0.310f * 0.38f;
+        b = b * 0.62f + 0.200f * 0.38f;
+    }
+    if (is_dark) {
+        r *= 0.74f;
+        g *= 0.80f;
+        b *= 0.90f;
+    }
+    out_rgb[0] = r;
+    out_rgb[1] = g;
+    out_rgb[2] = b;
+}
+
 }  // namespace routeb

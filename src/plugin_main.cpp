@@ -570,6 +570,10 @@ extern "C" __declspec(dllexport) int RouteB_RunConfigPanelSelfTest() {
     routeb::SetP2AerialVignetteEnabled(false);
     routeb::SetP2HeightFogEnabled(true);
     routeb::SetP2SsrEnabled(false);
+    routeb::SetCasSharpenEnabled(false);
+    routeb::SetLightShaftsEnabled(true);
+    routeb::SetBentAoDynSscsEnabled(false);
+    routeb::SetPhase3IblWrapEnabled(true);
     routeb::SetP2FilterPreset(2);
     routeb::SetP2LutPreset(1);
     routeb::SetPhase3StrengthPct(-25);      // clamps to 0
@@ -583,6 +587,10 @@ extern "C" __declspec(dllexport) int RouteB_RunConfigPanelSelfTest() {
     routeb::SetP2SsrStrengthPct(250);       // clamps to 200
     routeb::SetP2FilterStrengthPct(115);
     routeb::SetP2LutStrengthPct(90);
+    routeb::SetCasSharpenStrengthPct(125);
+    routeb::SetLightShaftsStrengthPct(140);
+    routeb::SetBentAoDynSscsStrengthPct(110);
+    routeb::SetPhase3IblWrapStrengthPct(175);
     if (routeb::GetUiLanguage() != routeb::DetectSystemDefaultUiLanguage()) {
         return 15;
     }
@@ -602,6 +610,8 @@ extern "C" __declspec(dllexport) int RouteB_RunConfigPanelSelfTest() {
     if (!all_on.phase3_enhance || !all_on.af_point_enhance || !all_on.p0_rimlit_enhance ||
         !all_on.ao_enabled || !all_on.p0_sscs_enabled || !all_on.p1_soft_particles ||
         !all_on.p2_aerial_vignette || !all_on.p2_height_fog_enabled || !all_on.p2_ssr_enabled ||
+        !all_on.n2_cas_enabled || !all_on.n3_light_shafts_enabled ||
+        !all_on.n4_bent_ao_enabled || !all_on.n5_ibl_wrap_enabled ||
         all_on.p2_filter_preset != 2 || all_on.p2_lut_preset != 1) {
         return 12;
     }
@@ -612,6 +622,8 @@ extern "C" __declspec(dllexport) int RouteB_RunConfigPanelSelfTest() {
     if (all_off.phase3_enhance || all_off.af_point_enhance || all_off.p0_rimlit_enhance ||
         all_off.ao_enabled || all_off.p0_sscs_enabled || all_off.p1_soft_particles ||
         all_off.p2_aerial_vignette || all_off.p2_height_fog_enabled || all_off.p2_ssr_enabled ||
+        all_off.n2_cas_enabled || all_off.n3_light_shafts_enabled ||
+        all_off.n4_bent_ao_enabled || all_off.n5_ibl_wrap_enabled ||
         all_off.p2_filter_preset != 2 || all_off.p2_lut_preset != 1) {
         return 14;
     }
@@ -624,6 +636,8 @@ extern "C" __declspec(dllexport) int RouteB_RunConfigPanelSelfTest() {
     if (vanilla.phase3_enhance || vanilla.af_point_enhance || vanilla.p0_rimlit_enhance ||
         vanilla.ao_enabled || vanilla.p0_sscs_enabled || vanilla.p1_soft_particles ||
         vanilla.p2_aerial_vignette || vanilla.p2_height_fog_enabled || vanilla.p2_ssr_enabled ||
+        vanilla.n2_cas_enabled || vanilla.n3_light_shafts_enabled ||
+        vanilla.n4_bent_ao_enabled || vanilla.n5_ibl_wrap_enabled ||
         vanilla.p2_filter_preset != 0 || vanilla.p2_lut_preset != 0) {
         return 4;
     }
@@ -636,13 +650,17 @@ extern "C" __declspec(dllexport) int RouteB_RunConfigPanelSelfTest() {
     if (!applied.phase3_enhance || applied.af_point_enhance || !applied.p0_rimlit_enhance ||
         applied.ao_enabled || applied.p0_sscs_enabled || !applied.p1_soft_particles ||
         applied.p2_aerial_vignette || !applied.p2_height_fog_enabled || applied.p2_ssr_enabled ||
+        applied.n2_cas_enabled || !applied.n3_light_shafts_enabled ||
+        applied.n4_bent_ao_enabled || !applied.n5_ibl_wrap_enabled ||
         applied.p2_filter_preset != 2 || applied.p2_lut_preset != 1 ||
         applied.phase3_strength != 0 || applied.af_point_strength != 135 ||
         applied.p0_rimlit_strength != 150 || applied.ao_strength != 85 ||
         applied.p0_sscs_strength != 120 || applied.p1_soft_strength != 160 ||
         applied.p2_aerial_strength != 75 || applied.p2_height_fog_strength != 145 ||
         applied.p2_ssr_strength != 200 ||
-        applied.p2_filter_strength != 115 || applied.p2_lut_strength != 90) {
+        applied.p2_filter_strength != 115 || applied.p2_lut_strength != 90 ||
+        applied.n2_cas_strength != 125 || applied.n3_light_shafts_strength != 140 ||
+        applied.n4_bent_ao_strength != 110 || applied.n5_ibl_wrap_strength != 175) {
         return 6;
     }
 

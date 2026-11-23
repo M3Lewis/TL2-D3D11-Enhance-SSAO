@@ -45,6 +45,11 @@ float4 p3Flags2 = float4(0.0, 0.0, 0.0, 0.0);
 //   w = Dynamic weather rain wetness scale (0..1)
 float4 p3EnhanceFlags = float4(0.0, 0.0, 1.0, 0.0);
 
+// p3IblSky (N5):
+//   rgb = Continuous Time-of-Day analytical sky reflection tint
+//   w   = Dual-hemisphere IBL metallic sheen + cloth/skin wrap scale (0..2)
+float4 p3IblSky = float4(0.24, 0.31, 0.40, 1.0);
+
 float3 ApplyStage1Op(float3 baseColor, float2 uv, int op)
 {
     float4 t1 = Texture1.Sample(Sampler1, uv);
@@ -365,12 +370,21 @@ float4 ShadeSkinnedDiff(VS_OUTPUT input, bool doAlphaReject)
             float warmHue = smoothstep(0.03, 0.14, sd.albedo.r - sd.albedo.b) *
                             smoothstep(-0.02, 0.08, sd.albedo.r - sd.albedo.g);
             float isFlesh = saturate(1.0 - sd.metalMask * 1.8) * smoothstep(0.12, 0.35, sat) * warmHue;
+            float iblWrapScale = max(p3IblSky.w, 0.0);
             if (isFlesh > 0.05)
             {
                 float wrapNdl = saturate((ndlRaw + 0.30) / 1.30);
                 float scatterTerm = pow(1.0 - abs(ndlRaw), 2.2) * wrapNdl;
-                float3 sssColor = input.Texcoord4.rgb * float3(0.90, 0.38, 0.16) * (scatterTerm * 0.16 * isFlesh * p3Scale);
+                float fleshBoost = lerp(1.0, 1.35, saturate(iblWrapScale));
+                float3 sssColor = input.Texcoord4.rgb * float3(0.90, 0.38, 0.16) * (scatterTerm * 0.16 * isFlesh * p3Scale * fleshBoost);
                 litEnv += sssColor;
+            }
+            if (iblWrapScale > 0.005)
+            {
+                // N5: Soft dark-side wrap illumination for cloth/leather/fur/monsters
+                float wrapMask = (1.0 - sd.metalMask) * (1.0 - isFlesh);
+                float wrapSide = saturate((ndlRaw + 0.38) / 1.38) - saturate(ndlRaw);
+                litEnv += lerp(p3IblSky.rgb * 0.65, input.Texcoord4.rgb, 0.65) * (wrapSide * 0.24 * wrapMask * iblWrapScale);
             }
 
             float3 H = normalize(L0 + V);
@@ -390,6 +404,22 @@ float4 ShadeSkinnedDiff(VS_OUTPUT input, bool doAlphaReject)
         // Dual-hemisphere ambient weighting: higher in shadow/ambient crevices, subtler on direct sunlit surfaces
         float hemiWeight = lerp(0.50, 0.95, shadowWeight) * saturate(p3Scale);
         litEnv *= lerp(float3(1.0, 1.0, 1.0), hemiTint, hemiWeight * 0.70);
+
+        // N5: Analytical Continuous ToD Dual-Hemisphere IBL Metallic Sheen & Grazing Sky Reflection
+        float iblScale = max(p3IblSky.w, 0.0);
+        if (iblScale > 0.005)
+        {
+            float3 R = reflect(-V, Nmicro);
+            float rUp = dot(R, viewUp);
+            float skyBlend = smoothstep(-0.35, 0.55, rUp);
+            float3 groundCol = lerp(float3(0.16, 0.12, 0.09), float3(0.08, 0.10, 0.15), saturate((0.35 - p3IblSky.r) * 2.5));
+            float3 envCol = lerp(groundCol, p3IblSky.rgb, skyBlend);
+            float fresnelEnv = F0 + (1.0 - F0) * pow(1.0 - NdotV, 3.5);
+            float specGate = lerp(0.14, 1.0, effSmoothness);
+            float sheenMask = saturate(0.35 + 0.65 * sd.detailFade);
+            specAdd += envCol * sheenTint * (fresnelEnv * specGate * iblScale * 0.52 * sheenMask);
+            litEnv += envCol * (sd.metalMask * 0.26 * iblScale * sheenMask);
+        }
 
         float l1LenSq = dot(input.Texcoord3.xyz, input.Texcoord3.xyz);
         float afPointScale = max(p3EnhanceFlags.x, 0.0);

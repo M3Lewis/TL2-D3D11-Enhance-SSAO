@@ -31,5 +31,6 @@ bool WriteCachedFloatParamByMsvcStr(uintptr_t params, const void* msvc_str, cons
 void ResetExplicitPsLightingScratch(uintptr_t params);
 void ResetCapturedDirectionalLight();
 bool GetCapturedDirectionalLight(float out_dir[3], float* out_lum);
+bool GetCapturedDominantPointLight(float out_world_pos[3], float* out_lum);
 
 }  // namespace routeb

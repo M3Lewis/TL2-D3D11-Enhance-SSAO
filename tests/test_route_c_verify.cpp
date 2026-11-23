@@ -24,7 +24,7 @@ constexpr uint8_t kExpectedRenderScene[15] = {
 constexpr uint8_t kExpectedFireQueue[15] = {
     0x48, 0x89, 0x5C, 0x24, 0x10, 0x48, 0x89, 0x6C, 0x24, 0x18, 0x48, 0x89, 0x74, 0x24, 0x20};
 
-static_assert(sizeof(routeb::CbAoParams) == 240, "CbAoParams must be 240 bytes");
+static_assert(sizeof(routeb::CbAoParams) == 256, "CbAoParams must be 256 bytes");
 static_assert(alignof(routeb::CbAoParams) == 16, "CbAoParams must be 16-byte aligned");
 static_assert(offsetof(routeb::CbAoParams, proj_xy) == 0, "b0[0] mismatch");
 static_assert(offsetof(routeb::CbAoParams, proj_z_fade) == 16, "b0[1] mismatch");
@@ -205,6 +205,6 @@ int main() {
     ::FreeLibrary(gui);
     ::FreeLibrary(ogre);
 
-    std::printf("[PASS] Route C verification succeeded (CbAoParams=240B, projection roundtrip/clamp, 3 OgreMain detours & clean restore, all HLSL shaders compiled, config panel INI/presets OK)!\n");
+    std::printf("[PASS] Route C verification succeeded (CbAoParams=256B, projection roundtrip/clamp, 3 OgreMain detours & clean restore, all HLSL shaders compiled, config panel INI/presets OK)!\n");
     return 0;
 }

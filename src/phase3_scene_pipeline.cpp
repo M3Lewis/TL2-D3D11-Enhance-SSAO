@@ -337,12 +337,14 @@ std::atomic<bool> g_sampler_hooked{false};
 std::atomic<bool> g_runtime_enhance_enabled{true};
 std::atomic<bool> g_f11_enhance_enabled{true};
 std::atomic<bool> g_p0_rimlit_enhance_enabled{true};
+std::atomic<bool> g_phase3_ibl_wrap_enabled{true};
 std::atomic<bool> g_frame_water_pass_hint{false};
 std::atomic<int> g_p2_filter_preset{1};
 std::atomic<int> g_phase3_strength_pct{100};
 std::atomic<int> g_f11_point_light_strength_pct{100};
 std::atomic<int> g_p0_rimlit_strength_pct{100};
 std::atomic<int> g_p2_filter_strength_pct{100};
+std::atomic<int> g_phase3_ibl_wrap_strength_pct{100};
 std::atomic<uint64_t> g_p2_bloom_last_tick_ms{0};
 std::atomic<uint64_t> g_p2_fxaa_last_tick_ms{0};
 std::atomic<Phase3PassObserverFn> g_pass_observer{nullptr};
@@ -1538,6 +1540,20 @@ void ApplyPassFogAndAlphaToExplicitPs(
             rain_wetness,
         };
         WriteExplicitPsNamedFloat4(ps_params, "p3EnhanceFlags", enhance_flags);
+
+        // N5: Continuous ToD dual-hemisphere sky reflection tint + strength
+        const float ibl_scale =
+            (g_phase3_ibl_wrap_enabled.load(std::memory_order_relaxed) && !IsMainMenuActive())
+                ? (static_cast<float>((std::clamp)(g_phase3_ibl_wrap_strength_pct.load(std::memory_order_relaxed), 0, 200)) * 0.01f)
+                : 0.0f;
+        float tod_sky[3]{};
+        ComputeContinuousTodSkyRgb(
+            GetEffectiveTimeOfDayFloat(),
+            IsDesertSceneActive(),
+            GetP2FilterPreset() == 2,
+            tod_sky);
+        const float ibl_sky_param[4] = {tod_sky[0], tod_sky[1], tod_sky[2], ibl_scale};
+        WriteExplicitPsNamedFloat4(ps_params, "p3IblSky", ibl_sky_param);
     }
 
     const float fc[4] = {fog_color.r, fog_color.g, fog_color.b, fog_color.a};
@@ -2689,6 +2705,29 @@ void SetP2FilterStrengthPct(int pct) {
 
 int GetP2FilterStrengthPct() {
     return (std::clamp)(g_p2_filter_strength_pct.load(std::memory_order_relaxed), 0, 200);
+}
+
+void SetPhase3IblWrapEnabled(bool enabled) {
+    g_phase3_ibl_wrap_enabled.store(enabled, std::memory_order_relaxed);
+}
+
+bool IsPhase3IblWrapEnabled() {
+    return g_phase3_ibl_wrap_enabled.load(std::memory_order_relaxed);
+}
+
+bool TogglePhase3IblWrap() {
+    bool expected = g_phase3_ibl_wrap_enabled.load(std::memory_order_relaxed);
+    while (!g_phase3_ibl_wrap_enabled.compare_exchange_weak(expected, !expected, std::memory_order_relaxed)) {
+    }
+    return !expected;
+}
+
+void SetPhase3IblWrapStrengthPct(int pct) {
+    g_phase3_ibl_wrap_strength_pct.store((std::clamp)(pct, 0, 200), std::memory_order_relaxed);
+}
+
+int GetPhase3IblWrapStrengthPct() {
+    return (std::clamp)(g_phase3_ibl_wrap_strength_pct.load(std::memory_order_relaxed), 0, 200);
 }
 
 bool WasP2PostShaderSeenRecently() {

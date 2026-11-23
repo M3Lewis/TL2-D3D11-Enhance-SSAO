@@ -72,6 +72,11 @@ float4 p3Flags2 = float4(0.0, 0.0, 0.0, 0.0);
 //   w = Dynamic weather rain wetness scale (0..1)
 float4 p3EnhanceFlags = float4(0.0, 0.0, 1.0, 0.0);
 
+// p3IblSky (N5):
+//   rgb = Continuous Time-of-Day analytical sky reflection tint
+//   w   = Dual-hemisphere IBL metallic sheen scale (0..2)
+float4 p3IblSky = float4(0.24, 0.31, 0.40, 1.0);
+
 float2 ResolveFixedFuncUv(float4 rawUv, bool isProjective)
 {
     if (isProjective)
@@ -567,6 +572,22 @@ float4 ShadeDiffPass(VS_OUTPUT input, bool doAlphaReject)
         // Dual-hemisphere ambient weighting: higher in shadow/ambient crevices, subtler on direct sunlit surfaces
         float hemiWeight = lerp(0.50, 0.95, shadowWeight) * saturate(p3Scale);
         litEnv *= lerp(float3(1.0, 1.0, 1.0), hemiTint, hemiWeight * 0.70);
+
+        // N5: Analytical Continuous ToD Dual-Hemisphere IBL Metallic Sheen & Grazing Sky Reflection
+        float iblScale = max(p3IblSky.w, 0.0);
+        if (iblScale > 0.005)
+        {
+            float3 R = reflect(-V, Nmicro);
+            float rUp = dot(R, viewUp);
+            float skyBlend = smoothstep(-0.35, 0.55, rUp);
+            float3 groundCol = lerp(float3(0.16, 0.12, 0.09), float3(0.08, 0.10, 0.15), saturate((0.35 - p3IblSky.r) * 2.5));
+            float3 envCol = lerp(groundCol, p3IblSky.rgb, skyBlend);
+            float fresnelEnv = F0 + (1.0 - F0) * pow(1.0 - NdotV, 3.5);
+            float specGate = lerp(0.14, 1.0, effSmoothness);
+            float sheenMask = saturate(0.35 + 0.65 * sd.reliefFade);
+            specAdd += envCol * surfTint * (fresnelEnv * specGate * iblScale * 0.48 * sheenMask * (0.45 + 0.55 * dirShadowAtten));
+            litEnv += envCol * (sd.metalMask * 0.24 * iblScale * sheenMask);
+        }
 
         float afPointScale = max(p3EnhanceFlags.x, 0.0);
         if (afPointScale > 0.01)

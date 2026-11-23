@@ -1,5 +1,4 @@
 #include "d3d11_ssr_pass.h"
-#include "d3d11_ssgi_pass.h"
 #include "d3d11_post_renderer.h"
 
 #define WIN32_LEAN_AND_MEAN
@@ -23,7 +22,7 @@ void ResetPostWorldDepthSnapshot() {
 
 bool ExecutePostWorldPass(const PostWorldRequest& req, PostLogFn logger) {
     if (!req.ctx || req.vp_width <= 0 || req.vp_height <= 0 || req.debug_mode > 0 ||
-        (!req.ssgi_enabled && !req.ssr_enabled && req.lut_preset <= 0)) {
+        (!req.ssr_enabled && req.lut_preset <= 0)) {
         return false;
     }
 
@@ -103,39 +102,6 @@ bool ExecutePostWorldPass(const PostWorldRequest& req, PostLogFn logger) {
     ao_vp.MaxDepth = 1.0f;
     ID3D11ShaderResourceView* null_srvs[2] = {nullptr, nullptr};
     bool did_any = false;
-
-    // 1-Bounce Horizon-Aware SSGI (first in PostWorld: post-world color+depth, strictly pre-SSR & pre-LUT & pre-UI)
-    if (!req.is_menu && req.ssgi_enabled && req.ssgi_strength_scale > 0.001f &&
-        g_st.post_world_depth_valid && g_st.depth_copy_srv && g_st.cb_params &&
-        EnsureWaterDepthTarget(dev, rt_desc.Width, rt_desc.Height, rt_desc.SampleDesc.Count, rt_desc.SampleDesc.Quality) &&
-        CopyRtvTextureToP2Copy(dev, req.ctx, src_rt_tex, rt_desc, rtv_desc)) {
-        D3D11_MAPPED_SUBRESOURCE mapped_cb{};
-        if (SUCCEEDED(req.ctx->Map(g_st.cb_params, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped_cb)) && mapped_cb.pData) {
-            std::memcpy(mapped_cb.pData, g_st.post_world_cb_bytes, sizeof(CbAoParams));
-            req.ctx->Unmap(g_st.cb_params, 0);
-        }
-        SsgiRequest ssgi_req{};
-        ssgi_req.dev = dev;
-        ssgi_req.ctx = req.ctx;
-        ssgi_req.target_rtv = target_rtv;
-        ssgi_req.scene_srv = g_st.p2_copy_srv;
-        ssgi_req.depth_srv = g_st.depth_copy_srv;
-        ssgi_req.water_depth_srv = g_st.water_depth_srv;
-        ssgi_req.rt_w = rt_desc.Width;
-        ssgi_req.rt_h = rt_desc.Height;
-        ssgi_req.vp_left = req.vp_left;
-        ssgi_req.vp_top = req.vp_top;
-        ssgi_req.vp_width = req.vp_width;
-        ssgi_req.vp_height = req.vp_height;
-        ssgi_req.strength_scale = req.ssgi_strength_scale;
-        ssgi_req.use_msaa_depth = g_st.post_world_msaa;
-        ssgi_req.is_desert = req.is_desert;
-        ssgi_req.is_menu = req.is_menu;
-        if (ExecuteSsgiPass(ssgi_req, logger)) {
-            did_any = true;
-        }
-        req.ctx->PSSetSamplers(0, 1, &g_st.samp_linear);
-    }
 
     // Item 5: Post-water SSR using depth snapshot from Ended86 and post-translucent color buffer (queues 0..94).
     const DepthVariantShaders* ds = g_st.post_world_msaa ? &g_st.shaders_msaa : &g_st.shaders_single;

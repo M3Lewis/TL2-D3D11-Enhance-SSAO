@@ -184,10 +184,10 @@ void PopulateDynamicAoAerialParams(const AoRenderRequest& req, CbAoParams& cb) {
     // Continuous ToD color LUT + World Ground Height Fog parameters
     if (req.height_fog_enabled && !req.is_menu && req.height_fog_strength_scale > 0.001f) {
         static const float kTodKeyColors[4][3] = {
-            {0.055f, 0.095f, 0.175f},  // 00:00 Midnight deep blue
-            {0.360f, 0.275f, 0.245f},  // 06:00 Dawn warm rose gold
-            {0.175f, 0.235f, 0.305f},  // 12:00 Noon clear sky blue
-            {0.420f, 0.240f, 0.165f},  // 18:00 Dusk amber violet
+            {0.085f, 0.145f, 0.265f},  // 00:00 Midnight visible twilight blue
+            {0.420f, 0.310f, 0.255f},  // 06:00 Dawn warm rose gold
+            {0.235f, 0.310f, 0.395f},  // 12:00 Noon clear sky blue
+            {0.460f, 0.265f, 0.185f},  // 18:00 Dusk amber violet
         };
         float tod = (req.time_of_day >= 0.0f) ? std::fmod(req.time_of_day, 24.0f) : 12.0f;
         if (tod < 0.0f) tod += 24.0f;
@@ -202,14 +202,14 @@ void PopulateDynamicAoAerialParams(const AoRenderRequest& req, CbAoParams& cb) {
         float hf_b = kTodKeyColors[seg0][2] + (kTodKeyColors[seg1][2] - kTodKeyColors[seg0][2]) * smooth_t;
 
         if (req.is_desert) {
-            hf_r = hf_r * 0.65f + 0.380f * 0.35f;
-            hf_g = hf_g * 0.65f + 0.290f * 0.35f;
-            hf_b = hf_b * 0.65f + 0.180f * 0.35f;
+            hf_r = hf_r * 0.62f + 0.400f * 0.38f;
+            hf_g = hf_g * 0.62f + 0.310f * 0.38f;
+            hf_b = hf_b * 0.62f + 0.200f * 0.38f;
         }
         if (is_dark) {
-            hf_r *= 0.72f;
-            hf_g *= 0.78f;
-            hf_b *= 0.88f;
+            hf_r *= 0.74f;
+            hf_g *= 0.80f;
+            hf_b *= 0.90f;
         }
         if (req.map_fog_mode != 0 &&
             std::isfinite(req.map_fog_rgb[0]) &&
@@ -220,31 +220,31 @@ void PopulateDynamicAoAerialParams(const AoRenderRequest& req, CbAoParams& cb) {
             const float fb = (std::clamp)(req.map_fog_rgb[2], 0.0f, 1.0f);
             const float fl = 0.299f * fr + 0.587f * fg + 0.114f * fb;
             if (fl > 0.015f) {
-                const float target_l = is_dark ? (std::clamp)(fl * 0.52f, 0.08f, 0.22f)
-                                               : (std::clamp)(fl * 0.72f, 0.16f, 0.34f);
+                const float target_l = is_dark ? (std::clamp)(fl * 0.56f, 0.10f, 0.26f)
+                                               : (std::clamp)(fl * 0.76f, 0.18f, 0.38f);
                 const float sc = target_l / fl;
-                hf_r = hf_r * 0.55f + (std::min)(0.52f, fr * sc) * 0.45f;
-                hf_g = hf_g * 0.55f + (std::min)(0.52f, fg * sc) * 0.45f;
-                hf_b = hf_b * 0.55f + (std::min)(0.52f, fb * sc) * 0.45f;
+                hf_r = hf_r * 0.60f + (std::min)(0.58f, fr * sc) * 0.40f;
+                hf_g = hf_g * 0.60f + (std::min)(0.58f, fg * sc) * 0.40f;
+                hf_b = hf_b * 0.60f + (std::min)(0.58f, fb * sc) * 0.40f;
             }
         }
         const float rain_clamp = (std::clamp)(req.rain_strength, 0.0f, 1.5f);
         if (rain_clamp > 0.01f) {
-            hf_r = hf_r * (1.0f - 0.22f * rain_clamp) + 0.16f * (0.22f * rain_clamp);
-            hf_g = hf_g * (1.0f - 0.22f * rain_clamp) + 0.21f * (0.22f * rain_clamp);
-            hf_b = hf_b * (1.0f - 0.22f * rain_clamp) + 0.27f * (0.22f * rain_clamp);
+            hf_r = hf_r * (1.0f - 0.22f * rain_clamp) + 0.20f * (0.22f * rain_clamp);
+            hf_g = hf_g * (1.0f - 0.22f * rain_clamp) + 0.25f * (0.22f * rain_clamp);
+            hf_b = hf_b * (1.0f - 0.22f * rain_clamp) + 0.32f * (0.22f * rain_clamp);
         }
 
-        const float base_max_alpha = (req.is_desert ? 0.16f : 0.22f) * (1.0f + 0.28f * rain_clamp);
+        const float base_max_alpha = (req.is_desert ? 0.24f : 0.28f) * (1.0f + 0.30f * rain_clamp);
         const float h_scale = (std::clamp)(req.height_fog_strength_scale, 0.0f, 2.0f);
         cb.height_fog_color[0] = hf_r;
         cb.height_fog_color[1] = hf_g;
         cb.height_fog_color[2] = hf_b;
-        cb.height_fog_color[3] = (std::clamp)(base_max_alpha * h_scale, 0.0f, 0.55f);
-        cb.height_fog_shape[0] = req.is_desert ? 0.22f : 0.32f;   // heightFalloffK
-        cb.height_fog_shape[1] = req.is_desert ? 0.014f : 0.020f; // distDensity
-        cb.height_fog_shape[2] = -0.35f;                          // baseOffsetY
-        cb.height_fog_shape[3] = (tod >= 5.0f && tod <= 19.5f && !is_dark) ? 0.25f : 0.08f;
+        cb.height_fog_color[3] = (std::clamp)(base_max_alpha * h_scale, 0.0f, 0.62f);
+        cb.height_fog_shape[0] = req.is_desert ? 0.48f : 0.58f;   // strong valley/cliff separation
+        cb.height_fog_shape[1] = req.is_desert ? 0.055f : 0.068f; // isometric 20-38m distance ramp
+        cb.height_fog_shape[2] = -0.20f;                          // baseOffsetY
+        cb.height_fog_shape[3] = (tod >= 5.0f && tod <= 19.5f && !is_dark) ? 0.26f : 0.10f;
     } else {
         cb.height_fog_color[0] = 0.0f;
         cb.height_fog_color[1] = 0.0f;
@@ -258,7 +258,7 @@ void PopulateDynamicAoAerialParams(const AoRenderRequest& req, CbAoParams& cb) {
 }
 bool ExecuteAoPass(const AoRenderRequest& req, PostLogFn logger) {
     const bool has_atmos = req.aerial_enabled || req.height_fog_enabled;
-    const bool need_depth = req.ao_enabled || req.capture_particle_depth || has_atmos || req.ssr_enabled || req.ssgi_enabled;
+    const bool need_depth = req.ao_enabled || req.capture_particle_depth || has_atmos || req.ssr_enabled;
     if (!req.ctx || !req.proj_4x4 || req.vp_width <= 0 || req.vp_height <= 0 || !need_depth) {
         return false;
     }

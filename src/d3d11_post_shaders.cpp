@@ -475,12 +475,13 @@ void ComputeAerialPerspective(int2 pix, float rawC, out float3 hazeRgb, out floa
         float3 P = ReconstructPosFromDist(pix, dC);
         float worldY = dot(P, gInvViewRow1.xyz) + gInvViewRow1.w;
         float anchorY = EstimateGroundAnchorY();
-        float relH = max(worldY - anchorY + gHeightFogShape.z, -0.45f);
-        float heightAtten = exp(-relH * gHeightFogShape.x);
-        float distAtten = 1.0f - exp(-max(dC - 5.5f, 0.0f) * gHeightFogShape.y);
-        hA = clamp(gHeightFogColor.a * heightAtten * distAtten, 0.0f, gHeightFogColor.a);
-
+        float relH = max(worldY - anchorY + gHeightFogShape.z, -2.0f);
+        float heightAtten = min(exp(-relH * gHeightFogShape.x), 1.35f);
+        float distAtten = 1.0f - exp(-max(dC - 13.5f, 0.0f) * gHeightFogShape.y);
         float2 uv = (float2(pix) + 0.5f - gVpRect.xy) / max(gVpRect.zw, float2(1.0f, 1.0f));
+        float heroClear = lerp(0.45f, 1.0f, smoothstep(0.06f, 0.26f, length(uv - float2(0.50f, 0.52f))));
+        hA = clamp(gHeightFogColor.a * heightAtten * distAtten * heroClear, 0.0f, 0.62f);
+
         float2 toPx = uv - float2(0.5f, 0.5f);
         float toLenSq = dot(toPx, toPx);
         float scatter = 0.0f;

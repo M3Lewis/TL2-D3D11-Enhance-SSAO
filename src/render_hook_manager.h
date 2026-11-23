@@ -31,10 +31,6 @@ void SetSsrEnabled(bool enabled);
 bool IsSsrEnabled();
 bool ToggleSsrEnabled();
 
-void SetSsgiEnabled(bool enabled);
-bool IsSsgiEnabled();
-bool ToggleSsgiEnabled();
-
 void SetHeightFogEnabled(bool enabled);
 bool IsHeightFogEnabled();
 bool ToggleHeightFogEnabled();
@@ -53,8 +49,6 @@ void SetAerialVignetteStrengthPct(int pct);
 int GetAerialVignetteStrengthPct();
 void SetSsrStrengthPct(int pct);
 int GetSsrStrengthPct();
-void SetSsgiStrengthPct(int pct);
-int GetSsgiStrengthPct();
 void SetHeightFogStrengthPct(int pct);
 int GetHeightFogStrengthPct();
 void SetLutStrengthPct(int pct);
@@ -94,9 +88,6 @@ inline bool ToggleP2AerialVignetteEnabled() { return ToggleAerialVignetteEnabled
 inline void SetP2SsrEnabled(bool e) { SetSsrEnabled(e); }
 inline bool IsP2SsrEnabled() { return IsSsrEnabled(); }
 inline bool ToggleP2SsrEnabled() { return ToggleSsrEnabled(); }
-inline void SetP2SsgiEnabled(bool e) { SetSsgiEnabled(e); }
-inline bool IsP2SsgiEnabled() { return IsSsgiEnabled(); }
-inline bool ToggleP2SsgiEnabled() { return ToggleSsgiEnabled(); }
 inline void SetP2HeightFogEnabled(bool e) { SetHeightFogEnabled(e); }
 inline bool IsP2HeightFogEnabled() { return IsHeightFogEnabled(); }
 inline bool ToggleP2HeightFogEnabled() { return ToggleHeightFogEnabled(); }
@@ -114,8 +105,6 @@ inline void SetP2AerialVignetteStrengthPct(int p) { SetAerialVignetteStrengthPct
 inline int GetP2AerialVignetteStrengthPct() { return GetAerialVignetteStrengthPct(); }
 inline void SetP2SsrStrengthPct(int p) { SetSsrStrengthPct(p); }
 inline int GetP2SsrStrengthPct() { return GetSsrStrengthPct(); }
-inline void SetP2SsgiStrengthPct(int p) { SetSsgiStrengthPct(p); }
-inline int GetP2SsgiStrengthPct() { return GetSsgiStrengthPct(); }
 inline void SetP2HeightFogStrengthPct(int p) { SetHeightFogStrengthPct(p); }
 inline int GetP2HeightFogStrengthPct() { return GetHeightFogStrengthPct(); }
 inline void SetP2LutStrengthPct(int p) { SetLutStrengthPct(p); }

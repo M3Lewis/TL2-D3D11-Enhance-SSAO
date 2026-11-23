@@ -28,9 +28,9 @@ namespace routeb {
 namespace {
 
 constexpr uint32_t kPanelWidth = 610;
-constexpr uint32_t kPanelHeight = 924;
+constexpr uint32_t kPanelHeight = 908;
 constexpr float kPanelMargin = 16.0f;
-constexpr int kTitleBarHeight = 40;
+constexpr int kTitleBarHeight = 42;
 constexpr int kPaddingX = 16;
 
 constexpr int kSliderZoneLeft = 408;
@@ -53,15 +53,11 @@ enum class HitTargetKind {
     TogglePhase3,
     ToggleAfPoint,
     ToggleP0RimLit,
-    ToggleP3PcfShadow,
-    ToggleP3Pom,
-    ToggleP3AntiTile,
     ToggleAo,
     ToggleP0Sscs,
     ToggleP1SoftParticles,
     ToggleP2AerialVignette,
     ToggleP2HeightFog,
-    ToggleP2Ssgi,
     ToggleP2Ssr,
     FilterOff,
     FilterHob,
@@ -116,10 +112,6 @@ enum class HitTargetKind {
     Slider9,
     Slider10,
     Slider11,
-    Slider12,
-    Slider13,
-    Slider14,
-    Slider15,
 };
 
 struct HitZone {
@@ -215,7 +207,7 @@ struct EffectSliderSpec {
     int (*get_fn)();
 };
 
-constexpr size_t kEffectSliderCount = 16;
+constexpr size_t kEffectSliderCount = 12;
 constexpr std::array<EffectSliderSpec, kEffectSliderCount> kSliderSpecs = {{
     {L"Phase3Strength", L"材质法线与边缘光", L"Surface Normals & Rim", &VisualConfig::phase3_strength, &SetPhase3StrengthPct, &GetPhase3StrengthPct},
     {L"AfPointStrength", L"动态点光增强", L"Dynamic Point Lights", &VisualConfig::af_point_strength, &SetF11PointLightStrengthPct, &GetF11PointLightStrengthPct},
@@ -228,14 +220,10 @@ constexpr std::array<EffectSliderSpec, kEffectSliderCount> kSliderSpecs = {{
     {L"P2FilterStrength", L"画面风格滤镜", L"Style Filter", &VisualConfig::p2_filter_strength, &SetP2FilterStrengthPct, &GetP2FilterStrengthPct},
     {L"P2LutStrength", L"3D LUT 电影调色", L"3D LUT Grading", &VisualConfig::p2_lut_strength, &SetP2LutStrengthPct, &GetP2LutStrengthPct},
     {L"WeatherRainStrength", L"雨天湿地反射", L"Rain & Wet Ground", &VisualConfig::weather_rain_strength, &SetWeatherRainStrengthPct, &GetWeatherRainStrengthPct},
-    {L"P2SsgiStrength", L"SSGI 间接光弹射", L"SSGI Indirect Bounce", &VisualConfig::p2_ssgi_strength, &SetP2SsgiStrengthPct, &GetP2SsgiStrengthPct},
     {L"P2HeightFogStrength", L"世界高度雾 (昼夜)", L"Height Fog (ToD)", &VisualConfig::p2_height_fog_strength, &SetP2HeightFogStrengthPct, &GetP2HeightFogStrengthPct},
-    {L"P3PcfShadowStrength", L"PCF 柔和投影", L"PCF Soft Shadows", &VisualConfig::p3_pcf_shadow_strength, &SetPhase3PcfShadowStrengthPct, &GetPhase3PcfShadowStrengthPct},
-    {L"P3PomStrength", L"陡峭视差贴图 (POM)", L"Steep POM + Shadow", &VisualConfig::p3_pom_strength, &SetPhase3PomStrengthPct, &GetPhase3PomStrengthPct},
-    {L"P3AntiTileStrength", L"防平铺 + 近距微粒", L"Anti-Tile + Grain", &VisualConfig::p3_antitile_strength, &SetPhase3AntiTileStrengthPct, &GetPhase3AntiTileStrengthPct},
 }};
 
-constexpr std::array<int, 13> kSection1SliderIndices = {0, 1, 2, 13, 14, 15, 3, 4, 5, 6, 12, 11, 7};
+constexpr std::array<int, 9> kSection1SliderIndices = {0, 1, 2, 3, 4, 5, 6, 11, 7};
 
 int PctFromTrackX(int local_x) {
     const float span = static_cast<float>(kSliderTrackRight - kSliderTrackLeft);
@@ -306,15 +294,11 @@ void SaveVisualConfigToSection(const wchar_t* section, const VisualConfig& cfg, 
     WriteIniInt(section, L"Phase3Enhance", cfg.phase3_enhance ? 1 : 0, path);
     WriteIniInt(section, L"AfPointEnhance", cfg.af_point_enhance ? 1 : 0, path);
     WriteIniInt(section, L"P0RimLitEnhance", cfg.p0_rimlit_enhance ? 1 : 0, path);
-    WriteIniInt(section, L"P3PcfShadowEnabled", cfg.p3_pcf_shadow_enabled ? 1 : 0, path);
-    WriteIniInt(section, L"P3PomEnabled", cfg.p3_pom_enabled ? 1 : 0, path);
-    WriteIniInt(section, L"P3AntiTileEnabled", cfg.p3_antitile_enabled ? 1 : 0, path);
     WriteIniInt(section, L"AoEnabled", cfg.ao_enabled ? 1 : 0, path);
     WriteIniInt(section, L"P0SscsEnabled", cfg.p0_sscs_enabled ? 1 : 0, path);
     WriteIniInt(section, L"P1SoftParticles", cfg.p1_soft_particles ? 1 : 0, path);
     WriteIniInt(section, L"P2AerialVignette", cfg.p2_aerial_vignette ? 1 : 0, path);
     WriteIniInt(section, L"P2HeightFogEnabled", cfg.p2_height_fog_enabled ? 1 : 0, path);
-    WriteIniInt(section, L"P2SsgiEnabled", cfg.p2_ssgi_enabled ? 1 : 0, path);
     WriteIniInt(section, L"P2SsrEnabled", cfg.p2_ssr_enabled ? 1 : 0, path);
     WriteIniInt(section, L"P2FilterPreset", ClampFilterPreset(cfg.p2_filter_preset), path);
     WriteIniInt(section, L"P2LutPreset", ClampLutPreset(cfg.p2_lut_preset), path);
@@ -335,15 +319,11 @@ VisualConfig LoadVisualConfigFromSection(
     out.phase3_enhance = ReadIniInt(section, L"Phase3Enhance", fallback.phase3_enhance ? 1 : 0, path) != 0;
     out.af_point_enhance = ReadIniInt(section, L"AfPointEnhance", fallback.af_point_enhance ? 1 : 0, path) != 0;
     out.p0_rimlit_enhance = ReadIniInt(section, L"P0RimLitEnhance", fallback.p0_rimlit_enhance ? 1 : 0, path) != 0;
-    out.p3_pcf_shadow_enabled = ReadIniInt(section, L"P3PcfShadowEnabled", fallback.p3_pcf_shadow_enabled ? 1 : 0, path) != 0;
-    out.p3_pom_enabled = ReadIniInt(section, L"P3PomEnabled", fallback.p3_pom_enabled ? 1 : 0, path) != 0;
-    out.p3_antitile_enabled = ReadIniInt(section, L"P3AntiTileEnabled", fallback.p3_antitile_enabled ? 1 : 0, path) != 0;
     out.ao_enabled = ReadIniInt(section, L"AoEnabled", fallback.ao_enabled ? 1 : 0, path) != 0;
     out.p0_sscs_enabled = ReadIniInt(section, L"P0SscsEnabled", fallback.p0_sscs_enabled ? 1 : 0, path) != 0;
     out.p1_soft_particles = ReadIniInt(section, L"P1SoftParticles", fallback.p1_soft_particles ? 1 : 0, path) != 0;
     out.p2_aerial_vignette = ReadIniInt(section, L"P2AerialVignette", fallback.p2_aerial_vignette ? 1 : 0, path) != 0;
     out.p2_height_fog_enabled = ReadIniInt(section, L"P2HeightFogEnabled", fallback.p2_height_fog_enabled ? 1 : 0, path) != 0;
-    out.p2_ssgi_enabled = ReadIniInt(section, L"P2SsgiEnabled", fallback.p2_ssgi_enabled ? 1 : 0, path) != 0;
     out.p2_ssr_enabled = ReadIniInt(section, L"P2SsrEnabled", fallback.p2_ssr_enabled ? 1 : 0, path) != 0;
     out.p2_filter_preset = ClampFilterPreset(
         ReadIniInt(section, L"P2FilterPreset", fallback.p2_filter_preset, path));
@@ -400,50 +380,46 @@ std::wstring FormatPresetSummary(const VisualConfig& cfg, bool english) {
     if (cfg.phase3_enhance) ++on_count;
     if (cfg.af_point_enhance) ++on_count;
     if (cfg.p0_rimlit_enhance) ++on_count;
-    if (cfg.p3_pcf_shadow_enabled) ++on_count;
-    if (cfg.p3_pom_enabled) ++on_count;
-    if (cfg.p3_antitile_enabled) ++on_count;
     if (cfg.ao_enabled) ++on_count;
     if (cfg.p0_sscs_enabled) ++on_count;
     if (cfg.p1_soft_particles) ++on_count;
     if (cfg.p2_aerial_vignette) ++on_count;
     if (cfg.p2_height_fog_enabled) ++on_count;
-    if (cfg.p2_ssgi_enabled) ++on_count;
     if (cfg.p2_ssr_enabled) ++on_count;
 
     wchar_t buf[64] = {};
-    swprintf_s(buf, L"%d/13·%ls%ls%ls", on_count, filter_str, lut_str, smaa_str);
+    swprintf_s(buf, L"%d/9·%ls%ls%ls", on_count, filter_str, lut_str, smaa_str);
     return buf;
 }
 
-constexpr size_t kHitZoneCount = 76;
+constexpr size_t kHitZoneCount = 68;
 
 std::array<HitZone, kHitZoneCount> BuildHitZones() {
     std::array<HitZone, kHitZoneCount> zones{};
     size_t idx = 0;
 
     // Close [X] & explicit [中] / [EN] language buttons (must be tested before TitleDrag!)
-    zones[idx++] = {RECT{static_cast<LONG>(kPanelWidth - 38), 6,
-                         static_cast<LONG>(kPanelWidth - 10), 34},
+    zones[idx++] = {RECT{static_cast<LONG>(kPanelWidth - 38), 7,
+                         static_cast<LONG>(kPanelWidth - 10), 35},
                     HitTargetKind::CloseButton, L"×", L"×"};
-    zones[idx++] = {RECT{484, 8, 522, 32},
+    zones[idx++] = {RECT{484, 9, 522, 33},
                     HitTargetKind::LangZh, L"中", L"中"};
-    zones[idx++] = {RECT{526, 8, 564, 32},
+    zones[idx++] = {RECT{526, 9, 564, 33},
                     HitTargetKind::LangEn, L"EN", L"EN"};
     // Title bar drag region
     zones[idx++] = {RECT{0, 0, static_cast<LONG>(kPanelWidth), kTitleBarHeight},
                     HitTargetKind::TitleDrag, L"", L""};
 
     // Select All / Clear All / Reset 100% buttons on Section 1 header bar
-    zones[idx++] = {RECT{428, 42, 508, 60}, HitTargetKind::ToggleAllOn, L"全部开启", L"Enable All"};
-    zones[idx++] = {RECT{514, 42, 594, 60}, HitTargetKind::ToggleAllOff, L"全部关闭", L"Disable All"};
+    zones[idx++] = {RECT{428, 46, 508, 65}, HitTargetKind::ToggleAllOn, L"全部开启", L"Enable All"};
+    zones[idx++] = {RECT{514, 46, 594, 65}, HitTargetKind::ToggleAllOff, L"全部关闭", L"Disable All"};
 
-    // 13 Feature checkboxes (left half of each row) — clean feature names only
+    // 9 Feature checkboxes (left half of each row) — clean feature names only
     const struct {
         HitTargetKind kind;
         const wchar_t* label_zh;
         const wchar_t* label_en;
-    } kToggles[13] = {
+    } kToggles[9] = {
         {HitTargetKind::TogglePhase3,
          L"材质法线细节与边缘光增强",
          L"Surface Normals & Rim Lighting"},
@@ -453,15 +429,6 @@ std::array<HitZone, kHitZoneCount> BuildHitZones() {
         {HitTargetKind::ToggleP0RimLit,
          L"微法线细节 / 金属高光 / 纹理自发光",
          L"Micro-Normals / Specular / Emissive"},
-        {HitTargetKind::ToggleP3PcfShadow,
-         L"PCF 柔和投影 + 冷色调阴影着色",
-         L"PCF Soft Shadows + Cool Tint"},
-        {HitTargetKind::ToggleP3Pom,
-         L"陡峭视差贴图 (POM) + 微自阴影",
-         L"Steep POM + Micro-Self-Shadow"},
-        {HitTargetKind::ToggleP3AntiTile,
-         L"世界防重复平铺 + 近距微表面",
-         L"World Anti-Tiling + Micro-Grain"},
         {HitTargetKind::ToggleAo,
          L"屏幕空间环境光遮蔽 (SSAO)",
          L"Screen-Space Ambient Occlusion (SSAO)"},
@@ -477,35 +444,32 @@ std::array<HitZone, kHitZoneCount> BuildHitZones() {
         {HitTargetKind::ToggleP2HeightFog,
          L"世界高度雾 + 昼夜连续色彩",
          L"World Height Fog + Continuous ToD"},
-        {HitTargetKind::ToggleP2Ssgi,
-         L"1-Bounce 屏幕空间全局光照 (SSGI)",
-         L"1-Bounce Indirect GI (SSGI)"},
         {HitTargetKind::ToggleP2Ssr,
          L"局部水面/湿地屏幕空间反射 (SSR)",
          L"Water / Puddle Reflections (SSR)"},
     };
-    int y = 65;
+    int y = 72;
     for (const auto& t : kToggles) {
-        zones[idx++] = {RECT{kPaddingX, y, kSliderZoneLeft - 4, y + 23},
+        zones[idx++] = {RECT{kPaddingX, y, kSliderZoneLeft - 4, y + 27},
                         t.kind, t.label_zh, t.label_en};
-        y += 26;
+        y += 30;
     }
 
     // Visual Style Filter pills
-    y = 427;
+    y = 370;
     const int pill_w = 186;
     const int pill_gap = 10;
-    zones[idx++] = {RECT{kPaddingX, y, kPaddingX + pill_w, y + 26},
+    zones[idx++] = {RECT{kPaddingX, y, kPaddingX + pill_w, y + 28},
                     HitTargetKind::FilterOff, L"关闭滤镜", L"Filter Off"};
     zones[idx++] = {RECT{kPaddingX + (pill_w + pill_gap), y,
-                         kPaddingX + (pill_w + pill_gap) + pill_w, y + 26},
+                         kPaddingX + (pill_w + pill_gap) + pill_w, y + 28},
                     HitTargetKind::FilterHob, L"Hob 明快", L"Hob Vibrant"};
     zones[idx++] = {RECT{kPaddingX + 2 * (pill_w + pill_gap), y,
-                         kPaddingX + 2 * (pill_w + pill_gap) + pill_w, y + 26},
+                         kPaddingX + 2 * (pill_w + pill_gap) + pill_w, y + 28},
                     HitTargetKind::FilterDark, L"暗黑胶片", L"Dark Film"};
 
     // 3D LUT Color Grading pills (4 pills)
-    y = 480;
+    y = 428;
     const int lut_w = 138;
     const int lut_gap = 8;
     const struct {
@@ -520,32 +484,32 @@ std::array<HitZone, kHitZoneCount> BuildHitZones() {
     };
     for (int i = 0; i < 4; ++i) {
         const int lx = kPaddingX + i * (lut_w + lut_gap);
-        zones[idx++] = {RECT{lx, y, lx + lut_w, y + 26},
+        zones[idx++] = {RECT{lx, y, lx + lut_w, y + 28},
                         kLuts[i].kind, kLuts[i].label_zh, kLuts[i].label_en};
     }
 
     // Section 4: SMAA 1x Anti-Aliasing pills (3 pills)
-    y = 533;
-    zones[idx++] = {RECT{kPaddingX, y, kPaddingX + pill_w, y + 26},
+    y = 486;
+    zones[idx++] = {RECT{kPaddingX, y, kPaddingX + pill_w, y + 28},
                     HitTargetKind::SmaaOff, L"关闭抗锯齿", L"SMAA Off"};
     zones[idx++] = {RECT{kPaddingX + (pill_w + pill_gap), y,
-                         kPaddingX + (pill_w + pill_gap) + pill_w, y + 26},
+                         kPaddingX + (pill_w + pill_gap) + pill_w, y + 28},
                     HitTargetKind::SmaaColor, L"Color (色彩)", L"Color (Fast)"};
     zones[idx++] = {RECT{kPaddingX + 2 * (pill_w + pill_gap), y,
-                         kPaddingX + 2 * (pill_w + pill_gap) + pill_w, y + 26},
+                         kPaddingX + 2 * (pill_w + pill_gap) + pill_w, y + 28},
                     HitTargetKind::SmaaDepthColor, L"Depth+Color (双检)", L"Depth+Color (Ultra)"};
 
     // Section 5: Weather & Time of Day
     // Row 1: Rain toggle + Slider 10
-    zones[idx++] = {RECT{kPaddingX, 586, kSliderZoneLeft - 4, 586 + 24},
+    zones[idx++] = {RECT{kPaddingX, 544, kSliderZoneLeft - 4, 544 + 27},
                     HitTargetKind::ToggleWeatherRain,
                     L"雨天湿地倒影 (地面动态水坑与波纹)",
                     L"Rain & Wet Ground (Puddles & Ripples)"};
-    zones[idx++] = {RECT{kSliderZoneLeft, 586, kSliderZoneRight, 586 + 24},
+    zones[idx++] = {RECT{kSliderZoneLeft, 544, kSliderZoneRight, 544 + 27},
                     HitTargetKind::Slider10, L"", L""};
 
     // Row 2: Time of Day Slider
-    zones[idx++] = {RECT{kSliderZoneLeft, 614, kSliderZoneRight, 614 + 24},
+    zones[idx++] = {RECT{kSliderZoneLeft, 576, kSliderZoneRight, 576 + 27},
                     HitTargetKind::SliderTime, L"", L""};
 
     // Row 3: 5 Time Pills (Auto, 06h, 12h, 18h, 24h)
@@ -564,23 +528,23 @@ std::array<HitZone, kHitZoneCount> BuildHitZones() {
     };
     for (int i = 0; i < 5; ++i) {
         const int px = kPaddingX + i * (time_pill_w + time_pill_gap);
-        zones[idx++] = {RECT{px, 642, px + time_pill_w, 642 + 24},
+        zones[idx++] = {RECT{px, 608, px + time_pill_w, 608 + 26},
                         kTimePills[i].kind, kTimePills[i].label_zh, kTimePills[i].label_en};
     }
 
     // Section 6: Built-in presets
-    y = 695;
-    zones[idx++] = {RECT{kPaddingX, y, kPaddingX + pill_w, y + 26},
+    y = 666;
+    zones[idx++] = {RECT{kPaddingX, y, kPaddingX + pill_w, y + 28},
                     HitTargetKind::BuiltinFullHd, L"全开高清", L"Full HD+"};
     zones[idx++] = {RECT{kPaddingX + (pill_w + pill_gap), y,
-                         kPaddingX + (pill_w + pill_gap) + pill_w, y + 26},
+                         kPaddingX + (pill_w + pill_gap) + pill_w, y + 28},
                     HitTargetKind::BuiltinDarkDungeon, L"暗黑地牢", L"Dark Dungeon"};
     zones[idx++] = {RECT{kPaddingX + 2 * (pill_w + pill_gap), y,
-                         kPaddingX + 2 * (pill_w + pill_gap) + pill_w, y + 26},
+                         kPaddingX + 2 * (pill_w + pill_gap) + pill_w, y + 28},
                     HitTargetKind::BuiltinVanilla, L"纯原版", L"Vanilla"};
 
     // Section 7: 10 Custom preset slots (2 columns x 5 rows, Load + Save)
-    const int base_y = 750;
+    const int base_y = 724;
     const int col_w = 284;
     const int col_gap = 10;
     const int save_w = 46;
@@ -590,27 +554,27 @@ std::array<HitZone, kHitZoneCount> BuildHitZones() {
         const int col = i % 2;
         const int row = i / 2;
         const int cx = kPaddingX + col * (col_w + col_gap);
-        const int ry = base_y + row * 28;
+        const int ry = base_y + row * 30;
         const auto load_kind = static_cast<HitTargetKind>(static_cast<int>(HitTargetKind::CustomLoad0) + i);
         const auto save_kind = static_cast<HitTargetKind>(static_cast<int>(HitTargetKind::CustomSave0) + i);
-        zones[idx++] = {RECT{cx, ry, cx + load_w, ry + 25}, load_kind, L"", L""};
-        zones[idx++] = {RECT{cx + load_w + save_gap, ry, cx + col_w, ry + 25}, save_kind, L"保存", L"Save"};
+        zones[idx++] = {RECT{cx, ry, cx + load_w, ry + 27}, load_kind, L"", L""};
+        zones[idx++] = {RECT{cx + load_w + save_gap, ry, cx + col_w, ry + 27}, save_kind, L"保存", L"Save"};
     }
 
     // Reset all effect strengths back to 100%
-    zones[idx++] = {RECT{332, 42, 420, 60}, HitTargetKind::ResetStrengths, L"强度归位", L"Reset 100%"};
+    zones[idx++] = {RECT{332, 46, 420, 65}, HitTargetKind::ResetStrengths, L"强度归位", L"Reset 100%"};
 
-    // Sliders on the right half of the 13 toggle rows
-    y = 65;
-    for (int i = 0; i < 13; ++i) {
+    // Sliders on the right half of the 9 toggle rows (indices 0..6, 11, 7)
+    y = 72;
+    for (int i = 0; i < 9; ++i) {
         const int slider_idx = kSection1SliderIndices[static_cast<size_t>(i)];
         const auto s_kind = static_cast<HitTargetKind>(static_cast<int>(HitTargetKind::Slider0) + slider_idx);
-        zones[idx++] = {RECT{kSliderZoneLeft, y, kSliderZoneRight, y + 23}, s_kind, L"", L""};
-        y += 26;
+        zones[idx++] = {RECT{kSliderZoneLeft, y, kSliderZoneRight, y + 27}, s_kind, L"", L""};
+        y += 30;
     }
     // Sliders 8..9 on Section 2 & Section 3 headers
-    zones[idx++] = {RECT{kSliderZoneLeft, 402, kSliderZoneRight, 423}, HitTargetKind::Slider8, L"", L""};
-    zones[idx++] = {RECT{kSliderZoneLeft, 455, kSliderZoneRight, 476}, HitTargetKind::Slider9, L"", L""};
+    zones[idx++] = {RECT{kSliderZoneLeft, 344, kSliderZoneRight, 366}, HitTargetKind::Slider8, L"", L""};
+    zones[idx++] = {RECT{kSliderZoneLeft, 402, kSliderZoneRight, 424}, HitTargetKind::Slider9, L"", L""};
 
     return zones;
 }
@@ -956,21 +920,17 @@ void PaintPanelToDibLocked() {
                     DT_CENTER | DT_VCENTER);
     }
 
-    // Section 1: 13 Feature toggles + batch [Reset] / [Enable All] / [Disable All]
-    DrawSectionHeader(dc, 43, PickLang(L"实时渲染与画质开关", L"Real-Time Render Toggles"));
-    const bool toggle_states[13] = {
+    // Section 1: 9 Feature toggles + batch [Reset] / [Enable All] / [Disable All]
+    DrawSectionHeader(dc, 48, PickLang(L"实时渲染与画质开关", L"Real-Time Render Toggles"));
+    const bool toggle_states[9] = {
         cfg.phase3_enhance,
         cfg.af_point_enhance,
         cfg.p0_rimlit_enhance,
-        cfg.p3_pcf_shadow_enabled,
-        cfg.p3_pom_enabled,
-        cfg.p3_antitile_enabled,
         cfg.ao_enabled,
         cfg.p0_sscs_enabled,
         cfg.p1_soft_particles,
         cfg.p2_aerial_vignette,
         cfg.p2_height_fog_enabled,
-        cfg.p2_ssgi_enabled,
         cfg.p2_ssr_enabled,
     };
     const bool all_on = std::all_of(std::begin(toggle_states), std::end(toggle_states), [](bool v) { return v; });
@@ -1010,7 +970,7 @@ void PaintPanelToDibLocked() {
                     all_off ? RGB(255, 240, 242) : RGB(224, 182, 188),
                     zones[off_idx].rect, ZoneLabel(zones[off_idx]), DT_CENTER | DT_VCENTER);
     }
-    for (int i = 0; i < 13; ++i) {
+    for (int i = 0; i < 9; ++i) {
         const size_t z_idx = ZoneIndexByKind(
             static_cast<HitTargetKind>(static_cast<int>(HitTargetKind::TogglePhase3) + i));
         const int slider_idx = kSection1SliderIndices[static_cast<size_t>(i)];
@@ -1030,7 +990,7 @@ void PaintPanelToDibLocked() {
         DrawBorderRect(dc, row_r, row_fill, row_border, 6);
 
         // Checkbox square
-        const RECT box{tog_r.left + 8, tog_r.top + 4, tog_r.left + 23, tog_r.top + 19};
+        const RECT box{tog_r.left + 8, tog_r.top + 5, tog_r.left + 25, tog_r.top + 22};
         DrawBorderRect(dc, box,
                        on ? RGB(42, 168, 116) : RGB(20, 24, 34),
                        on ? RGB(105, 232, 178) : RGB(96, 110, 136), 4);
@@ -1040,7 +1000,7 @@ void PaintPanelToDibLocked() {
         }
 
         // Label + status tag
-        RECT text_r{tog_r.left + 30, tog_r.top, tog_r.right - 38, tog_r.bottom};
+        RECT text_r{tog_r.left + 32, tog_r.top, tog_r.right - 38, tog_r.bottom};
         DrawTextBox(dc, g_panel.font_body,
                     on ? RGB(232, 240, 250) : RGB(148, 158, 176),
                     text_r, ZoneLabel(zones[z_idx]), DT_LEFT | DT_VCENTER);
@@ -1057,9 +1017,9 @@ void PaintPanelToDibLocked() {
     }
 
     // Section 2: Style Filter pills + strength slider on header bar
-    DrawSectionHeader(dc, 405, PickLang(L"画面风格滤镜", L"Visual Style Filter"));
+    DrawSectionHeader(dc, 348, PickLang(L"画面风格滤镜", L"Visual Style Filter"));
     DrawTextBox(dc, g_panel.font_small, RGB(154, 176, 206),
-                RECT{344, 402, 406, 423}, PickLang(L"强度", L"Strength"), DT_RIGHT | DT_VCENTER);
+                RECT{344, 344, 406, 366}, PickLang(L"强度", L"Strength"), DT_RIGHT | DT_VCENTER);
     {
         const size_t s8_idx = ZoneIndexByKind(HitTargetKind::Slider8);
         DrawIntensitySlider(dc, zones[s8_idx].rect, cfg.p2_filter_strength,
@@ -1084,13 +1044,13 @@ void PaintPanelToDibLocked() {
     }
 
     // Section 3: 3D LUT Color Grading pills + hint + strength slider on header bar
-    DrawSectionHeader(dc, 458, PickLang(L"3D LUT 电影调色", L"3D LUT Color Grading"));
+    DrawSectionHeader(dc, 406, PickLang(L"3D LUT 电影调色", L"3D LUT Color Grading"));
     DrawTextBox(dc, g_panel.font_small, RGB(218, 182, 116),
-                RECT{174, 455, 344, 476},
+                RECT{174, 402, 344, 424},
                 PickLang(L"外部: TL2_CustomLUT.cube", L"File: TL2_CustomLUT.cube"),
                 DT_LEFT | DT_VCENTER);
     DrawTextBox(dc, g_panel.font_small, RGB(154, 176, 206),
-                RECT{344, 455, 406, 476}, PickLang(L"强度", L"Strength"), DT_RIGHT | DT_VCENTER);
+                RECT{344, 402, 406, 424}, PickLang(L"强度", L"Strength"), DT_RIGHT | DT_VCENTER);
     {
         const size_t s9_idx = ZoneIndexByKind(HitTargetKind::Slider9);
         DrawIntensitySlider(dc, zones[s9_idx].rect, cfg.p2_lut_strength,
@@ -1115,9 +1075,9 @@ void PaintPanelToDibLocked() {
     }
 
     // Section 4: SMAA 1x Anti-Aliasing (3 pills)
-    DrawSectionHeader(dc, 511, PickLang(L"SMAA 1x 亚像素形态学抗锯齿", L"SMAA 1x Anti-Aliasing"));
+    DrawSectionHeader(dc, 464, PickLang(L"SMAA 1x 亚像素形态学抗锯齿", L"SMAA 1x Anti-Aliasing"));
     DrawTextBox(dc, g_panel.font_small, RGB(154, 176, 206),
-                RECT{344, 508, 594, 529},
+                RECT{344, 460, 594, 482},
                 PickLang(L"0.2ms 极速 · 3D轮廓平滑 · 纯净UI", L"0.2ms · Clean UI · Crisp Silhouettes"),
                 DT_RIGHT | DT_VCENTER);
     for (int i = 0; i < 3; ++i) {
@@ -1137,7 +1097,7 @@ void PaintPanelToDibLocked() {
     }
 
     // Section 5: Weather & Time of Day
-    DrawSectionHeader(dc, 564, PickLang(L"天气与游戏环境时间", L"Weather & In-Game Time of Day"));
+    DrawSectionHeader(dc, 522, PickLang(L"天气与游戏环境时间", L"Weather & In-Game Time of Day"));
 
     // Row 1: Rain toggle + Slider 10
     {
@@ -1157,7 +1117,7 @@ void PaintPanelToDibLocked() {
         DrawBorderRect(dc, row_r, row_fill, row_border, 6);
 
         // Checkbox square
-        const RECT box{tog_r.left + 8, tog_r.top + 4, tog_r.left + 24, tog_r.top + 20};
+        const RECT box{tog_r.left + 8, tog_r.top + 5, tog_r.left + 25, tog_r.top + 22};
         DrawBorderRect(dc, box,
                        rain_on ? RGB(42, 168, 116) : RGB(20, 24, 34),
                        rain_on ? RGB(105, 232, 178) : RGB(96, 110, 136), 4);
@@ -1184,7 +1144,7 @@ void PaintPanelToDibLocked() {
     // Row 2: Time of Day Label + Time Slider
     {
         const size_t time_s_idx = ZoneIndexByKind(HitTargetKind::SliderTime);
-        const RECT label_r{kPaddingX, 614, kSliderZoneLeft - 4, 614 + 24};
+        const RECT label_r{kPaddingX, 576, kSliderZoneLeft - 4, 576 + 27};
         const bool sld_hover = (g_panel.hover_index == static_cast<int>(time_s_idx));
         const bool sld_drag = (g_panel.active_slider_index == kSliderTimeIndex);
         const bool locked = cfg.time_of_day_locked && (cfg.time_of_day_hours >= 0);
@@ -1192,7 +1152,7 @@ void PaintPanelToDibLocked() {
         const COLORREF row_fill = (sld_hover || sld_drag) ? RGB(32, 41, 58) : RGB(24, 30, 42);
         const COLORREF row_border = (sld_hover || sld_drag) ? RGB(92, 152, 226)
                                                             : (locked ? RGB(144, 108, 48) : RGB(42, 49, 64));
-        const RECT row_r{kPaddingX, 614, kSliderZoneRight, 614 + 24};
+        const RECT row_r{kPaddingX, 576, kSliderZoneRight, 576 + 27};
         DrawBorderRect(dc, row_r, row_fill, row_border, 6);
 
         RECT text_r{label_r.left + 12, label_r.top, label_r.right - 10, label_r.bottom};
@@ -1246,7 +1206,7 @@ void PaintPanelToDibLocked() {
     }
 
     // Section 6: Built-in presets
-    DrawSectionHeader(dc, 672, PickLang(L"内置预设 (一键切换)", L"Built-in Presets (One-Click)"));
+    DrawSectionHeader(dc, 644, PickLang(L"内置预设 (一键切换)", L"Built-in Presets (One-Click)"));
     for (int i = 0; i < 3; ++i) {
         const size_t z_idx = ZoneIndexByKind(
             static_cast<HitTargetKind>(static_cast<int>(HitTargetKind::BuiltinFullHd) + i));
@@ -1264,7 +1224,7 @@ void PaintPanelToDibLocked() {
     }
 
     // Section 7: 10 Custom Presets (2 columns x 5 rows)
-    DrawSectionHeader(dc, 727,
+    DrawSectionHeader(dc, 702,
                       PickLang(L"自定义预设 (10个槽位 · 点击名称切换 / 点 [保存] 覆盖)",
                                L"Custom Presets (10 Slots · Click Slot to Load / [Save])"));
     for (int i = 0; i < kCustomPresetCount; ++i) {
@@ -1368,8 +1328,8 @@ void HandleHitClickLocked(int hit_idx) {
                 spec.set_fn(100);
             }
             g_panel.active_custom_slot = -1;
-            SetStatusBilingualLocked(L"已将全部 16 项渲染强度恢复为默认 100%",
-                                     L"All 16 render strength sliders reset to 100%");
+            SetStatusBilingualLocked(L"已将全部 12 项渲染强度恢复为默认 100%",
+                                     L"All 12 render strength sliders reset to 100%");
             break;
         }
         case HitTargetKind::ToggleAllOn:
@@ -1379,24 +1339,20 @@ void HandleHitClickLocked(int hit_idx) {
             next_cfg.phase3_enhance = enable_all;
             next_cfg.af_point_enhance = enable_all;
             next_cfg.p0_rimlit_enhance = enable_all;
-            next_cfg.p3_pcf_shadow_enabled = enable_all;
-            next_cfg.p3_pom_enabled = enable_all;
-            next_cfg.p3_antitile_enabled = enable_all;
             next_cfg.ao_enabled = enable_all;
             next_cfg.p0_sscs_enabled = enable_all;
             next_cfg.p1_soft_particles = enable_all;
             next_cfg.p2_aerial_vignette = enable_all;
             next_cfg.p2_height_fog_enabled = enable_all;
-            next_cfg.p2_ssgi_enabled = enable_all;
             next_cfg.p2_ssr_enabled = enable_all;
             ApplyVisualConfigToEngine(next_cfg);
             g_panel.active_custom_slot = -1;
             if (enable_all) {
-                SetStatusBilingualLocked(L"已全部开启 13 项实时渲染效果",
-                                         L"Enabled all 13 real-time render effects");
+                SetStatusBilingualLocked(L"已全部开启 9 项实时渲染效果",
+                                         L"Enabled all 9 real-time render effects");
             } else {
-                SetStatusBilingualLocked(L"已全部关闭 13 项实时渲染效果 (便于原版对比)",
-                                         L"Disabled all 13 render effects (vanilla comparison)");
+                SetStatusBilingualLocked(L"已全部关闭 9 项实时渲染效果 (便于原版对比)",
+                                         L"Disabled all 9 render effects (vanilla comparison)");
             }
             break;
         }
@@ -1497,42 +1453,6 @@ void HandleHitClickLocked(int hit_idx) {
             }
             break;
         }
-        case HitTargetKind::ToggleP3PcfShadow: {
-            const bool next = TogglePhase3PcfShadowEnabled();
-            g_panel.active_custom_slot = -1;
-            if (next) {
-                SetStatusBilingualLocked(L"已开启: PCF 柔和投影 + 冷色调阴影着色",
-                                         L"Enabled: PCF Soft Shadows + Cool Tint");
-            } else {
-                SetStatusBilingualLocked(L"已关闭: PCF 柔和投影 + 冷色调阴影着色",
-                                         L"Disabled: PCF Soft Shadows + Cool Tint");
-            }
-            break;
-        }
-        case HitTargetKind::ToggleP3Pom: {
-            const bool next = TogglePhase3PomEnabled();
-            g_panel.active_custom_slot = -1;
-            if (next) {
-                SetStatusBilingualLocked(L"已开启: 陡峭视差贴图 (POM) + 微自阴影",
-                                         L"Enabled: Steep POM + Micro-Self-Shadow");
-            } else {
-                SetStatusBilingualLocked(L"已关闭: 陡峭视差贴图 (POM) + 微自阴影",
-                                         L"Disabled: Steep POM + Micro-Self-Shadow");
-            }
-            break;
-        }
-        case HitTargetKind::ToggleP3AntiTile: {
-            const bool next = TogglePhase3AntiTileEnabled();
-            g_panel.active_custom_slot = -1;
-            if (next) {
-                SetStatusBilingualLocked(L"已开启: 世界空间防重复平铺 + 近距微表面",
-                                         L"Enabled: World Anti-Tiling + Micro-Grain");
-            } else {
-                SetStatusBilingualLocked(L"已关闭: 世界空间防重复平铺 + 近距微表面",
-                                         L"Disabled: World Anti-Tiling + Micro-Grain");
-            }
-            break;
-        }
         case HitTargetKind::ToggleP2HeightFog: {
             const bool next = ToggleP2HeightFogEnabled();
             g_panel.active_custom_slot = -1;
@@ -1542,18 +1462,6 @@ void HandleHitClickLocked(int hit_idx) {
             } else {
                 SetStatusBilingualLocked(L"已关闭: 世界高度雾 + 昼夜连续色彩",
                                          L"Disabled: World Height Fog + Continuous ToD");
-            }
-            break;
-        }
-        case HitTargetKind::ToggleP2Ssgi: {
-            const bool next = ToggleP2SsgiEnabled();
-            g_panel.active_custom_slot = -1;
-            if (next) {
-                SetStatusBilingualLocked(L"已开启: 1-Bounce 屏幕空间全局光照 (SSGI)",
-                                         L"Enabled: 1-Bounce Indirect GI (SSGI)");
-            } else {
-                SetStatusBilingualLocked(L"已关闭: 1-Bounce 屏幕空间全局光照",
-                                         L"Disabled: 1-Bounce Indirect GI (SSGI)");
             }
             break;
         }
@@ -1919,7 +1827,7 @@ LRESULT CALLBACK PanelHookWndProc(
                                 g_panel.drag_offset_x = local_x;
                                 g_panel.drag_offset_y = local_y;
                                 need_set_capture = true;
-                            } else if (kind >= HitTargetKind::Slider0 && kind <= HitTargetKind::Slider15) {
+                            } else if (kind >= HitTargetKind::Slider0 && kind <= HitTargetKind::Slider11) {
                                 if (local_x <= kSliderTrackRight + 8) {
                                     const int s_idx = static_cast<int>(kind) - static_cast<int>(HitTargetKind::Slider0);
                                     g_panel.active_slider_index = s_idx;
@@ -1950,7 +1858,7 @@ LRESULT CALLBACK PanelHookWndProc(
                         } else if (msg == WM_RBUTTONDOWN && new_hover >= 0) {
                             const HitTargetKind kind =
                                 GetHitZones()[static_cast<size_t>(new_hover)].kind;
-                            if (kind >= HitTargetKind::Slider0 && kind <= HitTargetKind::Slider15) {
+                            if (kind >= HitTargetKind::Slider0 && kind <= HitTargetKind::Slider11) {
                                 const int s_idx = static_cast<int>(kind) - static_cast<int>(HitTargetKind::Slider0);
                                 ApplyEffectStrengthByIndex(s_idx, 100);
                                 SaveConfigFileLocked(nullptr);
@@ -1967,7 +1875,7 @@ LRESULT CALLBACK PanelHookWndProc(
                             const HitTargetKind kind =
                                 GetHitZones()[static_cast<size_t>(new_hover)].kind;
                             int s_idx = -1;
-                            if (kind >= HitTargetKind::Slider0 && kind <= HitTargetKind::Slider15) {
+                            if (kind >= HitTargetKind::Slider0 && kind <= HitTargetKind::Slider11) {
                                 s_idx = static_cast<int>(kind) - static_cast<int>(HitTargetKind::Slider0);
                             } else if (kind >= HitTargetKind::TogglePhase3 && kind <= HitTargetKind::ToggleP2Ssr) {
                                 const size_t row = static_cast<size_t>(kind) - static_cast<size_t>(HitTargetKind::TogglePhase3);
@@ -2033,15 +1941,11 @@ VisualConfig CaptureVisualConfigFromEngine() {
     cfg.phase3_enhance = IsPhase3RuntimeEnhanceEnabled();
     cfg.af_point_enhance = IsF11VisualEnhanceEnabled();
     cfg.p0_rimlit_enhance = IsP0RimLitEnhanceEnabled();
-    cfg.p3_pcf_shadow_enabled = IsPhase3PcfShadowEnabled();
-    cfg.p3_pom_enabled = IsPhase3PomEnabled();
-    cfg.p3_antitile_enabled = IsPhase3AntiTileEnabled();
     cfg.ao_enabled = IsRouteCAoRuntimeEnabled();
     cfg.p0_sscs_enabled = IsRouteCSscsRuntimeEnabled();
     cfg.p1_soft_particles = IsP1SoftParticlesEnabled();
     cfg.p2_aerial_vignette = IsP2AerialVignetteEnabled();
     cfg.p2_height_fog_enabled = IsP2HeightFogEnabled();
-    cfg.p2_ssgi_enabled = IsP2SsgiEnabled();
     cfg.p2_ssr_enabled = IsP2SsrEnabled();
     cfg.p2_filter_preset = ClampFilterPreset(GetP2FilterPreset());
     cfg.p2_lut_preset = ClampLutPreset(GetP2LutPreset());
@@ -2060,15 +1964,11 @@ void ApplyVisualConfigToEngine(const VisualConfig& cfg) {
     SetPhase3RuntimeEnhanceEnabled(cfg.phase3_enhance);
     SetF11VisualEnhanceEnabled(cfg.af_point_enhance);
     SetP0RimLitEnhanceEnabled(cfg.p0_rimlit_enhance);
-    SetPhase3PcfShadowEnabled(cfg.p3_pcf_shadow_enabled);
-    SetPhase3PomEnabled(cfg.p3_pom_enabled);
-    SetPhase3AntiTileEnabled(cfg.p3_antitile_enabled);
     SetRouteCAoRuntimeEnabled(cfg.ao_enabled);
     SetRouteCSscsRuntimeEnabled(cfg.p0_sscs_enabled);
     SetP1SoftParticlesEnabled(cfg.p1_soft_particles);
     SetP2AerialVignetteEnabled(cfg.p2_aerial_vignette);
     SetP2HeightFogEnabled(cfg.p2_height_fog_enabled);
-    SetP2SsgiEnabled(cfg.p2_ssgi_enabled);
     SetP2SsrEnabled(cfg.p2_ssr_enabled);
     SetP2FilterPreset(ClampFilterPreset(cfg.p2_filter_preset));
     SetP2LutPreset(ClampLutPreset(cfg.p2_lut_preset));
@@ -2147,15 +2047,11 @@ VisualConfig MakeBuiltinPreset(int builtin_index) {
             cfg.phase3_enhance = true;
             cfg.af_point_enhance = true;
             cfg.p0_rimlit_enhance = true;
-            cfg.p3_pcf_shadow_enabled = true;
-            cfg.p3_pom_enabled = true;
-            cfg.p3_antitile_enabled = true;
             cfg.ao_enabled = true;
             cfg.p0_sscs_enabled = true;
             cfg.p1_soft_particles = true;
             cfg.p2_aerial_vignette = true;
             cfg.p2_height_fog_enabled = true;
-            cfg.p2_ssgi_enabled = true;
             cfg.p2_ssr_enabled = true;
             cfg.p2_filter_preset = 1;
             cfg.p2_lut_preset = 0;
@@ -2165,15 +2061,11 @@ VisualConfig MakeBuiltinPreset(int builtin_index) {
             cfg.phase3_enhance = true;
             cfg.af_point_enhance = true;
             cfg.p0_rimlit_enhance = true;
-            cfg.p3_pcf_shadow_enabled = true;
-            cfg.p3_pom_enabled = true;
-            cfg.p3_antitile_enabled = true;
             cfg.ao_enabled = true;
             cfg.p0_sscs_enabled = true;
             cfg.p1_soft_particles = true;
             cfg.p2_aerial_vignette = true;
             cfg.p2_height_fog_enabled = true;
-            cfg.p2_ssgi_enabled = true;
             cfg.p2_ssr_enabled = true;
             cfg.p2_filter_preset = 2;
             cfg.p2_lut_preset = 0;
@@ -2184,15 +2076,11 @@ VisualConfig MakeBuiltinPreset(int builtin_index) {
             cfg.phase3_enhance = false;
             cfg.af_point_enhance = false;
             cfg.p0_rimlit_enhance = false;
-            cfg.p3_pcf_shadow_enabled = false;
-            cfg.p3_pom_enabled = false;
-            cfg.p3_antitile_enabled = false;
             cfg.ao_enabled = false;
             cfg.p0_sscs_enabled = false;
             cfg.p1_soft_particles = false;
             cfg.p2_aerial_vignette = false;
             cfg.p2_height_fog_enabled = false;
-            cfg.p2_ssgi_enabled = false;
             cfg.p2_ssr_enabled = false;
             cfg.p2_filter_preset = 0;
             cfg.p2_lut_preset = 0;
@@ -2208,15 +2096,11 @@ bool SetAllRenderTogglesEnabled(bool enabled) {
     next_cfg.phase3_enhance = enabled;
     next_cfg.af_point_enhance = enabled;
     next_cfg.p0_rimlit_enhance = enabled;
-    next_cfg.p3_pcf_shadow_enabled = enabled;
-    next_cfg.p3_pom_enabled = enabled;
-    next_cfg.p3_antitile_enabled = enabled;
     next_cfg.ao_enabled = enabled;
     next_cfg.p0_sscs_enabled = enabled;
     next_cfg.p1_soft_particles = enabled;
     next_cfg.p2_aerial_vignette = enabled;
     next_cfg.p2_height_fog_enabled = enabled;
-    next_cfg.p2_ssgi_enabled = enabled;
     next_cfg.p2_ssr_enabled = enabled;
     ApplyVisualConfigToEngine(next_cfg);
     g_panel.active_custom_slot = -1;

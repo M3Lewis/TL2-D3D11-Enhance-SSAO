@@ -179,24 +179,6 @@ int GetP0RimLitStrengthPct();
 void SetP2FilterStrengthPct(int pct);
 int GetP2FilterStrengthPct();
 
-void SetPhase3PcfShadowEnabled(bool enabled);
-bool IsPhase3PcfShadowEnabled();
-bool TogglePhase3PcfShadowEnabled();
-void SetPhase3PcfShadowStrengthPct(int pct);
-int GetPhase3PcfShadowStrengthPct();
-
-void SetPhase3PomEnabled(bool enabled);
-bool IsPhase3PomEnabled();
-bool TogglePhase3PomEnabled();
-void SetPhase3PomStrengthPct(int pct);
-int GetPhase3PomStrengthPct();
-
-void SetPhase3AntiTileEnabled(bool enabled);
-bool IsPhase3AntiTileEnabled();
-bool TogglePhase3AntiTileEnabled();
-void SetPhase3AntiTileStrengthPct(int pct);
-int GetPhase3AntiTileStrengthPct();
-
 bool WasP2PostShaderSeenRecently();
 bool ConsumeFrameWaterPassHint();
 

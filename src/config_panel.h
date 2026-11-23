@@ -19,15 +19,11 @@ struct VisualConfig {
     bool phase3_enhance = true;
     bool af_point_enhance = true;
     bool p0_rimlit_enhance = true;
-    bool p3_pcf_shadow_enabled = true;
-    bool p3_pom_enabled = true;
-    bool p3_antitile_enabled = true;
     bool ao_enabled = true;
     bool p0_sscs_enabled = true;
     bool p1_soft_particles = true;
     bool p2_aerial_vignette = true;
     bool p2_height_fog_enabled = true;
-    bool p2_ssgi_enabled = true;
     bool p2_ssr_enabled = true;
     int p2_filter_preset = 1;  // 0=Off, 1=Hob, 2=Dark Film
     int p2_lut_preset = 0;     // 0=Off, 1=CinemaTealOrange, 2=ColdNordic, 3=CustomCube
@@ -40,18 +36,14 @@ struct VisualConfig {
     int phase3_strength = 100;         // 0..200 (%)
     int af_point_strength = 100;       // 0..200 (%)
     int p0_rimlit_strength = 100;      // 0..200 (%)
-    int p3_pcf_shadow_strength = 100;  // 0..200 (%)
-    int p3_pom_strength = 100;         // 0..200 (%)
-    int p3_antitile_strength = 100;    // 0..200 (%)
     int ao_strength = 100;             // 0..200 (%)
     int p0_sscs_strength = 100;        // 0..200 (%)
     int p1_soft_strength = 100;        // 0..200 (%)
     int p2_aerial_strength = 100;      // 0..200 (%)
-    int p2_height_fog_strength = 100;  // 0..200 (%)
-    int p2_ssgi_strength = 100;        // 0..200 (%)
     int p2_ssr_strength = 100;         // 0..200 (%)
     int p2_filter_strength = 100;      // 0..200 (%)
     int p2_lut_strength = 100;         // 0..200 (%)
+    int p2_height_fog_strength = 100;  // 0..200 (%)
 
     bool operator==(const VisualConfig& other) const = default;
 };

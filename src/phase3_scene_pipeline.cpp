@@ -2139,16 +2139,6 @@ void* __fastcall HookGetFixedFuncShaderSource(
 
     const bool has_normal = (out_src->find("input.Normal0") != std::string::npos);
     const bool has_cam = (out_src->find("cameraPos") != std::string::npos);
-    const bool has_lit_vars =
-        (out_src->find("BaseLightAmbient") != std::string::npos) &&
-        (out_src->find("float4 diffuse=") != std::string::npos) &&
-        (out_src->find("PointLight3") == std::string::npos) &&
-        (out_src->find("DirectionalLight1") == std::string::npos) &&
-        (out_src->find("Spot.") == std::string::npos);
-    const bool can_inject_light_tc =
-        has_lit_vars &&
-        (out_src->find("output.Texcoord4") == std::string::npos) &&
-        (out_src->find("output.Texcoord5") == std::string::npos);
 
     std::string inject = "\noutput.Texcoord6=";
     inject += has_normal ? "float4(N,1)" : "float4(0,0,1,0)";
@@ -2156,10 +2146,6 @@ void* __fastcall HookGetFixedFuncShaderSource(
     inject += has_cam
         ? "float4(-cameraPos.xyz,1)"
         : "float4(0,0,1,1)";
-    if (can_inject_light_tc) {
-        inject += ";\noutput.Texcoord4=float4(max((ambient*BaseLightAmbient+emissive).rgb,0.0),1)";
-        inject += ";\noutput.Texcoord5=float4(diffuse.rgb,1)";
-    }
     inject += ";\n";
 
     out_src->insert(fog_pos, inject);

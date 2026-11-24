@@ -342,11 +342,9 @@ void AccumulatePointLightRelief(
     float  smoothness,
     float  F0,
     float  matScale,
-    float3 matDiff,
     float3 surfTint,
     float  reliefFade,
     float  detailWeight,
-    inout float3 pointDiffuseSum,
     inout float3 pointReliefSum,
     inout float3 specAdd)
 {
@@ -363,16 +361,15 @@ void AccumulatePointLightRelief(
     float dist = sqrt(distSq);
     float3 L = deltaView / dist;
     float attenDenom = dot(lightAtten, float3(1.0, dist, distSq));
-    float atten = min(1.0 / max(attenDenom, 1e-5), 4.0);
+    float atten = min(1.0 / max(attenDenom, 1e-5), 2.0);
     float rangeT = dist / lightRange;
     float rangeSq = rangeT * rangeT;
     atten *= saturate(1.0 - rangeSq * rangeSq);
 
     float ndlBase = saturate(dot(N, L));
     float ndlMicro = saturate(dot(Nmicro, L));
-    pointDiffuseSum += lightDiffuseRgb * matDiff * (ndlMicro * atten);
     float reliefDelta = ndlMicro - ndlBase;
-    pointReliefSum += lightDiffuseRgb * matDiff * (reliefDelta * atten * 1.25 * reliefFade);
+    pointReliefSum += lightDiffuseRgb * MaterialDiffuse.rgb * (reliefDelta * atten * 1.25 * reliefFade);
 
     float3 H = normalize(L + V);
     float HdotV = saturate(dot(H, V));
@@ -383,7 +380,7 @@ void AccumulatePointLightRelief(
     float specScalar = ggx * matScale * fresnel * termMask * detailWeight * atten;
     float specLum = dot(lightSpecularRgb, float3(0.299, 0.587, 0.114));
     float3 effSpecCol = (specLum > 1e-4) ? lightSpecularRgb : (lightDiffuseRgb * 0.90);
-    specAdd += effSpecCol * matDiff * surfTint * specScalar;
+    specAdd += effSpecCol * MaterialDiffuse.rgb * surfTint * specScalar;
 }
 
 float4 ShadeDiffPass(VS_OUTPUT input, bool doAlphaReject)
@@ -443,11 +440,6 @@ float4 ShadeDiffPass(VS_OUTPUT input, bool doAlphaReject)
             // Single cavity AO without double-multiplying procedural crevice dip
             float aoScale = hasCompanionMaps ? 1.0 : 0.65;
             sd.albedo = saturate(sd.albedo * lerp(1.0, lerp(0.72, 1.00, cavityAO), saturate(sd.detailFade * p3Scale * aoScale)));
-
-            // Subtle highlight-painting de-clip on painted metallic sheen so real dynamic GGX + IBL specular drives highlights
-            float specAlbedoLum = dot(sd.albedo, float3(0.299, 0.587, 0.114));
-            float metalDeclip = lerp(1.0, 0.86, saturate((specAlbedoLum - 0.58) * 2.2) * sd.metalMask * saturate(p3Scale));
-            sd.albedo *= metalDeclip;
         }
 
         if (hasNormMap && hasNormal && sd.reliefFade > 0.01 && p3Scale > 0.001)
@@ -482,30 +474,24 @@ float4 ShadeDiffPass(VS_OUTPUT input, bool doAlphaReject)
     }
 
     // Directional shadow attenuation from projective shadow maps (ProjectorRTT_104 / ProjectorRTTLight_105)
-    bool shadowHandled1 = (isProj1 && (op1 == 1 || op1 == 4));
-    bool shadowHandled2 = (isProj2 && (op2 == 1 || op2 == 4));
-    float3 dirShadowRgb = float3(1.0, 1.0, 1.0);
+    float dirShadowAtten = 1.0;
     if (isProj1 && op1 == 1)
     {
-        dirShadowRgb *= tSample1.rgb;
+        dirShadowAtten *= saturate(dot(tSample1.rgb, float3(0.299, 0.587, 0.114)));
     }
     else if (isProj1 && op1 == 4)
     {
-        dirShadowRgb *= saturate(tSample1.rgb * 2.0);
+        dirShadowAtten *= saturate(dot(tSample1.rgb, float3(0.299, 0.587, 0.114)) * 2.0);
     }
 
     if (isProj2 && op2 == 1)
     {
-        dirShadowRgb *= tSample2.rgb;
+        dirShadowAtten *= saturate(dot(tSample2.rgb, float3(0.299, 0.587, 0.114)));
     }
     else if (isProj2 && op2 == 4)
     {
-        dirShadowRgb *= saturate(tSample2.rgb * 2.0);
+        dirShadowAtten *= saturate(dot(tSample2.rgb, float3(0.299, 0.587, 0.114)) * 2.0);
     }
-    float dirShadowAtten = saturate(dot(dirShadowRgb, float3(0.299, 0.587, 0.114)));
-
-    bool hasPixelLight = (input.Texcoord4.w > 0.5 && input.Texcoord5.w > 0.5 && hasNormal && p3Scale > 0.001);
-    bool usePixelShadowSep = hasPixelLight && (shadowHandled1 || shadowHandled2);
 
     if (hasNormal)
     {
@@ -516,6 +502,7 @@ float4 ShadeDiffPass(VS_OUTPUT input, bool doAlphaReject)
         float3 viewUp = normalize(mul(float3(0.0, 1.0, 0.0), (float3x3)View));
         float worldUpY = dot(Nmicro, viewUp);
         float skyRelief = worldUpY - dot(N, viewUp);
+        litEnv *= saturate(1.0 + skyRelief * (0.22 * sd.reliefFade * p3Scale));
 
         // Rain weather global surface wetness linkage:
         // Rain falls from the sky, wetting upward-facing surfaces (worldUpY > 0.20).
@@ -535,25 +522,8 @@ float4 ShadeDiffPass(VS_OUTPUT input, bool doAlphaReject)
         float matScale = lerp(0.22, 0.88, sd.smoothness * sd.smoothness);
         float F0 = lerp(0.04, 0.78, sd.metalMask);
         float3 surfTint = lerp(lerp(float3(1.0, 1.0, 1.0), sd.albedo, 0.15), sd.albedo, sd.metalMask);
-        float3 matDiff = hasPixelLight ? input.Texcoord5.rgb : MaterialDiffuse.rgb;
 
         float dirLum = dot(DirectionalLight0_Diffuse.rgb, float3(0.299, 0.587, 0.114));
-        if (hasPixelLight)
-        {
-            float3 ambientBase = max(input.Texcoord4.rgb, float3(0.0, 0.0, 0.0));
-            if (usePixelShadowSep)
-            {
-                // Separate direct cast shadows from skylight ambient so shadows keep cool ambient bounce and dynamic point lights
-                ambientBase *= lerp(float3(1.0, 1.0, 1.0), dirShadowRgb, (dirLum > 1e-4) ? 0.16 : 0.45);
-            }
-            ambientBase *= saturate(1.0 + skyRelief * (0.18 * sd.reliefFade * p3Scale));
-            litEnv = ambientBase;
-        }
-        else
-        {
-            litEnv *= saturate(1.0 + skyRelief * (0.22 * sd.reliefFade * p3Scale));
-        }
-
         if (dirLum > 1e-4)
         {
             float3 rawL0 = mul(-DirectionalLight0_Direction.xyz, (float3x3)View);
@@ -564,18 +534,10 @@ float4 ShadeDiffPass(VS_OUTPUT input, bool doAlphaReject)
                 float ndl0 = saturate(dot(Nmicro, L0));
                 shadowWeight = saturate(1.0 - ndl0 * (0.35 + 0.65 * dirShadowAtten));
 
-                if (hasPixelLight)
-                {
-                    float3 dirGate = usePixelShadowSep ? dirShadowRgb : float3(1.0, 1.0, 1.0);
-                    litEnv += matDiff * DirectionalLight0_Diffuse.rgb * (ndl0 * dirGate);
-                }
-                else
-                {
-                    // Saturated back-face truncation eliminates ghost relief in shadow
-                    float relief = ndl0 - saturate(dot(N, L0));
-                    float effectiveRelief = relief * (0.35 + 0.65 * dirShadowAtten);
-                    litEnv *= saturate(1.0 + effectiveRelief * (0.60 * sd.reliefFade * p3Scale));
-                }
+                // Saturated back-face truncation eliminates ghost relief in shadow
+                float relief = ndl0 - saturate(dot(N, L0));
+                float effectiveRelief = relief * (0.35 + 0.65 * dirShadowAtten);
+                litEnv *= saturate(1.0 + effectiveRelief * (0.60 * sd.reliefFade * p3Scale));
 
                 float ndlRaw = dot(Nmicro, L0);
                 float3 H = normalize(L0 + V);
@@ -587,7 +549,7 @@ float4 ShadeDiffPass(VS_OUTPUT input, bool doAlphaReject)
                 float specShadowMask = smoothstep(0.25, 0.85, dirShadowAtten);
                 float specScalar = ggx * matScale * fresnel * termMask * detailWeight * p3Scale * specShadowMask;
 
-                specAdd = DirectionalLight0_Diffuse.rgb * matDiff * surfTint * specScalar;
+                specAdd = DirectionalLight0_Diffuse.rgb * MaterialDiffuse.rgb * surfTint * specScalar;
 
                 // Foliage Translucency with normal perturbation, back-face masking & saturation gate
                 if (doAlphaReject)
@@ -628,55 +590,40 @@ float4 ShadeDiffPass(VS_OUTPUT input, bool doAlphaReject)
         }
 
         float afPointScale = max(p3EnhanceFlags.x, 0.0);
-        if (hasPixelLight || afPointScale > 0.01)
+        if (afPointScale > 0.01)
         {
             float3 Pview = -input.Texcoord7.xyz;
-            float3 pointDiffuseSum = float3(0.0, 0.0, 0.0);
             float3 pointReliefSum = float3(0.0, 0.0, 0.0);
             float3 pointSpecSum = float3(0.0, 0.0, 0.0);
             AccumulatePointLightRelief(
                 PointLight0_Position, PointLight0_Diffuse.rgb, PointLight0_Specular.rgb,
                 PointLight0_Range, PointLight0_Attenuation,
-                Pview, N, Nmicro, V, effSmoothness, F0, matScale, matDiff, surfTint,
-                sd.reliefFade, detailWeight, pointDiffuseSum, pointReliefSum, pointSpecSum);
+                Pview, N, Nmicro, V, effSmoothness, F0, matScale, surfTint,
+                sd.reliefFade, detailWeight, pointReliefSum, pointSpecSum);
             AccumulatePointLightRelief(
                 PointLight1_Position, PointLight1_Diffuse.rgb, PointLight1_Specular.rgb,
                 PointLight1_Range, PointLight1_Attenuation,
-                Pview, N, Nmicro, V, effSmoothness, F0, matScale, matDiff, surfTint,
-                sd.reliefFade, detailWeight, pointDiffuseSum, pointReliefSum, pointSpecSum);
+                Pview, N, Nmicro, V, effSmoothness, F0, matScale, surfTint,
+                sd.reliefFade, detailWeight, pointReliefSum, pointSpecSum);
             AccumulatePointLightRelief(
                 PointLight2_Position, PointLight2_Diffuse.rgb, PointLight2_Specular.rgb,
                 PointLight2_Range, PointLight2_Attenuation,
-                Pview, N, Nmicro, V, effSmoothness, F0, matScale, matDiff, surfTint,
-                sd.reliefFade, detailWeight, pointDiffuseSum, pointReliefSum, pointSpecSum);
-            if (hasPixelLight)
-            {
-                litEnv += pointDiffuseSum * lerp(1.0, 1.18, saturate(afPointScale - 1.0));
-                specAdd += pointSpecSum * afPointScale;
-            }
-            else
-            {
-                litEnv = max(litEnv + pointReliefSum * (afPointScale * 0.75), float3(0.0, 0.0, 0.0));
-                specAdd += pointSpecSum * afPointScale;
-            }
-        }
-
-        if (hasPixelLight)
-        {
-            // Prevent multi-light HDR sum from blowing out beyond gentle soft-shoulder before albedo multiply
-            litEnv = max(litEnv, float3(0.0, 0.0, 0.0));
+                Pview, N, Nmicro, V, effSmoothness, F0, matScale, surfTint,
+                sd.reliefFade, detailWeight, pointReliefSum, pointSpecSum);
+            litEnv = max(litEnv + pointReliefSum * (afPointScale * 0.75), float3(0.0, 0.0, 0.0));
+            specAdd += pointSpecSum * afPointScale;
         }
     }
 
     float3 color = CombineDiffuseAndSpec(sd.albedo * litEnv, specAdd);
 
-    // Apply non-shadow texture stages; skip projective Modulate/ModulateX2 shadow map multiply when separated into direct lighting
-    if (op1 > 0 && !(usePixelShadowSep && shadowHandled1))
+    // Apply texture stages cleanly without washing out deep shadows
+    if (op1 > 0)
     {
         color = ApplyTextureStageOp(color, tSample1, op1);
     }
 
-    if (op2 > 0 && !(usePixelShadowSep && shadowHandled2))
+    if (op2 > 0)
     {
         color = ApplyTextureStageOp(color, tSample2, op2);
     }

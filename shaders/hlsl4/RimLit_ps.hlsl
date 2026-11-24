@@ -73,19 +73,26 @@ float4 p3Flags2 = float4(0.0, 0.0, 0.0, 0.0);
 //   w = Dynamic weather rain wetness scale (0..1)
 float4 p3EnhanceFlags = float4(1.0, 1.0, 1.0, 0.0);
 
+// p3HdrParams:
+//   x = HDR tonemap mode (0=OFF/LDR clamp, 1=ACES Filmic, 2=AgX Punchy)
+//   y = Exposure multiplier
+float4 p3HdrParams = float4(0.0, 1.0, 0.0, 0.0);
+
 float3 ApplyTextureStageOp(float3 baseColor, float4 tSample, int op)
 {
+    bool hdr = (p3HdrParams.x > 0.5);
+    float3 res = baseColor;
     if (op == 1)
-        return saturate(baseColor * tSample.rgb);
-    if (op == 2)
-        return saturate(baseColor + tSample.rgb);
-    if (op == 3)
-        return saturate(lerp(baseColor, tSample.rgb, tSample.a));
-    if (op == 4)
-        return saturate(baseColor * (tSample.rgb * 2.0));
-    if (op == 5)
-        return saturate(baseColor * (tSample.rgb * 4.0));
-    return baseColor;
+        res = baseColor * tSample.rgb;
+    else if (op == 2)
+        res = baseColor + tSample.rgb;
+    else if (op == 3)
+        res = lerp(baseColor, tSample.rgb, tSample.a);
+    else if (op == 4)
+        res = baseColor * (tSample.rgb * 2.0);
+    else if (op == 5)
+        res = baseColor * (tSample.rgb * 4.0);
+    return hdr ? max(res, 0.0) : saturate(res);
 }
 
 float3 CombineRim(float3 baseColor, float4 rimSample, float fresnelWeight, int op)
@@ -99,7 +106,10 @@ float3 CombineRim(float3 baseColor, float4 rimSample, float fresnelWeight, int o
     if (op == 4)
         return baseColor * lerp(float3(1.0, 1.0, 1.0), rimSample.rgb * 2.0, saturate(fresnelWeight));
     if (op == 5)
-        return saturate(baseColor * lerp(float3(1.0, 1.0, 1.0), rimSample.rgb * 4.0, saturate(fresnelWeight)));
+    {
+        float3 res = baseColor * lerp(float3(1.0, 1.0, 1.0), rimSample.rgb * 4.0, saturate(fresnelWeight));
+        return (p3HdrParams.x > 0.5) ? max(res, 0.0) : saturate(res);
+    }
     return baseColor + rimSample.rgb * fresnelWeight;
 }
 
@@ -107,6 +117,10 @@ float3 CombineDiffuseAndSpec(float3 diff, float3 spec)
 {
     float3 baseDiff = max(diff, 0.0);
     float3 raw = baseDiff + max(spec, 0.0);
+    if (p3HdrParams.x > 0.5)
+    {
+        return raw;
+    }
 
     const float knee = 0.90;
     const float headroom = 1.0 - knee; // 0.10
@@ -612,7 +626,7 @@ float4 main_2d(VS_OUTPUT input) : SV_TARGET
     int texOp = (int)(p3Flags.x + 0.5);
     float3 color = CombineRim(base, rimSample, fresnelWeight, texOp);
 
-    color = saturate(color + input.ColorSpec.rgb);
+    color = (p3HdrParams.x > 0.5) ? max(color + input.ColorSpec.rgb, 0.0) : saturate(color + input.ColorSpec.rgb);
     color = ApplyOgreFog(color, input.fogDist, (int)(p3Flags.z + 0.5));
     return float4(color, outAlpha);
 }
@@ -647,7 +661,7 @@ float4 main_cube(VS_OUTPUT input) : SV_TARGET
     int texOp = (int)(p3Flags.x + 0.5);
     float3 color = CombineRim(base, rimSample, fresnelWeight, texOp);
 
-    color = saturate(color + input.ColorSpec.rgb);
+    color = (p3HdrParams.x > 0.5) ? max(color + input.ColorSpec.rgb, 0.0) : saturate(color + input.ColorSpec.rgb);
     color = ApplyOgreFog(color, input.fogDist, (int)(p3Flags.z + 0.5));
     return float4(color, outAlpha);
 }
@@ -697,7 +711,7 @@ float4 main_cube3(VS_OUTPUT input) : SV_TARGET
     int texOp = (int)(p3Flags.x + 0.5);
     float3 color = CombineRim(base, rimSample, fresnelWeight, texOp);
 
-    color = saturate(color + input.ColorSpec.rgb);
+    color = (p3HdrParams.x > 0.5) ? max(color + input.ColorSpec.rgb, 0.0) : saturate(color + input.ColorSpec.rgb);
     color = ApplyOgreFog(color, input.fogDist, (int)(p3Flags.z + 0.5));
     return float4(color, outAlpha);
 }

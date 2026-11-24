@@ -1,6 +1,8 @@
 #include "render_hook_manager.h"
 #include "game_time_weather.h"
+#include "d3d11_hdr_hook.h"
 #include "d3d11_post_renderer.h"
+#include "d3d11_shadow_pass.h"
 #include "d3d11_ssao_pass.h"
 #include "d3d11_ssr_pass.h"
 #include "d3d11_smaa_pass.h"
@@ -218,6 +220,10 @@ std::atomic<int> g_p1_soft_particles_strength_pct{100};
 std::atomic<int> g_p2_aerial_vignette_strength_pct{100};
 std::atomic<int> g_p2_ssr_strength_pct{100};
 std::atomic<int> g_p2_lut_strength_pct{100};
+std::atomic<bool> g_shadow_map_enabled{true};
+std::atomic<int> g_shadow_strength_pct{100};
+std::atomic<int> g_hdr_tonemap_mode{2};  // 0=OFF, 1=ACES, 2=AgX
+std::atomic<int> g_hdr_exposure_pct{100};
 std::atomic<bool> g_weather_rain_enabled{false};
 std::atomic<int> g_weather_rain_strength_pct{100};
 std::atomic<int> g_time_of_day_hours{-1};  // -1 = Auto
@@ -680,6 +686,7 @@ void RecordQueueSurvey(
 }
 
 void TryDispatchAoForFrame(ActiveSceneFrame& frame, const char* trigger_src, uint8_t qid) {
+    SetWorldShadowCaptureOpen(false);
     if (frame.ao_injected || !frame.ao_eligible || frame.world_geom_draws == 0) {
         return;
     }
@@ -689,7 +696,8 @@ void TryDispatchAoForFrame(ActiveSceneFrame& frame, const char* trigger_src, uin
     const bool sp_on = g_p1_soft_particles_enabled.load(std::memory_order_relaxed);
     const bool aerial_on = g_p2_aerial_vignette_enabled.load(std::memory_order_relaxed);
     const bool ssr_on = g_p2_ssr_enabled.load(std::memory_order_relaxed);
-    if (dbg_mode < 0 && !sp_on && !aerial_on && !ssr_on) {
+    const bool shadow_on = g_shadow_map_enabled.load(std::memory_order_relaxed) && !is_menu;
+    if (dbg_mode < 0 && !sp_on && !aerial_on && !ssr_on && !shadow_on) {
         return;
     }
     frame.ao_injected = true;
@@ -773,6 +781,8 @@ void TryDispatchAoForFrame(ActiveSceneFrame& frame, const char* trigger_src, uin
     req.map_fog_rgb[2] = frame.fog_rgb[2];
     req.map_fog_start = frame.fog_start;
     req.map_fog_end = frame.fog_end;
+    req.shadow_enabled = shadow_on;
+    req.shadow_strength_scale = static_cast<float>(GetShadowStrengthPct()) * 0.01f;
     const bool ok = ExecuteAoPass(req, g_log);
     frame.particle_depth_ready = ok && sp_on;
     g_world_depth_ready_for_particles.store(frame.particle_depth_ready, std::memory_order_release);
@@ -812,8 +822,9 @@ void TryDispatchPostWorldForFrame(ActiveSceneFrame& frame) {
     const int dbg_mode = ao_on ? g_ao_debug_mode.load(std::memory_order_relaxed) : -1;
     const bool is_menu = IsMainMenuActive();
     const bool ssr_on = (!is_menu && dbg_mode <= 0) && g_p2_ssr_enabled.load(std::memory_order_relaxed);
+    const int hdr_mode = (!is_menu && dbg_mode <= 0) ? g_hdr_tonemap_mode.load(std::memory_order_relaxed) : 0;
     const int lut_preset = (dbg_mode <= 0) ? g_p2_lut_preset.load(std::memory_order_relaxed) : 0;
-    if (!ssr_on && lut_preset <= 0) {
+    if (!ssr_on && hdr_mode <= 0 && lut_preset <= 0) {
         return;
     }
     frame.post_world_injected = true;
@@ -845,6 +856,8 @@ void TryDispatchPostWorldForFrame(ActiveSceneFrame& frame) {
     req.lut_strength_scale = static_cast<float>(GetP2LutStrengthPct()) * 0.01f;
     req.is_desert = IsDesertSceneActive();
     req.is_menu = is_menu;
+    req.hdr_tonemap_mode = hdr_mode;
+    req.hdr_exposure_scale = static_cast<float>(GetHdrExposurePct()) * 0.01f;
     (void)ExecutePostWorldPass(req, g_log);
     SafeRelease(ctx);
 }
@@ -1010,11 +1023,12 @@ void DrawPanelOverlayForRenderTarget(void* rw) {
 void __fastcall HookRenderWindowSwapBuffers(void* rw, uint8_t wait_for_vsync) {
     SetWaterPassActive(false);
     SetWorldWaterCaptureOpen(false);
+    SetWorldShadowCaptureOpen(false);
     SetMainSceneRtv(nullptr);
     if (IsMainMenuActive()) {
         UpdateRainWetnessPerFrame();
     }
-    if (IsMainMenuActive() || !IsP2SsrEnabled()) {
+    if (IsMainMenuActive() || (!IsP2SsrEnabled() && !IsShadowMapEnabled())) {
         RemoveContextDrawHook();
     }
     if (g_swap_hooked.load(std::memory_order_acquire)) {
@@ -1111,8 +1125,10 @@ void __fastcall HookRenderScene(void* sm, void* cam, void* vp, uint8_t show_over
     const bool sp_on = g_p1_soft_particles_enabled.load(std::memory_order_relaxed);
     const bool aerial_on = g_p2_aerial_vignette_enabled.load(std::memory_order_relaxed);
     const bool ssr_on = g_p2_ssr_enabled.load(std::memory_order_relaxed);
+    const bool shadow_on = g_shadow_map_enabled.load(std::memory_order_relaxed);
+    const int hdr_mode = g_hdr_tonemap_mode.load(std::memory_order_relaxed);
     const int lut_preset = g_p2_lut_preset.load(std::memory_order_relaxed);
-    const bool need_depth_pipeline = (dbg_mode >= 0) || sp_on || aerial_on || ssr_on || (lut_preset > 0);
+    const bool need_depth_pipeline = (dbg_mode >= 0) || sp_on || aerial_on || ssr_on || shadow_on || (hdr_mode > 0) || (lut_preset > 0);
     const bool need_filter_fallback = ((GetP2FilterPreset() > 0) || aerial_on) && !WasP2PostShaderSeenRecently();
     if ((!survey_on && !need_depth_pipeline && !need_filter_fallback) || g_scene_depth >= kMaxSceneStack || !sm || !vp) {
         const bool prev_ready = g_world_depth_ready_for_particles.exchange(false, std::memory_order_acq_rel);
@@ -1186,9 +1202,16 @@ void __fastcall HookRenderScene(void* sm, void* cam, void* vp, uint8_t show_over
         (void)ConsumeFrameWaterPassHint();
         ResetCapturedDirectionalLight();
         SetWaterPassActive(false);
+        SetWorldShadowCaptureOpen(false);
+        if (g_api.cam_get_view) {
+            frame.view = g_api.cam_get_view(active_cam);
+            frame.has_view = true;
+        }
         const bool main_menu = IsMainMenuActive();
         const bool ssr_enabled = IsP2SsrEnabled();
+        const bool shadow_enabled = IsShadowMapEnabled();
         const bool can_capture_water = ssr_enabled && !main_menu;
+        const bool can_capture_shadow = shadow_enabled && !main_menu && frame.has_view;
         SetWorldWaterCaptureOpen(can_capture_water);
 
         ID3D11DeviceContext* ctx = nullptr;
@@ -1199,6 +1222,7 @@ void __fastcall HookRenderScene(void* sm, void* cam, void* vp, uint8_t show_over
             ID3D11Device* dev = nullptr;
             ctx->GetDevice(&dev);
             if (dev) {
+                EnsureHdrDeviceVtableHooked(dev, g_log);
                 EnsurePipelineObjects(dev, g_log);
                 if (can_capture_water) {
                     uint32_t tw = static_cast<uint32_t>(vp_w);
@@ -1224,22 +1248,25 @@ void __fastcall HookRenderScene(void* sm, void* cam, void* vp, uint8_t show_over
                     }
                     EnsureWaterDepthTarget(dev, tw, th, sample_count, sample_quality);
                 }
+                if (can_capture_shadow && rt_rtv) {
+                    PrepareShadowMapForFrame(dev, ctx, rt_rtv, &frame.view.m[0][0], &frame.proj.m[0][0], g_log);
+                    SetWorldShadowCaptureOpen(true);
+                }
                 SafeRelease(dev);
             }
             if (can_capture_water) {
                 ClearWaterDepthTargetForFrame(ctx);
-                EnsureContextDrawHooked(ctx);
             } else {
                 ClearWaterDepthTargetForFrame(ctx);
+            }
+            if (can_capture_water || can_capture_shadow) {
+                EnsureContextDrawHooked(ctx);
+            } else {
                 RemoveContextDrawHook();
             }
             SafeRelease(ctx);
         }
 
-        if (g_api.cam_get_view) {
-            frame.view = g_api.cam_get_view(active_cam);
-            frame.has_view = true;
-        }
         if (g_api.sm_get_fog_mode) {
             frame.fog_mode = g_api.sm_get_fog_mode(sm);
             if (g_api.sm_get_fog_colour) {
@@ -1592,10 +1619,12 @@ void RemoveRenderPipeline() {
     RemoveContextDrawHook();
     SetWaterPassActive(false);
     SetWorldWaterCaptureOpen(false);
+    SetWorldShadowCaptureOpen(false);
     SetMainSceneRtv(nullptr);
     g_detour_queue_ended.Remove();
     g_detour_queue_started.Remove();
     g_detour_render_scene.Remove();
+    ReleaseShadowPassResources();
     ShutdownRouteCD3D11Resources();
 
     g_orig_queue_ended = nullptr;
@@ -1746,6 +1775,54 @@ void SetLutStrengthPct(int pct) {
 
 int GetLutStrengthPct() {
     return (std::clamp)(g_p2_lut_strength_pct.load(std::memory_order_relaxed), 0, 200);
+}
+
+void SetShadowMapEnabled(bool enabled) {
+    g_shadow_map_enabled.store(enabled, std::memory_order_relaxed);
+}
+
+bool IsShadowMapEnabled() {
+    return g_shadow_map_enabled.load(std::memory_order_relaxed);
+}
+
+bool ToggleShadowMapEnabled() {
+    bool expected = g_shadow_map_enabled.load(std::memory_order_relaxed);
+    while (!g_shadow_map_enabled.compare_exchange_weak(expected, !expected, std::memory_order_relaxed)) {
+    }
+    return !expected;
+}
+
+void SetShadowStrengthPct(int pct) {
+    g_shadow_strength_pct.store((std::clamp)(pct, 0, 200), std::memory_order_relaxed);
+}
+
+int GetShadowStrengthPct() {
+    return (std::clamp)(g_shadow_strength_pct.load(std::memory_order_relaxed), 0, 200);
+}
+
+void SetHdrTonemapMode(int mode) {
+    const int clamped = (mode < 0 || mode > 2) ? 0 : mode;
+    g_hdr_tonemap_mode.store(clamped, std::memory_order_relaxed);
+}
+
+int GetHdrTonemapMode() {
+    return g_hdr_tonemap_mode.load(std::memory_order_relaxed);
+}
+
+const char* HdrTonemapModeName(int mode) {
+    switch (mode) {
+        case 1: return "ACES";
+        case 2: return "AgX";
+        default: return "OFF";
+    }
+}
+
+void SetHdrExposurePct(int pct) {
+    g_hdr_exposure_pct.store((std::clamp)(pct, 50, 200), std::memory_order_relaxed);
+}
+
+int GetHdrExposurePct() {
+    return (std::clamp)(g_hdr_exposure_pct.load(std::memory_order_relaxed), 50, 200);
 }
 
 

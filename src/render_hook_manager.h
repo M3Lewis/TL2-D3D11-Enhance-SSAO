@@ -48,6 +48,18 @@ int GetSsrStrengthPct();
 void SetLutStrengthPct(int pct);
 int GetLutStrengthPct();
 
+void SetShadowMapEnabled(bool enabled);
+bool IsShadowMapEnabled();
+bool ToggleShadowMapEnabled();
+void SetShadowStrengthPct(int pct);
+int GetShadowStrengthPct();
+
+void SetHdrTonemapMode(int mode);  // 0=OFF, 1=ACES, 2=AgX
+int GetHdrTonemapMode();
+const char* HdrTonemapModeName(int mode);
+void SetHdrExposurePct(int pct);
+int GetHdrExposurePct();
+
 bool IsWorldDepthReadyForParticles();
 void TriggerToastForTest();
 

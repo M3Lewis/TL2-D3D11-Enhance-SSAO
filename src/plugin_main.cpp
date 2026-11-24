@@ -8,6 +8,7 @@
 #include <cstring>
 
 #include "cegui_explicit_shader.h"
+#include "d3d11_hdr_hook.h"
 #include "config_panel.h"
 #include "dxbc_cache.h"
 #include "fixed_func_manual_uniforms.h"
@@ -402,6 +403,7 @@ void CleanupHooksAndResources() {
     routeb::RemoveCeguiExplicitShaderHook();
     routeb::RemovePhase1FastPaths();
     routeb::RemoveDxbcCacheHook();
+    routeb::RemoveHdrDeviceIatHook();
     g_detour_mem_skip.Remove();
     g_detour_mem_seek.Remove();
     g_detour_mem_read.Remove();
@@ -499,6 +501,7 @@ extern "C" __declspec(dllexport) void dllStartPlugin() {
         g_mem_stream_clamps.store(0, std::memory_order_relaxed);
         InstallRootShutdownHook(ogre_base);
         const bool mem_guard_ok = InstallMemoryStreamGuards(ogre_base);
+        const bool hdr_ok = routeb::InstallHdrDeviceIatHook(&LogLine);
         const bool dxbc_ok = routeb::InstallDxbcCacheHook(d3d_base, &LogLine);
         const bool fp_ok = routeb::InstallPhase1FastPaths(d3d_base, ogre_base, &LogLine);
         const bool p2_ok = routeb::InstallCeguiExplicitShaderHook(d3d_base, ogre_base, &LogLine);
@@ -508,7 +511,8 @@ extern "C" __declspec(dllexport) void dllStartPlugin() {
             routeb::SetPhase3PassObserver(&routeb::OnRouteCScenePassObserved);
         }
         g_phase1_installed = dxbc_ok && fp_ok;
-        LogLine("[RouteB][Phase1+2+3] Active status: dxbc_cache=%s fastpaths=%s cegui_shader=%s scene_p3=%s route_c=%s mem_guard=%s",
+        LogLine("[RouteB][Phase1+2+3] Active status: hdr_hook=%s dxbc_cache=%s fastpaths=%s cegui_shader=%s scene_p3=%s route_c=%s mem_guard=%s",
+                hdr_ok ? "ON" : "OFF",
                 dxbc_ok ? "ON" : "OFF",
                 fp_ok ? "ON" : "OFF",
                 p2_ok ? "ON" : "OFF",
@@ -570,8 +574,10 @@ extern "C" __declspec(dllexport) int RouteB_RunConfigPanelSelfTest() {
     routeb::SetP2AerialVignetteEnabled(false);
     routeb::SetP2SsrEnabled(false);
     routeb::SetPhase3IblWrapEnabled(true);
+    routeb::SetShadowMapEnabled(false);
     routeb::SetP2FilterPreset(2);
     routeb::SetP2LutPreset(1);
+    routeb::SetHdrTonemapMode(1);
     routeb::SetPhase3StrengthPct(-25);      // clamps to 0
     routeb::SetF11PointLightStrengthPct(135);
     routeb::SetP0RimLitStrengthPct(150);
@@ -583,6 +589,8 @@ extern "C" __declspec(dllexport) int RouteB_RunConfigPanelSelfTest() {
     routeb::SetP2FilterStrengthPct(115);
     routeb::SetP2LutStrengthPct(90);
     routeb::SetPhase3IblWrapStrengthPct(175);
+    routeb::SetShadowStrengthPct(145);
+    routeb::SetHdrExposurePct(125);
     if (routeb::GetUiLanguage() != routeb::DetectSystemDefaultUiLanguage()) {
         return 15;
     }
@@ -602,7 +610,8 @@ extern "C" __declspec(dllexport) int RouteB_RunConfigPanelSelfTest() {
     if (!all_on.phase3_enhance || !all_on.af_point_enhance || !all_on.p0_rimlit_enhance ||
         !all_on.ao_enabled || !all_on.p0_sscs_enabled || !all_on.p1_soft_particles ||
         !all_on.p2_aerial_vignette || !all_on.p2_ssr_enabled || !all_on.n5_ibl_wrap_enabled ||
-        all_on.p2_filter_preset != 2 || all_on.p2_lut_preset != 1) {
+        !all_on.p2_shadow_map_enabled ||
+        all_on.p2_filter_preset != 2 || all_on.p2_lut_preset != 1 || all_on.hdr_tonemap_mode != 1) {
         return 12;
     }
     if (!routeb::SetAllRenderTogglesEnabled(false)) {
@@ -612,7 +621,8 @@ extern "C" __declspec(dllexport) int RouteB_RunConfigPanelSelfTest() {
     if (all_off.phase3_enhance || all_off.af_point_enhance || all_off.p0_rimlit_enhance ||
         all_off.ao_enabled || all_off.p0_sscs_enabled || all_off.p1_soft_particles ||
         all_off.p2_aerial_vignette || all_off.p2_ssr_enabled || all_off.n5_ibl_wrap_enabled ||
-        all_off.p2_filter_preset != 2 || all_off.p2_lut_preset != 1) {
+        all_off.p2_shadow_map_enabled ||
+        all_off.p2_filter_preset != 2 || all_off.p2_lut_preset != 1 || all_off.hdr_tonemap_mode != 1) {
         return 14;
     }
 
@@ -624,7 +634,8 @@ extern "C" __declspec(dllexport) int RouteB_RunConfigPanelSelfTest() {
     if (vanilla.phase3_enhance || vanilla.af_point_enhance || vanilla.p0_rimlit_enhance ||
         vanilla.ao_enabled || vanilla.p0_sscs_enabled || vanilla.p1_soft_particles ||
         vanilla.p2_aerial_vignette || vanilla.p2_ssr_enabled || vanilla.n5_ibl_wrap_enabled ||
-        vanilla.p2_filter_preset != 0 || vanilla.p2_lut_preset != 0) {
+        vanilla.p2_shadow_map_enabled ||
+        vanilla.p2_filter_preset != 0 || vanilla.p2_lut_preset != 0 || vanilla.hdr_tonemap_mode != 0) {
         return 4;
     }
 
@@ -636,13 +647,15 @@ extern "C" __declspec(dllexport) int RouteB_RunConfigPanelSelfTest() {
     if (!applied.phase3_enhance || applied.af_point_enhance || !applied.p0_rimlit_enhance ||
         applied.ao_enabled || applied.p0_sscs_enabled || !applied.p1_soft_particles ||
         applied.p2_aerial_vignette || applied.p2_ssr_enabled || !applied.n5_ibl_wrap_enabled ||
-        applied.p2_filter_preset != 2 || applied.p2_lut_preset != 1 ||
+        applied.p2_shadow_map_enabled ||
+        applied.p2_filter_preset != 2 || applied.p2_lut_preset != 1 || applied.hdr_tonemap_mode != 1 ||
         applied.phase3_strength != 0 || applied.af_point_strength != 135 ||
         applied.p0_rimlit_strength != 150 || applied.ao_strength != 85 ||
         applied.p0_sscs_strength != 120 || applied.p1_soft_strength != 160 ||
         applied.p2_aerial_strength != 75 || applied.p2_ssr_strength != 200 ||
         applied.p2_filter_strength != 115 || applied.p2_lut_strength != 90 ||
-        applied.n5_ibl_wrap_strength != 175) {
+        applied.n5_ibl_wrap_strength != 175 ||
+        applied.p2_shadow_strength != 145 || applied.hdr_exposure_pct != 125) {
         return 6;
     }
 

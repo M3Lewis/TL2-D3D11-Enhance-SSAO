@@ -23,6 +23,7 @@
 #include "game_time_weather.h"
 #include "d3d11_post_renderer.h"
 #include "d3d11_overlay_pass.h"
+#include "d3d11_shadow_pass.h"
 
 namespace routeb {
 
@@ -1554,6 +1555,16 @@ void ApplyPassFogAndAlphaToExplicitPs(
             tod_sky);
         const float ibl_sky_param[4] = {tod_sky[0], tod_sky[1], tod_sky[2], ibl_scale};
         WriteExplicitPsNamedFloat4(ps_params, "p3IblSky", ibl_sky_param);
+
+        const int hdr_mode = IsMainMenuActive() ? 0 : GetHdrTonemapMode();
+        const float hdr_exposure = (std::max)(0.1f, static_cast<float>(GetHdrExposurePct()) * 0.01f);
+        const float hdr_params[4] = {
+            static_cast<float>(hdr_mode),
+            hdr_exposure,
+            0.0f,
+            0.0f,
+        };
+        WriteExplicitPsNamedFloat4(ps_params, "p3HdrParams", hdr_params);
     }
 
     const float fc[4] = {fog_color.r, fog_color.g, fog_color.b, fog_color.a};
@@ -2054,6 +2065,14 @@ const void* __fastcall HookSceneManagerSetPass(
         }
     }
     RecordPassDiag(used_pass, arch, skip_reason);
+    if (IsWorldShadowCaptureOpen()) {
+        const int alpha_cmp = g_api.pass_get_alpha_reject_func ? g_api.pass_get_alpha_reject_func(used_pass) : kCmpAlwaysPass;
+        const bool cutout = (alpha_cmp == 6 || alpha_cmp == 7);  // GEQUAL / GREATER
+        const float alpha_ref = g_api.pass_get_alpha_reject_val
+            ? (std::clamp)(static_cast<float>(g_api.pass_get_alpha_reject_val(used_pass)) / 255.0f, 0.05f, 0.95f)
+            : 0.5f;
+        SetShadowCasterAlphaCutout(cutout, alpha_ref);
+    }
     if (Phase3PassObserverFn observer = g_pass_observer.load(std::memory_order_acquire)) {
         const char* pass_name = g_api.pass_get_name ? g_api.pass_get_name(used_pass).c_str() : "";
         const bool lit = g_api.pass_get_lighting_enabled ? g_api.pass_get_lighting_enabled(used_pass) : false;

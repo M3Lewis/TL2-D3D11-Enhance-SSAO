@@ -50,6 +50,11 @@ float4 p3EnhanceFlags = float4(0.0, 0.0, 1.0, 0.0);
 //   w   = Dual-hemisphere IBL metallic sheen + cloth/skin wrap scale (0..2)
 float4 p3IblSky = float4(0.24, 0.31, 0.40, 1.0);
 
+// p3HdrParams:
+//   x = HDR tonemap mode (0=OFF/LDR clamp, 1=ACES Filmic, 2=AgX Punchy)
+//   y = Exposure multiplier
+float4 p3HdrParams = float4(0.0, 1.0, 0.0, 0.0);
+
 float3 ApplyStage1Op(float3 baseColor, float2 uv, int op)
 {
     float4 t1 = Texture1.Sample(Sampler1, uv);
@@ -62,7 +67,10 @@ float3 ApplyStage1Op(float3 baseColor, float2 uv, int op)
     if (op == 4)
         return baseColor * (t1.rgb * 2.0);
     if (op == 5)
-        return saturate(baseColor * (t1.rgb * 4.0));
+    {
+        float3 res = baseColor * (t1.rgb * 4.0);
+        return (p3HdrParams.x > 0.5) ? max(res, 0.0) : saturate(res);
+    }
     return baseColor;
 }
 
@@ -91,6 +99,10 @@ float3 CombineDiffuseAndSpec(float3 diff, float3 spec)
 {
     float3 baseDiff = max(diff, 0.0);
     float3 raw = baseDiff + max(spec, 0.0);
+    if (p3HdrParams.x > 0.5)
+    {
+        return raw;
+    }
 
     const float knee = 0.90;
     const float headroom = 1.0 - knee; // 0.10
@@ -458,7 +470,7 @@ float4 ShadeSkinnedDiff(VS_OUTPUT input, bool doAlphaReject)
         color = ApplyStage1Op(color, uv1, texOp);
     }
 
-    color = saturate(color + input.ColorSpec.rgb);
+    color = (p3HdrParams.x > 0.5) ? max(color + input.ColorSpec.rgb, 0.0) : saturate(color + input.ColorSpec.rgb);
     color = ApplyOgreFog(color, input.fogDist, (int)(p3Flags.z + 0.5));
     return float4(color, outAlpha);
 }

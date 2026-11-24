@@ -25,9 +25,11 @@ struct VisualConfig {
     bool p2_aerial_vignette = true;
     bool p2_ssr_enabled = true;
     bool n5_ibl_wrap_enabled = true;
+    bool p2_shadow_map_enabled = true;
     int p2_filter_preset = 1;  // 0=Off, 1=Hob, 2=Dark Film
     int p2_lut_preset = 0;     // 0=Off, 1=CinemaTealOrange, 2=ColdNordic, 3=CustomCube
     int smaa_mode = 0;         // 0=Off, 1=Color, 2=Depth+Color
+    int hdr_tonemap_mode = 2;  // 0=Off, 1=ACES, 2=AgX
     bool weather_rain_enabled = false;
     int weather_rain_strength = 100; // 0..200 (%)
     int time_of_day_hours = -1;      // -1=Auto, 0..24
@@ -44,6 +46,8 @@ struct VisualConfig {
     int p2_filter_strength = 100;      // 0..200 (%)
     int p2_lut_strength = 100;         // 0..200 (%)
     int n5_ibl_wrap_strength = 100;    // 0..200 (%)
+    int p2_shadow_strength = 100;      // 0..200 (%)
+    int hdr_exposure_pct = 100;        // 50..200 (%)
 
     bool operator==(const VisualConfig& other) const = default;
 };

@@ -202,6 +202,7 @@ struct PostRenderContext {
     ID3D11PixelShader* ps_p2_filter = nullptr;
     ID3D11Buffer* cb_bloom_lut = nullptr;
     ID3D11PixelShader* ps_lut_grade = nullptr;
+    ID3D11PixelShader* ps_hdr_tonemap = nullptr;
     ID3D11Buffer* cb_panel = nullptr;
     ID3D11PixelShader* ps_panel = nullptr;
     ID3D11PixelShader* ps_cursor = nullptr;

@@ -1236,4 +1236,126 @@ float PS_WriteWaterDepth(float4 pos : SV_POSITION) : SV_Target0
 )HLSL";
 const size_t kWriteWaterDepthShaderSourceLength = sizeof(kWriteWaterDepthShaderSource) - 1;
 
+const char kHdrTonemapShaderSource[] = R"HLSL(
+cbuffer CbBloomLutParams : register(b0)
+{
+    float4 gDstVpRect;     // xy=dstOriginPx, zw=dstSizePx
+    float4 gSrcUvRect;     // xy=srcUvOrigin, zw=srcUvSize
+    float4 gTexelAndBias;  // xy=invSrcTexSize, z=threshold, w=knee
+    float4 gMixAndLut;     // x=tonemapMode (1=ACES, 2=AgX), y=exposure, zw=unused
+};
+
+Texture2D<float4> gTex0 : register(t0);
+SamplerState gSamp : register(s0);
+
+struct VS_OUT
+{
+    float4 pos : SV_Position;
+};
+
+float2 ComputeSrcUv(float2 svPos)
+{
+    float2 normUv = saturate((svPos - gDstVpRect.xy) / max(gDstVpRect.zw, 1.0f));
+    return gSrcUvRect.xy + normUv * gSrcUvRect.zw;
+}
+
+float2 ClampSrcUv(float2 uv)
+{
+    float2 pad = gTexelAndBias.xy * 0.5f;
+    return clamp(uv, gSrcUvRect.xy + pad, gSrcUvRect.xy + gSrcUvRect.zw - pad);
+}
+
+// Stephen Hill ACES Fitted (sRGB -> ACEScg RRT+ODT -> sRGB, minimal hue skew)
+static const float3x3 ACESInputMat = float3x3(
+    0.59719f, 0.35458f, 0.04823f,
+    0.07600f, 0.90834f, 0.01566f,
+    0.02840f, 0.13383f, 0.83777f
+);
+
+static const float3x3 ACESOutputMat = float3x3(
+     1.60475f, -0.53108f, -0.07367f,
+    -0.10208f,  1.10813f, -0.00605f,
+    -0.00327f, -0.07276f,  1.07602f
+);
+
+float3 RRTAndODTFit(float3 v)
+{
+    float3 a = v * (v + 0.0245786f) - 0.000090537f;
+    float3 b = v * (0.983729f * v + 0.4329510f) + 0.238081f;
+    return a / b;
+}
+
+float3 ACESFitted(float3 color)
+{
+    color = mul(ACESInputMat, color);
+    color = RRTAndODTFit(color);
+    color = mul(ACESOutputMat, color);
+    return saturate(color);
+}
+
+// Troy Sobotka AgX + Punchy Look (Benjammin 6th-order polynomial contrast fit)
+float3 AgxDefaultContrastApprox(float3 x)
+{
+    float3 x2 = x * x;
+    float3 x4 = x2 * x2;
+    return + 15.5f     * x4 * x2
+           - 40.14f    * x4 * x
+           + 31.96f    * x4
+           - 6.868f    * x2 * x
+           + 0.4298f   * x2
+           + 0.1191f   * x
+           - 0.00232f;
+}
+
+float3 AgxPunchyDisplay(float3 lin)
+{
+    const float3x3 agx_mat = float3x3(
+        0.842479062253094f, 0.0784335999999992f, 0.0792237451477643f,
+        0.0423282422610123f, 0.878468636469772f, 0.0791661274605434f,
+        0.0423756549057051f, 0.0784336f,          0.879142973793104f
+    );
+    const float3x3 agx_mat_inv = float3x3(
+         1.19687900512017f,  -0.0980208811401368f, -0.0990297440797205f,
+        -0.0528968517574562f, 1.15190312990417f,   -0.0989611768448433f,
+        -0.0529716355144438f,-0.0980434501171241f,  1.15107367264116f
+    );
+    const float min_ev = -12.47393f;
+    const float max_ev = 4.026069f;
+
+    float3 val = mul(agx_mat, max(lin, 1e-6f));
+    val = clamp(log2(val), min_ev, max_ev);
+    val = (val - min_ev) / (max_ev - min_ev);
+    val = AgxDefaultContrastApprox(val);
+
+    // Balanced Punchy look in display-encoded space
+    float luma = dot(val, float3(0.2126f, 0.7152f, 0.0722f));
+    val = pow(max(val, 0.0f), 1.15f);
+    val = max(luma + (val - luma) * 1.24f, 0.0f);
+
+    val = mul(agx_mat_inv, val);
+    return saturate(val);
+}
+
+float4 PS_HdrTonemap(VS_OUT input) : SV_Target0
+{
+    float2 uv = ClampSrcUv(ComputeSrcUv(input.pos.xy));
+    float3 extGamma = max(gTex0.SampleLevel(gSamp, uv, 0).rgb, 0.0f);
+    float exposure = max(gMixAndLut.y, 0.05f);
+    float3 hdrLin = pow(extGamma, 2.2f) * exposure;
+
+    if (gMixAndLut.x > 1.5f)
+    {
+        float3 srgb = AgxPunchyDisplay(hdrLin * 1.18f);
+        return float4(srgb, 1.0f);
+    }
+    if (gMixAndLut.x > 0.5f)
+    {
+        float3 ldrLin = ACESFitted(hdrLin * 1.10f);
+        return float4(pow(ldrLin, 1.0f / 2.2f), 1.0f);
+    }
+    return float4(saturate(extGamma), 1.0f);
+}
+)HLSL";
+const size_t kHdrTonemapShaderSourceLength = sizeof(kHdrTonemapShaderSource) - 1;
+
 }  // namespace routeb

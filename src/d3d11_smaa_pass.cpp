@@ -1,4 +1,5 @@
 #include "d3d11_smaa_pass.h"
+#include "d3d11_hdr_hook.h"
 #include "d3d11_smaa_shaders.h"
 #include "smaa_area_tex.h"
 #include "smaa_search_tex.h"
@@ -234,6 +235,7 @@ bool EnsureSmaaStaticTextures(ID3D11Device* dev, PostLogFn logger) {
 
 bool EnsureSmaaDynamicTargets(ID3D11Device* dev, uint32_t width, uint32_t height, PostLogFn logger) {
     if (!dev || width == 0 || height == 0) return false;
+    HdrUpgradeBypassScope hdr_bypass;
 
     // 1. Edges target (R8G8_UNORM)
     if (!g_smaa_edges_tex || !g_smaa_edges_rtv || !g_smaa_edges_srv ||

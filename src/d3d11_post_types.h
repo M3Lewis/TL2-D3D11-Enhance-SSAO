@@ -105,8 +105,6 @@ struct AoRenderRequest {
     float map_fog_rgb[3] = {0.0f, 0.0f, 0.0f};
     float map_fog_start = 0.0f;
     float map_fog_end = 0.0f;
-    bool shadow_enabled = false;
-    float shadow_strength_scale = 1.0f;
 };
 using RouteCAoRenderRequest = AoRenderRequest;
 
@@ -128,8 +126,6 @@ struct PostWorldRequest {
     float lut_strength_scale = 1.0f;
     bool is_desert = false;
     bool is_menu = false;
-    int hdr_tonemap_mode = 0;  // 0=OFF, 1=ACES, 2=AgX
-    float hdr_exposure_scale = 1.0f;
 };
 using RouteCPostWorldRequest = PostWorldRequest;
 

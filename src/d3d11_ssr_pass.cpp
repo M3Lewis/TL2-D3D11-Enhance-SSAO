@@ -22,7 +22,7 @@ void ResetPostWorldDepthSnapshot() {
 
 bool ExecutePostWorldPass(const PostWorldRequest& req, PostLogFn logger) {
     if (!req.ctx || req.vp_width <= 0 || req.vp_height <= 0 || req.debug_mode > 0 ||
-        (!req.ssr_enabled && req.hdr_tonemap_mode <= 0 && req.lut_preset <= 0)) {
+        (!req.ssr_enabled && req.lut_preset <= 0)) {
         return false;
     }
 
@@ -153,36 +153,7 @@ bool ExecutePostWorldPass(const PostWorldRequest& req, PostLogFn logger) {
         did_any = true;
     }
 
-    // FP16 HDR -> Filmic Tonemap (ACES Fitted / AgX Punchy), right after SSR and before LUT/SMAA/Bloom2
-    if (!req.is_menu && req.hdr_tonemap_mode > 0 &&
-        g_st.ps_hdr_tonemap && g_st.cb_bloom_lut && g_st.blend_debug_rgb &&
-        CopyRtvTextureToP2Copy(dev, req.ctx, src_rt_tex, rt_desc, rtv_desc)) {
-        const float rt_w = static_cast<float>(rt_desc.Width);
-        const float rt_h = static_cast<float>(rt_desc.Height);
-        if (UploadBloomLutCb(req.ctx,
-                             static_cast<float>(req.vp_left), static_cast<float>(req.vp_top),
-                             static_cast<float>(req.vp_width), static_cast<float>(req.vp_height),
-                             static_cast<float>(req.vp_left) / rt_w, static_cast<float>(req.vp_top) / rt_h,
-                             static_cast<float>(req.vp_width) / rt_w, static_cast<float>(req.vp_height) / rt_h,
-                             1.0f / rt_w, 1.0f / rt_h,
-                             0.0f, 0.0f,
-                             static_cast<float>(req.hdr_tonemap_mode),
-                             (std::max)(0.1f, req.hdr_exposure_scale),
-                             0.0f)) {
-            req.ctx->PSSetConstantBuffers(0, 1, &g_st.cb_bloom_lut);
-            req.ctx->RSSetViewports(1, &ao_vp);
-            req.ctx->OMSetRenderTargets(1, &target_rtv, nullptr);
-            req.ctx->OMSetBlendState(g_st.blend_debug_rgb, nullptr, 0xFFFFFFFFU);
-            req.ctx->PSSetShader(g_st.ps_hdr_tonemap, nullptr, 0);
-            ID3D11ShaderResourceView* s[2] = {g_st.p2_copy_srv, nullptr};
-            req.ctx->PSSetShaderResources(0, 2, s);
-            req.ctx->Draw(3, 0);
-            req.ctx->PSSetShaderResources(0, 2, null_srvs);
-            did_any = true;
-        }
-    }
-
-    // Item 7: 3D LUT Color Grading (post-world + post-SSR + post-HDR, strictly pre-UI)
+    // Item 7: 3D LUT Color Grading (post-world + post-SSR, strictly pre-UI)
     if (req.lut_preset > 0 &&
         g_st.ps_lut_grade && g_st.cb_bloom_lut && g_st.blend_debug_rgb &&
         EnsureLutReady(dev, req.lut_preset, logger) &&

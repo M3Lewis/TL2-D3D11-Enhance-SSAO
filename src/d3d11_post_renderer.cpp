@@ -1,7 +1,5 @@
 #include "d3d11_post_renderer.h"
-#include "d3d11_hdr_hook.h"
 #include "d3d11_post_shaders.h"
-#include "d3d11_shadow_pass.h"
 #include "d3d11_smaa_pass.h"
 #include "d3d11_smaa_shaders.h"
 #include "phase3_scene_pipeline.h"
@@ -227,7 +225,6 @@ void ReleaseAllDeviceObjects() {
     SafeRelease(g_st.ps_cursor);
     SafeRelease(g_st.ps_panel);
     SafeRelease(g_st.cb_panel);
-    SafeRelease(g_st.ps_hdr_tonemap);
     SafeRelease(g_st.ps_lut_grade);
     SafeRelease(g_st.cb_bloom_lut);
     SafeRelease(g_st.cb_toast);
@@ -372,7 +369,7 @@ bool EnsurePipelineObjects(ID3D11Device* dev, RouteCD3DLogFn logger) {
     if (g_st.vs_fullscreen && g_st.shaders_single.ps_ao_raw && g_st.shaders_single.ps_composite &&
         g_st.shaders_single.ps_comp_dual && g_st.shaders_single.ps_aerial && g_st.shaders_single.ps_ssr &&
         g_st.shaders_single.ps_ssr_resolve &&
-        g_st.ps_lut_grade && g_st.ps_hdr_tonemap && g_st.cb_bloom_lut &&
+        g_st.ps_lut_grade && g_st.cb_bloom_lut &&
         g_st.ps_toast && g_st.cb_toast && g_st.blend_toast_alpha &&
         g_st.ps_panel && g_st.ps_cursor && g_st.cb_panel && g_st.samp_linear &&
         g_st.cb_params && g_st.blend_debug_rgb && g_st.blend_mul_rgb && g_st.blend_dual_ao &&
@@ -413,9 +410,6 @@ bool EnsurePipelineObjects(ID3D11Device* dev, RouteCD3DLogFn logger) {
               CompileAndCreatePixelShaderFromSource(
                   dev, compile_fn, kBloomLutShaderSource, kBloomLutShaderSourceLength, "route_c_bloom_lut.hlsl",
                   "PS_LutGrade3D", "ps_4_0", macro_single, &g_st.ps_lut_grade, logger) &&
-              CompileAndCreatePixelShaderFromSource(
-                  dev, compile_fn, kHdrTonemapShaderSource, kHdrTonemapShaderSourceLength, "route_c_hdr_tonemap.hlsl",
-                  "PS_HdrTonemap", "ps_4_0", macro_single, &g_st.ps_hdr_tonemap, logger) &&
               CompileAndCreatePixelShaderFromSource(
                   dev, compile_fn, kWriteWaterDepthShaderSource, kWriteWaterDepthShaderSourceLength, "route_b_water_depth.hlsl",
                   "PS_WriteWaterDepth", "ps_4_0", macro_single, &g_st.ps_write_water_depth, logger);
@@ -748,7 +742,6 @@ bool EnsureSsrTarget(ID3D11Device* dev, uint32_t width, uint32_t height) {
         g_st.ssr_rt_w == width && g_st.ssr_rt_h == height) {
         return true;
     }
-    HdrUpgradeBypassScope hdr_bypass;
     SafeRelease(g_st.ssr_rt_srv);
     SafeRelease(g_st.ssr_rt_rtv);
     SafeRelease(g_st.ssr_rt_tex);
@@ -1184,12 +1177,6 @@ void STDMETHODCALLTYPE HookedDrawIndexed(
     if (g_orig_draw_indexed) {
         g_orig_draw_indexed(ctx, IndexCount, StartIndexLocation, BaseVertexLocation);
     }
-    if (ShouldBypassDrawHookForShadowReplay()) {
-        return;
-    }
-    if (IsShadowMapEnabled() && IsWorldShadowCaptureOpen() && !IsMainMenuActive() && g_orig_draw_indexed) {
-        ReplayShadowDrawIndexed(ctx, g_orig_draw_indexed, IndexCount, StartIndexLocation, BaseVertexLocation);
-    }
     if (!g_water_pass_active.load(std::memory_order_relaxed)) {
         return;
     }
@@ -1211,12 +1198,6 @@ void STDMETHODCALLTYPE HookedDraw(
     if (g_orig_draw) {
         g_orig_draw(ctx, VertexCount, StartVertexLocation);
     }
-    if (ShouldBypassDrawHookForShadowReplay()) {
-        return;
-    }
-    if (IsShadowMapEnabled() && IsWorldShadowCaptureOpen() && !IsMainMenuActive() && g_orig_draw) {
-        ReplayShadowDraw(ctx, g_orig_draw, VertexCount, StartVertexLocation);
-    }
     if (!g_water_pass_active.load(std::memory_order_relaxed)) {
         return;
     }
@@ -1234,7 +1215,7 @@ void STDMETHODCALLTYPE HookedDraw(
 
 void EnsureContextDrawHooked(ID3D11DeviceContext* ctx) {
     if (!ctx) return;
-    if (IsMainMenuActive() || (!IsP2SsrEnabled() && !IsShadowMapEnabled())) {
+    if (IsMainMenuActive() || !IsP2SsrEnabled()) {
         RemoveContextDrawHook();
         return;
     }
@@ -1396,7 +1377,6 @@ bool EnsureP2CopyTarget(ID3D11Device* dev, uint32_t width, uint32_t height, DXGI
         g_st.p2_copy_w == width && g_st.p2_copy_h == height && g_st.p2_copy_fmt == fmt) {
         return true;
     }
-    HdrUpgradeBypassScope hdr_bypass;
     SafeRelease(g_st.p2_copy_srv);
     SafeRelease(g_st.p2_copy_tex);
     g_st.p2_copy_w = 0;
@@ -1837,7 +1817,6 @@ bool EnsurePanelTexture(ID3D11Device* dev, uint32_t width, uint32_t height) {
     if (g_st.panel_tex && g_st.panel_srv && g_st.panel_tex_w == width && g_st.panel_tex_h == height) {
         return true;
     }
-    HdrUpgradeBypassScope hdr_bypass;
     SafeRelease(g_st.panel_srv);
     SafeRelease(g_st.panel_tex);
     g_st.panel_tex_w = 0;
@@ -1951,12 +1930,6 @@ bool VerifyPostShadersCompile(PostLogFn logger) {
         bloom_lut_ok = bloom_lut_ok && ok_one;
     }
 
-    ID3DBlob* hdr_blob = nullptr;
-    const bool hdr_ok = CompileShaderBlobFromSource(
-        compile_fn, kHdrTonemapShaderSource, kHdrTonemapShaderSourceLength, "route_c_hdr_tonemap.hlsl",
-        "PS_HdrTonemap", "ps_4_0", macro_single, &hdr_blob, logger);
-    SafeRelease(hdr_blob);
-
     ID3DBlob* water_blob = nullptr;
     const bool water_ok = CompileShaderBlobFromSource(
         compile_fn, kWriteWaterDepthShaderSource, kWriteWaterDepthShaderSourceLength, "route_b_water_depth.hlsl",
@@ -1978,8 +1951,7 @@ bool VerifyPostShadersCompile(PostLogFn logger) {
         smaa_ok = smaa_ok && ok_one;
     }
 
-    return toast_ok && p2_ok && panel_ok && cursor_ok && bloom_lut_ok && hdr_ok && water_ok && smaa_ok &&
-           VerifyShadowShadersCompile(logger);
+    return toast_ok && p2_ok && panel_ok && cursor_ok && bloom_lut_ok && water_ok && smaa_ok;
 }
 
 bool IsCustomCubeLutLoaded() {

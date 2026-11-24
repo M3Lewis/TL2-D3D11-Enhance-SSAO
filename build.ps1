@@ -9,8 +9,6 @@ $SrcFiles = @(
     (Join-Path $RootDir "src\fixed_func_manual_uniforms.cpp"),
     (Join-Path $RootDir "src\phase3_scene_pipeline.cpp"),
     (Join-Path $RootDir "src\d3d11_post_shaders.cpp"),
-    (Join-Path $RootDir "src\d3d11_hdr_hook.cpp"),
-    (Join-Path $RootDir "src\d3d11_shadow_pass.cpp"),
     (Join-Path $RootDir "src\d3d11_post_renderer.cpp"),
     (Join-Path $RootDir "src\d3d11_ssao_pass.cpp"),
     (Join-Path $RootDir "src\d3d11_ssr_pass.cpp"),

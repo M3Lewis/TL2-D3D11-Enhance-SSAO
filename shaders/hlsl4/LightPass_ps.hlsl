@@ -31,11 +31,6 @@ float  FogDensity;
 //   w = stage1 projective flag (0=planar .xy, 1=projective .xy/.w)
 float4 p3Flags = float4(0.0, 1.0, 0.0, 0.0);
 
-// p3HdrParams:
-//   x = HDR tonemap mode (0=OFF/LDR clamp, 1=ACES Filmic, 2=AgX Punchy)
-//   y = Exposure multiplier
-float4 p3HdrParams = float4(0.0, 1.0, 0.0, 0.0);
-
 float2 ResolveStageUv(float4 rawUv, bool isProjective)
 {
     if (isProjective)
@@ -48,19 +43,17 @@ float2 ResolveStageUv(float4 rawUv, bool isProjective)
 float3 ApplyStage1Op(float3 baseColor, float2 uv, int op)
 {
     float4 t1 = Texture1.Sample(Sampler1, uv);
-    bool hdr = (p3HdrParams.x > 0.5);
-    float3 res = baseColor;
     if (op == 1)
-        res = baseColor * t1.rgb;
-    else if (op == 2)
-        res = baseColor + t1.rgb;
-    else if (op == 3)
-        res = lerp(baseColor, t1.rgb, t1.a);
-    else if (op == 4)
-        res = baseColor * (t1.rgb * 2.0);
-    else if (op == 5)
-        res = baseColor * (t1.rgb * 4.0);
-    return hdr ? max(res, 0.0) : saturate(res);
+        return saturate(baseColor * t1.rgb);
+    if (op == 2)
+        return saturate(baseColor + t1.rgb);
+    if (op == 3)
+        return saturate(lerp(baseColor, t1.rgb, t1.a));
+    if (op == 4)
+        return saturate(baseColor * (t1.rgb * 2.0));
+    if (op == 5)
+        return saturate(baseColor * (t1.rgb * 4.0));
+    return baseColor;
 }
 
 float3 ApplyOgreFog(float3 color, float rawFogDist, int fogMode)
@@ -109,21 +102,15 @@ float4 main(VS_OUTPUT input) : SV_TARGET
         color = ApplyStage1Op(color, uv1, texOp);
     }
 
-    if (p3HdrParams.x > 0.5)
+    // Soft-knee shoulder compression to keep additive light passes saturated without flat clipping
+    float lum = dot(color, float3(0.299, 0.587, 0.114));
+    if (lum > 0.78)
     {
-        color = max(color + input.ColorSpec.rgb, 0.0);
+        float compressed = 0.78 + (lum - 0.78) / (1.0 + 0.65 * (lum - 0.78));
+        color *= compressed / lum;
     }
-    else
-    {
-        // Soft-knee shoulder compression to keep additive light passes saturated without flat clipping
-        float lum = dot(color, float3(0.299, 0.587, 0.114));
-        if (lum > 0.78)
-        {
-            float compressed = 0.78 + (lum - 0.78) / (1.0 + 0.65 * (lum - 0.78));
-            color *= compressed / lum;
-        }
-        color = saturate(color + input.ColorSpec.rgb);
-    }
+
+    color = saturate(color + input.ColorSpec.rgb);
     color = ApplyOgreFog(color, input.fogDist, (int)(p3Flags.z + 0.5));
     return float4(color, saturate(tex0.a * input.Color.a));
 }

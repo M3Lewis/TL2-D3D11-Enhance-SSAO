@@ -1,6 +1,5 @@
 #include "d3d11_ssao_pass.h"
 #include "d3d11_post_renderer.h"
-#include "d3d11_shadow_pass.h"
 
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
@@ -178,8 +177,7 @@ void PopulateDynamicAoAerialParams(const AoRenderRequest& req, CbAoParams& cb) {
 }
 bool ExecuteAoPass(const AoRenderRequest& req, PostLogFn logger) {
     const bool has_atmos = req.aerial_enabled;
-    const bool shadow_on = req.shadow_enabled && !req.is_menu && (req.debug_mode <= 0);
-    const bool need_depth = req.ao_enabled || req.capture_particle_depth || has_atmos || req.ssr_enabled || shadow_on;
+    const bool need_depth = req.ao_enabled || req.capture_particle_depth || has_atmos || req.ssr_enabled;
     if (!req.ctx || !req.proj_4x4 || req.vp_width <= 0 || req.vp_height <= 0 || !need_depth) {
         return false;
     }
@@ -405,7 +403,7 @@ bool ExecuteAoPass(const AoRenderRequest& req, PostLogFn logger) {
     req.ctx->GSSetShader(nullptr, nullptr, 0);
     req.ctx->PSSetSamplers(0, 1, &g_st.samp_linear);
 
-    if (need_depth && (req.capture_particle_depth || shadow_on)) {
+    if (need_depth && req.capture_particle_depth) {
         const float* P = req.proj_4x4;
         bool resolved_ok = true;
         if (use_msaa) {
@@ -428,7 +426,7 @@ bool ExecuteAoPass(const AoRenderRequest& req, PostLogFn logger) {
                 req.ctx->PSSetShaderResources(0, 2, null_srvs);
             }
         }
-        if (resolved_ok && req.capture_particle_depth) {
+        if (resolved_ok) {
             g_st.particle_depth_valid = true;
             g_st.particle_proj_22 = P[10];
             g_st.particle_proj_23 = P[11];
@@ -446,32 +444,6 @@ bool ExecuteAoPass(const AoRenderRequest& req, PostLogFn logger) {
     ao_vp.Height = static_cast<float>(req.vp_height);
     ao_vp.MinDepth = 0.0f;
     ao_vp.MaxDepth = 1.0f;
-
-    if (shadow_on) {
-        ID3D11ShaderResourceView* shadow_depth_srv = use_msaa ? g_st.depth_resolve_srv : g_st.depth_copy_srv;
-        if (shadow_depth_srv) {
-            ExecuteShadowResolvePass(
-                req.ctx,
-                target_rtv,
-                shadow_depth_srv,
-                req.proj_4x4,
-                req.vp_left,
-                req.vp_top,
-                req.vp_width,
-                req.vp_height,
-                req.shadow_strength_scale,
-                logger);
-            // Re-establish shared FS pipeline state before AO/Aerial passes
-            req.ctx->OMSetDepthStencilState(g_st.dss_disabled, 0);
-            req.ctx->RSSetState(g_st.rs_fullscreen);
-            req.ctx->RSSetScissorRects(0, nullptr);
-            req.ctx->IASetInputLayout(nullptr);
-            req.ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-            req.ctx->VSSetShader(g_st.vs_fullscreen, nullptr, 0);
-            req.ctx->GSSetShader(nullptr, nullptr, 0);
-            req.ctx->PSSetSamplers(0, 1, &g_st.samp_linear);
-        }
-    }
 
     if (need_depth) {
         req.ctx->PSSetConstantBuffers(0, 1, &g_st.cb_params);

@@ -14,7 +14,7 @@ namespace routeb {
 
 namespace {
 
-// Verified RVAs for RenderSystem_Direct3D11.dll (TimeDateStamp 0x6af5fabf).
+// Preferred RVAs for RenderSystem_Direct3D11.dll (used as fast-path before signature scan fallback).
 constexpr uintptr_t kRvaGetFixedFuncShaderPrograms = 0x32480;
 constexpr uintptr_t kRvaGenLayerBlendOp = 0x33580;
 constexpr uintptr_t kRvaGenLayerBlendOperand = 0x34F10;
@@ -27,10 +27,19 @@ constexpr uintptr_t kFfProgsOffPsParamsRep = 64;
 
 constexpr uint8_t kExpectedGetFfPrograms[15] = {
     0x48, 0x89, 0x5C, 0x24, 0x10, 0x48, 0x89, 0x6C, 0x24, 0x18, 0x48, 0x89, 0x74, 0x24, 0x20};
+constexpr uint8_t kScanGetFfPrograms[24] = {
+    0x48, 0x89, 0x5C, 0x24, 0x10, 0x48, 0x89, 0x6C, 0x24, 0x18, 0x48, 0x89,
+    0x74, 0x24, 0x20, 0x41, 0x54, 0x41, 0x56, 0x41, 0x57, 0x48, 0x83, 0xEC};
 constexpr uint8_t kExpectedGenBlendOp[14] = {
     0x48, 0x8B, 0xC4, 0x48, 0x89, 0x58, 0x20, 0x55, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55};
+constexpr uint8_t kScanGenBlendOp[24] = {
+    0x48, 0x8B, 0xC4, 0x48, 0x89, 0x58, 0x20, 0x55, 0x56, 0x57, 0x41, 0x54,
+    0x41, 0x55, 0x41, 0x56, 0x41, 0x57, 0x48, 0x8D, 0xA8, 0xC8, 0xFE, 0xFF};
 constexpr uint8_t kExpectedGenBlendOperand[15] = {
     0x48, 0x89, 0x5C, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24, 0x20, 0x48, 0x89, 0x4C, 0x24, 0x08};
+constexpr uint8_t kScanGenBlendOperand[24] = {
+    0x48, 0x89, 0x5C, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24, 0x20, 0x48, 0x89,
+    0x4C, 0x24, 0x08, 0x57, 0x48, 0x81, 0xEC, 0xB0, 0x00, 0x00, 0x00, 0x48};
 
 using GetFfShaderProgramsFn = uintptr_t(__fastcall*)(uintptr_t self, const void* lang, uintptr_t vdecl, uintptr_t ff_state);
 using GenLayerBlendOpFn = std::string*(__fastcall*)(std::string* out, const OgreLayerBlendModeExRaw* blend, uint8_t is_alpha);
@@ -213,46 +222,54 @@ bool InstallFixedFuncManualUniforms(void* d3d11_base, LogFn logger) {
     if (!d3d11_base) {
         return false;
     }
-    const auto base = reinterpret_cast<uintptr_t>(d3d11_base);
 
+    void* prog_target = ResolveCodeTarget(
+        d3d11_base, kRvaGetFixedFuncShaderPrograms, kExpectedGetFfPrograms, sizeof(kExpectedGetFfPrograms),
+        kScanGetFfPrograms, nullptr, sizeof(kScanGetFfPrograms));
     void* orig_prog = nullptr;
-    if (!g_detour_get_programs.Install(
-            reinterpret_cast<void*>(base + kRvaGetFixedFuncShaderPrograms),
+    if (!prog_target || !g_detour_get_programs.Install(
+            prog_target,
             kExpectedGetFfPrograms,
             sizeof(kExpectedGetFfPrograms),
             reinterpret_cast<void*>(&HookGetFixedFuncShaderPrograms),
             &orig_prog)) {
         if (g_log) {
-            g_log("[RouteB][FFManual] FAILED detour on sub_180032480 (0x32480)");
+            g_log("[RouteB][FFManual] FAILED detour on getFixedFuncShaderPrograms");
         }
         return false;
     }
     g_orig_get_programs = reinterpret_cast<GetFfShaderProgramsFn>(orig_prog);
 
+    void* op_target = ResolveCodeTarget(
+        d3d11_base, kRvaGenLayerBlendOp, kExpectedGenBlendOp, sizeof(kExpectedGenBlendOp),
+        kScanGenBlendOp, nullptr, sizeof(kScanGenBlendOp));
     void* orig_op = nullptr;
-    if (!g_detour_gen_blend_op.Install(
-            reinterpret_cast<void*>(base + kRvaGenLayerBlendOp),
+    if (!op_target || !g_detour_gen_blend_op.Install(
+            op_target,
             kExpectedGenBlendOp,
             sizeof(kExpectedGenBlendOp),
             reinterpret_cast<void*>(&HookGenLayerBlendOp),
             &orig_op)) {
         if (g_log) {
-            g_log("[RouteB][FFManual] FAILED detour on sub_180033580 (0x33580)");
+            g_log("[RouteB][FFManual] FAILED detour on genLayerBlendOp");
         }
         g_detour_get_programs.Remove();
         return false;
     }
     g_orig_gen_blend_op = reinterpret_cast<GenLayerBlendOpFn>(orig_op);
 
+    void* operand_target = ResolveCodeTarget(
+        d3d11_base, kRvaGenLayerBlendOperand, kExpectedGenBlendOperand, sizeof(kExpectedGenBlendOperand),
+        kScanGenBlendOperand, nullptr, sizeof(kScanGenBlendOperand));
     void* orig_operand = nullptr;
-    if (!g_detour_gen_blend_operand.Install(
-            reinterpret_cast<void*>(base + kRvaGenLayerBlendOperand),
+    if (!operand_target || !g_detour_gen_blend_operand.Install(
+            operand_target,
             kExpectedGenBlendOperand,
             sizeof(kExpectedGenBlendOperand),
             reinterpret_cast<void*>(&HookGenLayerBlendOperand),
             &orig_operand)) {
         if (g_log) {
-            g_log("[RouteB][FFManual] FAILED detour on sub_180034F10 (0x34F10)");
+            g_log("[RouteB][FFManual] FAILED detour on genLayerBlendOperand");
         }
         g_detour_gen_blend_op.Remove();
         g_detour_get_programs.Remove();

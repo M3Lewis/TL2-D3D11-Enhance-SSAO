@@ -26,14 +26,15 @@ std::atomic<bool> g_stats_logged{false};
 std::atomic<bool> g_cleaned_up{false};
 std::atomic<int> g_cxx_throw_logged{0};
 
-constexpr std::uintptr_t kRvaFindNamedConstStart = 0x000AF6E0;
-constexpr std::uintptr_t kRvaFindNamedConstEnd   = 0x000AF900;
+constexpr char kSymFindNamedConstDef[] =
+    "?_findNamedConstantDefinition@GpuProgramParameters@Ogre@@QEBAPEBUGpuConstantDefinition@2@AEBV?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@_N@Z";
+constexpr std::uintptr_t kFindNamedConstSpan = 0x220;
 
-// Verified Ogre::Root::~Root & MemoryDataStream RVAs in OgreMain.dll (TimeDateStamp 0x6af5faa0)
-constexpr std::uintptr_t kRvaRootDtor        = 0x184860;
-constexpr std::uintptr_t kRvaMemStreamRead   = 0x085E60;
-constexpr std::uintptr_t kRvaMemStreamSeek   = 0x0864B0;
-constexpr std::uintptr_t kRvaMemStreamSkip   = 0x086530;
+// Exported Ogre::Root::~Root & MemoryDataStream symbols in OgreMain.dll (resolved via GetProcAddress).
+constexpr char kSymRootDtor[]      = "??1Root@Ogre@@QEAA@XZ";
+constexpr char kSymMemStreamRead[] = "?read@MemoryDataStream@Ogre@@UEAA_KPEAX_K@Z";
+constexpr char kSymMemStreamSeek[] = "?seek@MemoryDataStream@Ogre@@UEAAX_K@Z";
+constexpr char kSymMemStreamSkip[] = "?skip@MemoryDataStream@Ogre@@UEAAXJ@Z";
 
 constexpr std::uint8_t kExpectedRootDtor[15] = {
     0x48, 0x89, 0x5C, 0x24, 0x10, 0x48, 0x89, 0x6C, 0x24, 0x18, 0x48, 0x89, 0x74, 0x24, 0x20};
@@ -248,18 +249,20 @@ LONG CALLBACK OnVectoredException(EXCEPTION_POINTERS* info) {
     const DWORD code = info->ExceptionRecord->ExceptionCode;
     if (code == 0xE06D7363UL) {
         if (const HMODULE ogre_mod = ::GetModuleHandleW(L"OgreMain.dll")) {
-            const auto ogre_base = reinterpret_cast<std::uintptr_t>(ogre_mod);
-            void* frames[16]{};
-            const USHORT nframes = ::RtlCaptureStackBackTrace(0, 16, frames, nullptr);
-            bool from_find_named = false;
-            for (USHORT i = 0; i < nframes; ++i) {
-                const auto addr = reinterpret_cast<std::uintptr_t>(frames[i]);
-                if (addr >= ogre_base + kRvaFindNamedConstStart && addr < ogre_base + kRvaFindNamedConstEnd) {
-                    from_find_named = true;
-                    break;
+            const auto find_start = reinterpret_cast<std::uintptr_t>(
+                ::GetProcAddress(ogre_mod, kSymFindNamedConstDef));
+            if (find_start != 0) {
+                void* frames[16]{};
+                const USHORT nframes = ::RtlCaptureStackBackTrace(0, 16, frames, nullptr);
+                bool from_find_named = false;
+                for (USHORT i = 0; i < nframes; ++i) {
+                    const auto addr = reinterpret_cast<std::uintptr_t>(frames[i]);
+                    if (addr >= find_start && addr < find_start + kFindNamedConstSpan) {
+                        from_find_named = true;
+                        break;
+                    }
                 }
-            }
-            if (from_find_named && g_cxx_throw_logged.fetch_add(1, std::memory_order_relaxed) < 4) {
+                if (from_find_named && g_cxx_throw_logged.fetch_add(1, std::memory_order_relaxed) < 4) {
                 const auto p3 = routeb::GetPhase3Stats();
                 LogLine("[RouteB][CXX] _findNamedConstantDefinition threw 0xE06D7363 (frames=%u, setPass=%llu, skinned=%llu, diffA=%llu)",
                         static_cast<unsigned>(nframes),
@@ -273,6 +276,7 @@ LONG CALLBACK OnVectoredException(EXCEPTION_POINTERS* info) {
                         std::snprintf(loc_buf, sizeof(loc_buf), "0x%llx", static_cast<unsigned long long>(addr));
                     }
                     LogLine("[RouteB][CXX]   frame[%u] = %s", static_cast<unsigned>(i), loc_buf);
+                }
                 }
             }
         }
@@ -416,7 +420,7 @@ bool InstallMemoryStreamGuards(void* ogre_base) {
         return false;
     }
     struct StreamGuardSpec {
-        std::uintptr_t rva;
+        const char* symbol;
         const std::uint8_t* expected;
         std::size_t len;
         void* hook;
@@ -425,22 +429,23 @@ bool InstallMemoryStreamGuards(void* ogre_base) {
         const char* label;
     };
     const StreamGuardSpec specs[] = {
-        {kRvaMemStreamRead, kExpectedMemStreamRead, sizeof(kExpectedMemStreamRead),
+        {kSymMemStreamRead, kExpectedMemStreamRead, sizeof(kExpectedMemStreamRead),
          reinterpret_cast<void*>(&HookMemoryStreamRead), &g_detour_mem_read, &g_orig_mem_read, "read"},
-        {kRvaMemStreamSeek, kExpectedMemStreamSeek, sizeof(kExpectedMemStreamSeek),
+        {kSymMemStreamSeek, kExpectedMemStreamSeek, sizeof(kExpectedMemStreamSeek),
          reinterpret_cast<void*>(&HookMemoryStreamSeek), &g_detour_mem_seek, &g_orig_mem_seek, "seek"},
-        {kRvaMemStreamSkip, kExpectedMemStreamSkip, sizeof(kExpectedMemStreamSkip),
+        {kSymMemStreamSkip, kExpectedMemStreamSkip, sizeof(kExpectedMemStreamSkip),
          reinterpret_cast<void*>(&HookMemoryStreamSkip), &g_detour_mem_skip, &g_orig_mem_skip, "skip"},
     };
     bool all_ok = true;
-    const auto base = reinterpret_cast<std::uintptr_t>(ogre_base);
+    auto* ogre_mod = static_cast<HMODULE>(ogre_base);
     for (const auto& s : specs) {
         if (s.detour->IsInstalled()) {
             continue;
         }
-        if (!s.detour->Install(reinterpret_cast<void*>(base + s.rva), s.expected, s.len, s.hook, s.orig_slot)) {
-            LogLine("[RouteB][OgreFix] WARNING: Failed to detour MemoryDataStream::%s (0x%llx).",
-                    s.label, static_cast<unsigned long long>(s.rva));
+        void* target = reinterpret_cast<void*>(::GetProcAddress(ogre_mod, s.symbol));
+        if (!target || !s.detour->Install(target, s.expected, s.len, s.hook, s.orig_slot)) {
+            LogLine("[RouteB][OgreFix] WARNING: Failed to detour MemoryDataStream::%s (addr=%p).",
+                    s.label, target);
             all_ok = false;
         }
     }
@@ -460,8 +465,8 @@ void InstallRootShutdownHook(void* ogre_base) {
         return;
     }
     void* orig = nullptr;
-    auto* target = reinterpret_cast<std::uint8_t*>(ogre_base) + kRvaRootDtor;
-    if (g_detour_root_dtor.Install(
+    void* target = reinterpret_cast<void*>(::GetProcAddress(static_cast<HMODULE>(ogre_base), kSymRootDtor));
+    if (target && g_detour_root_dtor.Install(
             target,
             kExpectedRootDtor,
             sizeof(kExpectedRootDtor),
@@ -469,7 +474,7 @@ void InstallRootShutdownHook(void* ogre_base) {
             &orig)) {
         g_orig_root_dtor = reinterpret_cast<RootDtorFn>(orig);
     } else {
-        LogLine("[RouteB] WARNING: Failed to detour Ogre::Root::~Root (0x184860).");
+        LogLine("[RouteB] WARNING: Failed to detour Ogre::Root::~Root (addr=%p).", target);
     }
 }
 

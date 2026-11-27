@@ -16,29 +16,54 @@ namespace routeb {
 
 namespace {
 
-// Verified RVAs for Torchlight II 2026 x64 (TimeDateStamp 0x6af5fabf / 0x6af5faa0)
+// Preferred RVAs for Torchlight II 2026 x64 RenderSystem_Direct3D11.dll (used as fast-path before signature scan fallback)
 constexpr uintptr_t kRvaGetConstantBuffer = 0x08260;
 constexpr uintptr_t kRvaRenderLoopEntry = 0x17539;
-constexpr uintptr_t kRvaRenderLoopSkipTarget = 0x176C1;
-constexpr uintptr_t kRvaRenderLoopResume = 0x17549;
 constexpr uintptr_t kRvaRenderCopyCall = 0x176D6;
-constexpr uintptr_t kRvaRenderCopyResume = 0x176E7;
 constexpr uintptr_t kRvaCopyTextureLayers = 0x33010;
 constexpr uintptr_t kRvaSetParamHelper = 0x320E0;
 constexpr uintptr_t kRvaSetVec3Helper = 0x32180;
 constexpr uintptr_t kRvaStringDtor = 0x01960;
-constexpr uintptr_t kRvaOgreGpuParamsDtor = 0x116C0;
+
+// Exported symbol in OgreMain.dll (resolved dynamically via GetProcAddress)
+constexpr char kSymOgreGpuParamsDtor[] = "??1GpuProgramParameters@Ogre@@QEAA@XZ";
 
 constexpr uint8_t kExpected8260[14] = {
     0x48, 0x89, 0x5C, 0x24, 0x18, 0x55, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56};
+constexpr uint8_t kScan8260[64] = {
+    0x48, 0x89, 0x5C, 0x24, 0x18, 0x55, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56, 0x41, 0x57,
+    0x48, 0x8D, 0xAC, 0x24, 0x60, 0xFF, 0xFF, 0xFF, 0x48, 0x81, 0xEC, 0xA0, 0x01, 0x00, 0x00, 0x48,
+    0x8B, 0x05, 0x00, 0x00, 0x00, 0x00, 0x48, 0x33, 0xC4, 0x48, 0x89, 0x85, 0x90, 0x00, 0x00, 0x00,
+    0x48, 0x8B, 0xF2, 0x4C, 0x8B, 0xF9, 0x48, 0x89, 0x54, 0x24, 0x38, 0x48, 0x8B, 0x91, 0xA8, 0x02};
+constexpr char kMask8260[] = "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx????xxxxxxxxxxxxxxxxxxxxxxxxxx";
+
 constexpr uint8_t kExpected17539[16] = {
     0x4C, 0x89, 0x75, 0x18, 0x49, 0x8D, 0x9F, 0x48, 0x10, 0x00, 0x00, 0xBE, 0x10, 0x00, 0x00, 0x00};
+constexpr uint8_t kExpectedLoopSkip[10] = {
+    0x48, 0x8B, 0x4C, 0x24, 0x40, 0x48, 0x85, 0xC9, 0x74, 0x0B};
 constexpr uint8_t kExpected176D6[17] = {
-    0x49, 0x8D, 0x8F, 0xB0, 0x09, 0x00, 0x00, 0x48, 0x8D, 0x54, 0x24, 0x78, 0xE8, 0x29, 0xB9, 0x01, 0x00};
+    0x49, 0x8D, 0x8F, 0xB0, 0x09, 0x00, 0x00, 0x48, 0x8D, 0x54, 0x24, 0x78, 0xE8, 0x00, 0x00, 0x00, 0x00};
+constexpr char kMask176D6[] = "xxxxxxxxxxxxx????";
+constexpr uint8_t kScanCopyTextureLayers[13] = {
+    0x48, 0x83, 0xC1, 0x18, 0x48, 0x3B, 0xCA, 0x74, 0x2E, 0x4C, 0x8B, 0x4A, 0x08};
+
 constexpr uint8_t kExpected320E0[15] = {
     0x48, 0x89, 0x5C, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24, 0x20, 0x57, 0x48, 0x83, 0xEC, 0x70};
+constexpr uint8_t kScan320E0[24] = {
+    0x48, 0x89, 0x5C, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24, 0x20, 0x57, 0x48,
+    0x83, 0xEC, 0x70, 0x48, 0x8B, 0x05, 0x00, 0x00, 0x00, 0x00, 0x48, 0x33};
+constexpr char kMaskSetParam[] = "xxxxxxxxxxxxxxxxxx????xx";
+
 constexpr uint8_t kExpected32180[15] = {
     0x48, 0x89, 0x5C, 0x24, 0x10, 0x55, 0x56, 0x57, 0x48, 0x81, 0xEC, 0xA0, 0x00, 0x00, 0x00};
+constexpr uint8_t kScan32180[24] = {
+    0x48, 0x89, 0x5C, 0x24, 0x10, 0x55, 0x56, 0x57, 0x48, 0x81, 0xEC, 0xA0,
+    0x00, 0x00, 0x00, 0x48, 0x8B, 0x05, 0x00, 0x00, 0x00, 0x00, 0x48, 0x33};
+
+constexpr uint8_t kScanStringDtor[24] = {
+    0x40, 0x53, 0x48, 0x83, 0xEC, 0x30, 0x48, 0x8B, 0x51, 0x18, 0x48, 0x8B,
+    0xD9, 0x48, 0x83, 0xFA, 0x0F, 0x76, 0x2C, 0x48, 0x8B, 0x09, 0x48, 0xFF};
+
 constexpr uint8_t kExpectedOgreDtor[17] = {
     0x48, 0x89, 0x5C, 0x24, 0x18, 0x48, 0x89, 0x4C, 0x24, 0x08, 0x55, 0x56, 0x57, 0x48, 0x83, 0xEC, 0x20};
 
@@ -430,12 +455,41 @@ void AppendMovRaxImm64Call(std::vector<uint8_t>& out, uint64_t addr) {
     out.push_back(0xD0);
 }
 
-bool InstallRenderSkipStubs(uintptr_t base) {
-    // Stub 1: replace 0x17539 (16 bytes)
+bool InstallRenderSkipStubs(void* d3d11_base) {
+    auto* loop_entry = static_cast<uint8_t*>(ResolveCodeTarget(
+        d3d11_base, kRvaRenderLoopEntry, kExpected17539, sizeof(kExpected17539),
+        kExpected17539, nullptr, sizeof(kExpected17539)));
+    auto* copy_call = static_cast<uint8_t*>(ResolveCodeTarget(
+        d3d11_base, kRvaRenderCopyCall, kExpected176D6, sizeof(kExpected176D6),
+        kExpected176D6, kMask176D6, sizeof(kExpected176D6)));
+    if (!loop_entry || !copy_call) {
+        return false;
+    }
+
+    const auto* loop_skip_target = copy_call - 21;
+    if (std::memcmp(loop_skip_target, kExpectedLoopSkip, sizeof(kExpectedLoopSkip)) != 0) {
+        return false;
+    }
+    const auto* loop_resume = loop_entry + sizeof(kExpected17539);
+    const auto* copy_resume = copy_call + sizeof(kExpected176D6);
+
+    int32_t copy_rel32 = 0;
+    std::memcpy(&copy_rel32, copy_call + 13, sizeof(copy_rel32));
+    void* copy_tex_layers = copy_call + 17 + copy_rel32;
+    if (std::memcmp(copy_tex_layers, kScanCopyTextureLayers, sizeof(kScanCopyTextureLayers)) != 0) {
+        copy_tex_layers = ResolveCodeTarget(
+            d3d11_base, kRvaCopyTextureLayers, kScanCopyTextureLayers, sizeof(kScanCopyTextureLayers),
+            kScanCopyTextureLayers, nullptr, sizeof(kScanCopyTextureLayers));
+        if (!copy_tex_layers) {
+            return false;
+        }
+    }
+
+    // Stub 1: replace RenderLoopEntry (16 bytes)
     //   mov [rbp+18h], r14
-    //   mov esi, 10h (also needed later at 0x17834 sub esi, edx!)
-    //   if ([r15+0EF0h] != 0 && [r15+0EF8h] != 0) jmp base+0x176C1
-    //   else lea rbx,[r15+1048h]; jmp base+0x17549
+    //   mov esi, 10h
+    //   if ([r15+0EF0h] != 0 && [r15+0EF8h] != 0) jmp loop_skip_target
+    //   else lea rbx,[r15+1048h]; jmp loop_resume
     std::vector<uint8_t> stub1 = {
         0x4C, 0x89, 0x75, 0x18,                          // mov qword ptr [rbp+18h], r14
         0xBE, 0x10, 0x00, 0x00, 0x00,                    // mov esi, 10h
@@ -444,44 +498,45 @@ bool InstallRenderSkipStubs(uintptr_t base) {
         0x49, 0x83, 0xBF, 0xF8, 0x0E, 0x00, 0x00, 0x00,  // cmp qword ptr [r15+0EF8h], 0
         0x74, 0x0E,                                      // je slow (+14)
     };
-    AppendAbsJmp(stub1, base + kRvaRenderLoopSkipTarget);
+    AppendAbsJmp(stub1, reinterpret_cast<uint64_t>(loop_skip_target));
     const uint8_t stub1_slow[7] = {
         0x49, 0x8D, 0x9F, 0x48, 0x10, 0x00, 0x00,  // lea rbx, [r15+1048h]
     };
     stub1.insert(stub1.end(), stub1_slow, stub1_slow + 7);
-    AppendAbsJmp(stub1, base + kRvaRenderLoopResume);
+    AppendAbsJmp(stub1, reinterpret_cast<uint64_t>(loop_resume));
 
     if (!g_patch_render_loop.InstallJumpToAllocatedStub(
-            reinterpret_cast<void*>(base + kRvaRenderLoopEntry),
+            loop_entry,
             kExpected17539,
             sizeof(kExpected17539),
             stub1)) {
         return false;
     }
 
-    // Stub 2: replace 0x176D6 (17 bytes)
-    //   if ([r15+0EF0h] != 0 && [r15+0EF8h] != 0) jmp base+0x176E7
-    //   else lea rcx,[r15+9B0h]; lea rdx,[rsp+78h]; call 0x33010; jmp base+0x176E7
+    // Stub 2: replace RenderCopyCall (17 bytes)
+    //   if ([r15+0EF0h] != 0 && [r15+0EF8h] != 0) jmp copy_resume
+    //   else lea rcx,[r15+9B0h]; lea rdx,[rsp+78h]; call copy_tex_layers; jmp copy_resume
     std::vector<uint8_t> stub2 = {
         0x49, 0x83, 0xBF, 0xF0, 0x0E, 0x00, 0x00, 0x00,  // cmp qword ptr [r15+0EF0h], 0
         0x74, 0x18,                                      // je do_copy (+24)
         0x49, 0x83, 0xBF, 0xF8, 0x0E, 0x00, 0x00, 0x00,  // cmp qword ptr [r15+0EF8h], 0
         0x74, 0x0E,                                      // je do_copy (+14)
     };
-    AppendAbsJmp(stub2, base + kRvaRenderCopyResume);
+    AppendAbsJmp(stub2, reinterpret_cast<uint64_t>(copy_resume));
     const uint8_t stub2_args[12] = {
         0x49, 0x8D, 0x8F, 0xB0, 0x09, 0x00, 0x00,  // lea rcx, [r15+9B0h]
         0x48, 0x8D, 0x54, 0x24, 0x78,              // lea rdx, [rsp+78h]
     };
     stub2.insert(stub2.end(), stub2_args, stub2_args + 12);
-    AppendMovRaxImm64Call(stub2, base + kRvaCopyTextureLayers);
-    AppendAbsJmp(stub2, base + kRvaRenderCopyResume);
+    AppendMovRaxImm64Call(stub2, reinterpret_cast<uint64_t>(copy_tex_layers));
+    AppendAbsJmp(stub2, reinterpret_cast<uint64_t>(copy_resume));
 
     if (!g_patch_render_copy.InstallJumpToAllocatedStub(
-            reinterpret_cast<void*>(base + kRvaRenderCopyCall),
+            copy_call,
             kExpected176D6,
             sizeof(kExpected176D6),
-            stub2)) {
+            stub2,
+            kMask176D6)) {
         g_patch_render_loop.Remove();
         return false;
     }
@@ -498,52 +553,68 @@ bool InstallPhase1FastPaths(void* d3d11_base, void* ogre_main_base, LogFn logger
     }
 
     const auto d3d_base = reinterpret_cast<uintptr_t>(d3d11_base);
-    const auto ogre_base = reinterpret_cast<uintptr_t>(ogre_main_base);
+    auto* ogre_mod = static_cast<HMODULE>(ogre_main_base);
 
-    g_string_dtor = reinterpret_cast<StringDtorFn>(d3d_base + kRvaStringDtor);
+    g_string_dtor = reinterpret_cast<StringDtorFn>(ResolveCodeTarget(
+        d3d11_base, kRvaStringDtor, kScanStringDtor, sizeof(kScanStringDtor),
+        kScanStringDtor, nullptr, sizeof(kScanStringDtor)));
     g_find_named_def = reinterpret_cast<FindNamedConstDefFn>(
         ::GetProcAddress(
-            static_cast<HMODULE>(ogre_main_base),
+            ogre_mod,
             "?_findNamedConstantDefinition@GpuProgramParameters@Ogre@@QEBAPEBUGpuConstantDefinition@2@AEBV?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@_N@Z"));
 
+    void* cb_target = ResolveCodeTarget(
+        d3d11_base, kRvaGetConstantBuffer, kExpected8260, sizeof(kExpected8260),
+        kScan8260, kMask8260, sizeof(kScan8260));
     void* orig_cb = nullptr;
-    if (!g_detour_cb.Install(
-            reinterpret_cast<void*>(d3d_base + kRvaGetConstantBuffer),
+    if (!cb_target || !g_detour_cb.Install(
+            cb_target,
             kExpected8260,
             sizeof(kExpected8260),
             reinterpret_cast<void*>(&HookGetConstantBuffer),
             &orig_cb)) {
-        if (g_log) g_log("[RouteB][Phase1A] FAILED detour on getConstantBuffer (0x8260)");
+        if (g_log) g_log("[RouteB][Phase1A] FAILED detour on getConstantBuffer");
         return false;
     }
     g_orig_get_cb = reinterpret_cast<GetConstantBufferFn>(orig_cb);
-    if (g_log) g_log("[RouteB][Phase1A] Installed getConstantBuffer physicalIndex fast-path (RVA 0x8260)");
+    if (g_log) {
+        g_log("[RouteB][Phase1A] Installed getConstantBuffer physicalIndex fast-path (RVA 0x%llx)",
+              static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(cb_target) - d3d_base));
+    }
 
-    if (!InstallRenderSkipStubs(d3d_base)) {
+    if (!InstallRenderSkipStubs(d3d11_base)) {
         if (g_log) g_log("[RouteB][Phase1C] FAILED _render TextureLayerState conditional skip stubs");
         RemovePhase1FastPaths();
         return false;
     }
     if (g_log) g_log("[RouteB][Phase1C] Installed _render FixedFuncState conditional skip stubs (RVA 0x17539/0x176D6)");
 
-    if (g_find_named_def) {
+    if (g_find_named_def && g_string_dtor) {
+        void* ogre_dtor_target = reinterpret_cast<void*>(::GetProcAddress(ogre_mod, kSymOgreGpuParamsDtor));
+        void* set_param_target = ResolveCodeTarget(
+            d3d11_base, kRvaSetParamHelper, kExpected320E0, sizeof(kExpected320E0),
+            kScan320E0, kMaskSetParam, sizeof(kScan320E0));
+        void* set_vec3_target = ResolveCodeTarget(
+            d3d11_base, kRvaSetVec3Helper, kExpected32180, sizeof(kExpected32180),
+            kScan32180, kMaskSetParam, sizeof(kScan32180));
+
         void* orig_ogre_dtor = nullptr;
         void* orig_set_param = nullptr;
         void* orig_set_vec3 = nullptr;
-        const bool ok_dtor = g_detour_ogre_dtor.Install(
-            reinterpret_cast<void*>(ogre_base + kRvaOgreGpuParamsDtor),
+        const bool ok_dtor = ogre_dtor_target && g_detour_ogre_dtor.Install(
+            ogre_dtor_target,
             kExpectedOgreDtor,
             sizeof(kExpectedOgreDtor),
             reinterpret_cast<void*>(&HookOgreGpuParamsDtor),
             &orig_ogre_dtor);
-        const bool ok_p = g_detour_set_param.Install(
-            reinterpret_cast<void*>(d3d_base + kRvaSetParamHelper),
+        const bool ok_p = set_param_target && g_detour_set_param.Install(
+            set_param_target,
             kExpected320E0,
             sizeof(kExpected320E0),
             reinterpret_cast<void*>(&HookSetParamHelper),
             &orig_set_param);
-        const bool ok_v = g_detour_set_vec3.Install(
-            reinterpret_cast<void*>(d3d_base + kRvaSetVec3Helper),
+        const bool ok_v = set_vec3_target && g_detour_set_vec3.Install(
+            set_vec3_target,
             kExpected32180,
             sizeof(kExpected32180),
             reinterpret_cast<void*>(&HookSetVec3Helper),
@@ -554,18 +625,21 @@ bool InstallPhase1FastPaths(void* d3d11_base, void* ogre_main_base, LogFn logger
             g_orig_set_param = reinterpret_cast<SetParamHelperFn>(orig_set_param);
             g_orig_set_vec3 = reinterpret_cast<SetVec3HelperFn>(orig_set_vec3);
             if (g_log) {
-                g_log("[RouteB][Phase1D] Installed FixedFunc named-constant physicalIndex cache (RVA 0x320E0/0x32180 + ~GpuProgramParameters)");
+                g_log("[RouteB][Phase1D] Installed FixedFunc named-constant physicalIndex cache (RVA 0x%llx/0x%llx + ~GpuProgramParameters)",
+                      static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(set_param_target) - d3d_base),
+                      static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(set_vec3_target) - d3d_base));
             }
         } else {
             g_detour_set_vec3.Remove();
             g_detour_set_param.Remove();
             g_detour_ogre_dtor.Remove();
             if (g_log) {
-                g_log("[RouteB][Phase1D] WARNING: FixedFunc constant cache skipped due to signature mismatch");
+                g_log("[RouteB][Phase1D] WARNING: FixedFunc constant cache skipped (dtor=%d param=%d vec3=%d)",
+                      ok_dtor ? 1 : 0, ok_p ? 1 : 0, ok_v ? 1 : 0);
             }
         }
     } else if (g_log) {
-        g_log("[RouteB][Phase1D] WARNING: _findNamedConstantDefinition export not resolved");
+        g_log("[RouteB][Phase1D] WARNING: _findNamedConstantDefinition or StringDtor not resolved");
     }
 
     return true;

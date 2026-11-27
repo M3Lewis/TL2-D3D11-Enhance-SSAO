@@ -18,7 +18,8 @@ using PluginFn = void (*)();
 using GenLayerBlendOpFn = std::string*(__fastcall*)(std::string* out, const routeb::OgreLayerBlendModeExRaw* blend, uint8_t is_alpha);
 
 constexpr uintptr_t kRvaGetOrCreateSamplerState = 0x11240U;
-constexpr uintptr_t kRvaSetPass = 0x1903C0U;
+constexpr char kSymSetPass[] =
+    "?_setPass@SceneManager@Ogre@@UEAAPEBVPass@2@PEBV32@_N1@Z";
 constexpr uintptr_t kRvaGetFixedFuncSrc = 0x352B0U;
 constexpr uintptr_t kRvaSetFixedFuncParams = 0x37ED0U;
 constexpr uintptr_t kRvaGetFfShaderPrograms = 0x32480U;
@@ -332,10 +333,13 @@ int main() {
         return 1;
     }
 
-    const auto ogre_base = reinterpret_cast<uintptr_t>(ogre);
     const auto d3d_base = reinterpret_cast<uintptr_t>(d3d);
     const auto* p_sampler = reinterpret_cast<const uint8_t*>(d3d_base + kRvaGetOrCreateSamplerState);
-    const auto* p_setpass = reinterpret_cast<const uint8_t*>(ogre_base + kRvaSetPass);
+    const auto* p_setpass = reinterpret_cast<const uint8_t*>(::GetProcAddress(ogre, kSymSetPass));
+    if (!p_setpass) {
+        std::printf("FAILED GetProcAddress for SceneManager::_setPass\n");
+        return 1;
+    }
     const auto* p_getsrc = reinterpret_cast<const uint8_t*>(d3d_base + kRvaGetFixedFuncSrc);
     const auto* p_setff = reinterpret_cast<const uint8_t*>(d3d_base + kRvaSetFixedFuncParams);
     const auto* p_getprog = reinterpret_cast<const uint8_t*>(d3d_base + kRvaGetFfShaderPrograms);

@@ -28,13 +28,15 @@ namespace routeb {
 
 namespace {
 
-// Verified RVAs for Torchlight II 2026 x64 (TimeDateStamp 0x6af5fabf / 0x6af5faa0)
+// Preferred RVAs for RenderSystem_Direct3D11.dll (used as fast-path before signature scan fallback)
 constexpr uintptr_t kRvaGetOrCreateSamplerState = 0x11240;
 constexpr uintptr_t kRvaGetFixedFuncShaderSource = 0x352B0;
 constexpr uintptr_t kRvaSetFixedFuncParams = 0x37ED0;
 constexpr uintptr_t kRvaRenderBindSrvs = 0x179FF;
-constexpr uintptr_t kRvaRenderBindSrvsResume = 0x17A0F;
-constexpr uintptr_t kRvaSceneMgrSetPass = 0x1903C0;
+
+// Exported symbol in OgreMain.dll (resolved dynamically via GetProcAddress)
+constexpr char kSymSceneMgrSetPass[] =
+    "?_setPass@SceneManager@Ogre@@UEAAPEBVPass@2@PEBV32@_N1@Z";
 
 // Verified D3D11RenderSystem / D3D11Texture offsets
 constexpr uintptr_t kRsOffDeviceContext = 0x03D0;
@@ -56,12 +58,21 @@ constexpr uintptr_t kSmOffSuppressRenderState = 17457;
 
 constexpr uint8_t kExpectedGetSamplerState[16] = {
     0x48, 0x89, 0x5C, 0x24, 0x10, 0x48, 0x89, 0x7C, 0x24, 0x18, 0x41, 0x56, 0x48, 0x83, 0xEC, 0x20};
+constexpr uint8_t kScanGetSamplerState[24] = {
+    0x48, 0x89, 0x5C, 0x24, 0x10, 0x48, 0x89, 0x7C, 0x24, 0x18, 0x41, 0x56,
+    0x48, 0x83, 0xEC, 0x20, 0x4D, 0x8B, 0xF1, 0x49, 0x8B, 0xF8, 0x4C, 0x8B};
 constexpr uint8_t kExpectedSetPass[14] = {
     0x48, 0x8B, 0xC4, 0x48, 0x89, 0x58, 0x18, 0x55, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55};
 constexpr uint8_t kExpectedGetShaderSource[14] = {
     0x48, 0x8B, 0xC4, 0x48, 0x89, 0x58, 0x08, 0x48, 0x89, 0x50, 0x10, 0x55, 0x56, 0x57};
+constexpr uint8_t kScanGetShaderSource[24] = {
+    0x48, 0x8B, 0xC4, 0x48, 0x89, 0x58, 0x08, 0x48, 0x89, 0x50, 0x10, 0x55,
+    0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56, 0x41, 0x57, 0x48, 0x8D};
 constexpr uint8_t kExpectedSetFfParams[14] = {
     0x48, 0x8B, 0xC4, 0x48, 0x89, 0x58, 0x18, 0x55, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55};
+constexpr uint8_t kScanSetFfParams[24] = {
+    0x48, 0x8B, 0xC4, 0x48, 0x89, 0x58, 0x18, 0x55, 0x56, 0x57, 0x41, 0x54,
+    0x41, 0x55, 0x41, 0x56, 0x41, 0x57, 0x48, 0x8D, 0xA8, 0x88, 0xFE, 0xFF};
 constexpr uint8_t kExpectedRenderBindSrvs[16] = {
     0x49, 0x8B, 0x8F, 0xD0, 0x03, 0x00, 0x00, 0x48, 0x8B, 0x01, 0x45, 0x33, 0xC9, 0x45, 0x33, 0xC0};
 
@@ -1955,7 +1966,14 @@ void AppendMovRaxImm64CallBytes(std::vector<uint8_t>& out, uint64_t addr) {
     out.push_back(0xD0);
 }
 
-bool InstallRenderBindSrvsStub(uintptr_t d3d_base) {
+bool InstallRenderBindSrvsStub(void* d3d11_base) {
+    auto* target = static_cast<uint8_t*>(ResolveCodeTarget(
+        d3d11_base, kRvaRenderBindSrvs, kExpectedRenderBindSrvs, sizeof(kExpectedRenderBindSrvs),
+        kExpectedRenderBindSrvs, nullptr, sizeof(kExpectedRenderBindSrvs)));
+    if (!target) {
+        return false;
+    }
+
     std::vector<uint8_t> stub = {
         0x48, 0x83, 0xEC, 0x20,  // sub rsp, 20h
         0x49, 0x8B, 0xCF,        // mov rcx, r15 (D3D11RenderSystem*)
@@ -1969,9 +1987,9 @@ bool InstallRenderBindSrvsStub(uintptr_t d3d_base) {
         0x45, 0x33, 0xC0,                          // xor r8d, r8d
     };
     stub.insert(stub.end(), post_call, post_call + sizeof(post_call));
-    AppendAbsJmpBytes(stub, d3d_base + kRvaRenderBindSrvsResume);
+    AppendAbsJmpBytes(stub, reinterpret_cast<uint64_t>(target + sizeof(kExpectedRenderBindSrvs)));
     return g_patch_render_bind_srvs.InstallJumpToAllocatedStub(
-        reinterpret_cast<void*>(d3d_base + kRvaRenderBindSrvs),
+        target,
         kExpectedRenderBindSrvs,
         sizeof(kExpectedRenderBindSrvs),
         stub);
@@ -2382,65 +2400,54 @@ bool InstallPhase3ScenePipeline(void* d3d11_base, void* ogre_main_base, Phase3Lo
     g_p2_fxaa_last_tick_ms.store(0, std::memory_order_relaxed);
 
     auto* ogre_mod = static_cast<HMODULE>(ogre_main_base);
-    if (!ResolveAllOgreExports(ogre_mod)) {
-        if (g_log) {
-            g_log("[RouteB][Phase3] FAILED resolving one or more OgreMain.dll exports");
-        }
-        return false;
+    const bool ogre_exports_ok = ResolveAllOgreExports(ogre_mod);
+    if (!ogre_exports_ok && g_log) {
+        g_log("[RouteB][Phase3] FAILED resolving one or more OgreMain.dll exports; keeping D3D11 FixedFunc repairs active");
     }
 
-    const auto d3d_base = reinterpret_cast<uintptr_t>(d3d11_base);
-    const auto ogre_base = reinterpret_cast<uintptr_t>(ogre_main_base);
-
-    void* orig_set_pass = nullptr;
-    if (!g_detour_set_pass.Install(
-            reinterpret_cast<void*>(ogre_base + kRvaSceneMgrSetPass),
-            kExpectedSetPass,
-            sizeof(kExpectedSetPass),
-            reinterpret_cast<void*>(&HookSceneManagerSetPass),
-            &orig_set_pass)) {
-        if (g_log) {
-            g_log("[RouteB][Phase3] FAILED detour on Ogre::SceneManager::_setPass (0x1903C0)");
-        }
-        return false;
-    }
-    g_orig_set_pass = reinterpret_cast<SceneMgrSetPassFn>(orig_set_pass);
-
+    // Install D3D11 FixedFunc shader repairs (missing COLOR0 vCol fix, soft particles, manual blend
+    // uniforms) independently of SceneManager::_setPass so vanilla D3D11 UI defects never re-emerge
+    // even if an Ogre-side hook fails on a future update.
+    void* shader_src_target = ResolveCodeTarget(
+        d3d11_base, kRvaGetFixedFuncShaderSource, kExpectedGetShaderSource, sizeof(kExpectedGetShaderSource),
+        kScanGetShaderSource, nullptr, sizeof(kScanGetShaderSource));
     void* orig_shader_src = nullptr;
-    if (!g_detour_get_shader_src.Install(
-            reinterpret_cast<void*>(d3d_base + kRvaGetFixedFuncShaderSource),
-            kExpectedGetShaderSource,
-            sizeof(kExpectedGetShaderSource),
-            reinterpret_cast<void*>(&HookGetFixedFuncShaderSource),
-            &orig_shader_src)) {
-        if (g_log) {
-            g_log("[RouteB][Phase3] FAILED detour on Hlsl4FixedFuncEmuShaderGenerator::getShaderSource (0x352B0)");
-        }
-        g_detour_set_pass.Remove();
-        return false;
+    const bool shader_src_ok = shader_src_target && g_detour_get_shader_src.Install(
+        shader_src_target,
+        kExpectedGetShaderSource,
+        sizeof(kExpectedGetShaderSource),
+        reinterpret_cast<void*>(&HookGetFixedFuncShaderSource),
+        &orig_shader_src);
+    if (shader_src_ok) {
+        g_orig_get_shader_src = reinterpret_cast<GetFfShaderSourceFn>(orig_shader_src);
+    } else if (g_log) {
+        g_log("[RouteB][Phase3] FAILED detour on Hlsl4FixedFuncEmuShaderGenerator::getShaderSource");
     }
-    g_orig_get_shader_src = reinterpret_cast<GetFfShaderSourceFn>(orig_shader_src);
 
+    const bool ff_manual_ok = InstallFixedFuncManualUniforms(d3d11_base, g_log);
+
+    void* set_ff_target = ResolveCodeTarget(
+        d3d11_base, kRvaSetFixedFuncParams, kExpectedSetFfParams, sizeof(kExpectedSetFfParams),
+        kScanSetFfParams, nullptr, sizeof(kScanSetFfParams));
     void* orig_ff_params = nullptr;
-    if (!g_detour_set_ff_params.Install(
-            reinterpret_cast<void*>(d3d_base + kRvaSetFixedFuncParams),
-            kExpectedSetFfParams,
-            sizeof(kExpectedSetFfParams),
-            reinterpret_cast<void*>(&HookSetFixedFuncProgramsParameters),
-            &orig_ff_params)) {
-        if (g_log) {
-            g_log("[RouteB][Phase3] FAILED detour on setFixedFuncProgramsParameters (0x37ED0)");
-        }
-        g_detour_get_shader_src.Remove();
-        g_detour_set_pass.Remove();
-        return false;
+    const bool set_ff_ok = set_ff_target && g_detour_set_ff_params.Install(
+        set_ff_target,
+        kExpectedSetFfParams,
+        sizeof(kExpectedSetFfParams),
+        reinterpret_cast<void*>(&HookSetFixedFuncProgramsParameters),
+        &orig_ff_params);
+    if (set_ff_ok) {
+        g_orig_set_ff_params = reinterpret_cast<SetFfProgramsParamsFn>(orig_ff_params);
+    } else if (g_log) {
+        g_log("[RouteB][Phase3] FAILED detour on setFixedFuncProgramsParameters");
     }
-    g_orig_set_ff_params = reinterpret_cast<SetFfProgramsParamsFn>(orig_ff_params);
 
-    EnsureSharedPerFrameLighting();
+    void* sampler_target = ResolveCodeTarget(
+        d3d11_base, kRvaGetOrCreateSamplerState, kExpectedGetSamplerState, sizeof(kExpectedGetSamplerState),
+        kScanGetSamplerState, nullptr, sizeof(kScanGetSamplerState));
     void* orig_get_sampler = nullptr;
-    const bool sampler_hook_ok = g_detour_get_sampler.Install(
-        reinterpret_cast<void*>(d3d_base + kRvaGetOrCreateSamplerState),
+    const bool sampler_hook_ok = sampler_target && g_detour_get_sampler.Install(
+        sampler_target,
         kExpectedGetSamplerState,
         sizeof(kExpectedGetSamplerState),
         reinterpret_cast<void*>(&HookD3D11GetOrCreateSamplerState),
@@ -2448,26 +2455,47 @@ bool InstallPhase3ScenePipeline(void* d3d11_base, void* ogre_main_base, Phase3Lo
     if (sampler_hook_ok) {
         g_orig_get_sampler = reinterpret_cast<GetOrCreateSamplerStateFn>(orig_get_sampler);
     } else if (g_log) {
-        g_log("[RouteB][Phase3] WARNING: Failed detour on D3D11 sampler cache (0x11240); 16x AF disabled.");
+        g_log("[RouteB][Phase3] WARNING: Failed detour on D3D11 sampler cache; 16x AF disabled.");
     }
     g_sampler_hooked.store(sampler_hook_ok, std::memory_order_relaxed);
 
-    const bool srv_hook_ok = InstallRenderBindSrvsStub(d3d_base);
-    const bool ff_manual_ok = InstallFixedFuncManualUniforms(d3d11_base, g_log);
-    g_hooked.store(true, std::memory_order_relaxed);
+    const bool srv_hook_ok = InstallRenderBindSrvsStub(d3d11_base);
+
+    bool set_pass_ok = false;
+    if (ogre_exports_ok && shader_src_ok && set_ff_ok) {
+        void* set_pass_target = reinterpret_cast<void*>(::GetProcAddress(ogre_mod, kSymSceneMgrSetPass));
+        void* orig_set_pass = nullptr;
+        set_pass_ok = set_pass_target && g_detour_set_pass.Install(
+            set_pass_target,
+            kExpectedSetPass,
+            sizeof(kExpectedSetPass),
+            reinterpret_cast<void*>(&HookSceneManagerSetPass),
+            &orig_set_pass);
+        if (set_pass_ok) {
+            g_orig_set_pass = reinterpret_cast<SceneMgrSetPassFn>(orig_set_pass);
+            EnsureSharedPerFrameLighting();
+        } else if (g_log) {
+            g_log("[RouteB][Phase3] FAILED detour on Ogre::SceneManager::_setPass (addr=%p)", set_pass_target);
+        }
+    }
+
+    g_hooked.store(set_pass_ok, std::memory_order_relaxed);
     if (g_log) {
         g_log(
-            "[RouteB][Phase3] Scene pipeline installed (diff=%d skin=%d light=%d rim=%d ffManual=%d normSpecSrv=%d samplerAF=%d f11=%s)",
+            "[RouteB][Phase3] Scene pipeline status (setPass=%d getSrc=%d setFF=%d ffManual=%d normSpecSrv=%d samplerAF=%d diff=%d skin=%d light=%d rim=%d f11=%s)",
+            set_pass_ok ? 1 : 0,
+            shader_src_ok ? 1 : 0,
+            set_ff_ok ? 1 : 0,
+            ff_manual_ok ? 1 : 0,
+            srv_hook_ok ? 1 : 0,
+            sampler_hook_ok ? 1 : 0,
             g_toggles.diff_pass ? 1 : 0,
             g_toggles.skinned_diff ? 1 : 0,
             g_toggles.light_pass ? 1 : 0,
             g_toggles.rim_lit ? 1 : 0,
-            ff_manual_ok ? 1 : 0,
-            srv_hook_ok ? 1 : 0,
-            sampler_hook_ok ? 1 : 0,
             g_f11_enhance_enabled.load(std::memory_order_relaxed) ? "ON" : "OFF");
     }
-    return true;
+    return set_pass_ok;
 }
 
 void RemovePhase3ScenePipeline() {

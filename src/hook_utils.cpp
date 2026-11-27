@@ -31,7 +31,121 @@ bool WriteProtectedBytes(void* dst, const uint8_t* bytes, size_t len) {
     return true;
 }
 
+bool MatchBytesMasked(const uint8_t* actual, const uint8_t* expected, const char* mask, size_t len) {
+    if (!mask) {
+        return std::memcmp(actual, expected, len) == 0;
+    }
+    for (size_t i = 0; i < len; ++i) {
+        if (mask[i] != '?' && actual[i] != expected[i]) {
+            return false;
+        }
+    }
+    return true;
+}
+
+const IMAGE_NT_HEADERS64* GetPe64Headers(const uint8_t* base) {
+    if (!base) {
+        return nullptr;
+    }
+    const auto* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(base);
+    if (dos->e_magic != IMAGE_DOS_SIGNATURE || dos->e_lfanew <= 0) {
+        return nullptr;
+    }
+    const auto* nt = reinterpret_cast<const IMAGE_NT_HEADERS64*>(base + dos->e_lfanew);
+    if (nt->Signature != IMAGE_NT_SIGNATURE || nt->OptionalHeader.Magic != IMAGE_NT_OPTIONAL_HDR64_MAGIC) {
+        return nullptr;
+    }
+    return nt;
+}
+
+bool IsRvaInExecutableSection(const uint8_t* base, const IMAGE_NT_HEADERS64* nt, uintptr_t rva, size_t len) {
+    const auto* sec = IMAGE_FIRST_SECTION(nt);
+    const WORD num_sec = nt->FileHeader.NumberOfSections;
+    for (WORD i = 0; i < num_sec; ++i) {
+        if ((sec[i].Characteristics & IMAGE_SCN_MEM_EXECUTE) == 0) {
+            continue;
+        }
+        const uintptr_t sec_start = sec[i].VirtualAddress;
+        const size_t sec_size = sec[i].Misc.VirtualSize ? sec[i].Misc.VirtualSize : sec[i].SizeOfRawData;
+        if (rva >= sec_start && (rva - sec_start) <= sec_size && len <= (sec_size - (rva - sec_start))) {
+            return (base + rva) != nullptr;
+        }
+    }
+    return false;
+}
+
 }  // namespace
+
+void* FindUniqueCodePattern(
+    void* module_base,
+    const uint8_t* pattern,
+    const char* mask,
+    size_t len) {
+    if (!module_base || !pattern || len == 0) {
+        return nullptr;
+    }
+    const auto* base = static_cast<const uint8_t*>(module_base);
+    const IMAGE_NT_HEADERS64* nt = GetPe64Headers(base);
+    if (!nt) {
+        return nullptr;
+    }
+
+    const uint8_t* unique_match = nullptr;
+    const auto* sec = IMAGE_FIRST_SECTION(nt);
+    const WORD num_sec = nt->FileHeader.NumberOfSections;
+    for (WORD s = 0; s < num_sec; ++s) {
+        if ((sec[s].Characteristics & IMAGE_SCN_MEM_EXECUTE) == 0) {
+            continue;
+        }
+        const size_t sec_size = sec[s].Misc.VirtualSize ? sec[s].Misc.VirtualSize : sec[s].SizeOfRawData;
+        if (sec_size < len) {
+            continue;
+        }
+        const uint8_t* sec_bytes = base + sec[s].VirtualAddress;
+        const size_t limit = sec_size - len;
+        for (size_t i = 0; i <= limit; ++i) {
+            if (MatchBytesMasked(sec_bytes + i, pattern, mask, len)) {
+                if (unique_match != nullptr) {
+                    return nullptr;  // Ambiguous pattern: refuse to guess.
+                }
+                unique_match = sec_bytes + i;
+            }
+        }
+    }
+    return const_cast<uint8_t*>(unique_match);
+}
+
+void* ResolveCodeTarget(
+    void* module_base,
+    uintptr_t preferred_rva,
+    const uint8_t* expected_prefix,
+    size_t prefix_len,
+    const uint8_t* scan_pattern,
+    const char* scan_mask,
+    size_t scan_len) {
+    if (!module_base) {
+        return nullptr;
+    }
+    const auto* base = static_cast<const uint8_t*>(module_base);
+    const IMAGE_NT_HEADERS64* nt = GetPe64Headers(base);
+    if (!nt) {
+        return nullptr;
+    }
+
+    if (preferred_rva != 0 && expected_prefix && prefix_len > 0 &&
+        IsRvaInExecutableSection(base, nt, preferred_rva, prefix_len)) {
+        const uint8_t* candidate = base + preferred_rva;
+        const char* prefix_mask = (scan_pattern == expected_prefix) ? scan_mask : nullptr;
+        if (MatchBytesMasked(candidate, expected_prefix, prefix_mask, prefix_len)) {
+            return const_cast<uint8_t*>(candidate);
+        }
+    }
+
+    if (scan_pattern && scan_len > 0) {
+        return FindUniqueCodePattern(module_base, scan_pattern, scan_mask, scan_len);
+    }
+    return nullptr;
+}
 
 Detour64::~Detour64() {
     Remove();
@@ -42,12 +156,13 @@ bool Detour64::Install(
     const uint8_t* expected_prefix,
     size_t stolen_len,
     void* hook_fn,
-    void** out_trampoline) {
+    void** out_trampoline,
+    const char* expected_mask) {
     if (installed_ || !target || !expected_prefix || stolen_len < 14 || !hook_fn || !out_trampoline) {
         return false;
     }
 
-    if (std::memcmp(target, expected_prefix, stolen_len) != 0) {
+    if (!MatchBytesMasked(static_cast<const uint8_t*>(target), expected_prefix, expected_mask, stolen_len)) {
         return false;
     }
 
@@ -106,11 +221,12 @@ bool RawPatch64::InstallJumpToAllocatedStub(
     void* target,
     const uint8_t* expected_bytes,
     size_t patch_len,
-    const std::vector<uint8_t>& stub_code) {
+    const std::vector<uint8_t>& stub_code,
+    const char* expected_mask) {
     if (installed_ || !target || !expected_bytes || patch_len < 14 || stub_code.empty()) {
         return false;
     }
-    if (std::memcmp(target, expected_bytes, patch_len) != 0) {
+    if (!MatchBytesMasked(static_cast<const uint8_t*>(target), expected_bytes, expected_mask, patch_len)) {
         return false;
     }
 

@@ -2,6 +2,7 @@
 #include <windows.h>
 
 #include "cegui_explicit_shader.h"
+#include "hook_utils.h"
 
 #include <atomic>
 #include <cstring>
@@ -110,6 +111,7 @@ LogCallbackFn g_log_fn = nullptr;
 uint8_t* g_tail_stub = nullptr;
 size_t g_tail_stub_size = 0;
 std::atomic<HMODULE> g_patched_gui_mod{nullptr};
+uint8_t* g_patched_tail_target = nullptr;
 uint8_t g_saved_tail_bytes[kTailPatchLen]{};
 PVOID g_dll_notify_cookie = nullptr;
 
@@ -164,14 +166,17 @@ bool PatchGuiModuleIfReady(HMODULE gui_mod) {
     if (!g_tail_stub || !ValidateGuiModulePe(gui_mod)) {
         return false;
     }
-    auto* target = reinterpret_cast<uint8_t*>(gui_mod) + kInitRenderStatesTailRva;
-    if (std::memcmp(target, kExpectedTailBytes, kTailPatchLen) != 0) {
+    auto* target = static_cast<uint8_t*>(ResolveCodeTarget(
+        gui_mod, kInitRenderStatesTailRva, kExpectedTailBytes, kTailPatchLen,
+        kExpectedTailBytes, nullptr, kTailPatchLen));
+    if (!target) {
         return false;
     }
     if (!g_patched_gui_mod.compare_exchange_strong(expected, gui_mod)) {
         return true;
     }
 
+    g_patched_tail_target = target;
     std::memcpy(g_saved_tail_bytes, target, kTailPatchLen);
 
     uint8_t patch[kTailPatchLen];
@@ -467,8 +472,9 @@ void RemoveCeguiExplicitShaderHook() {
     }
 
     if (HMODULE gui_mod = g_patched_gui_mod.exchange(nullptr)) {
-        if (::GetModuleHandleW(L"OgreGUIRenderer.dll") == gui_mod) {
-            auto* target = reinterpret_cast<uint8_t*>(gui_mod) + kInitRenderStatesTailRva;
+        uint8_t* target = g_patched_tail_target;
+        g_patched_tail_target = nullptr;
+        if (target && ::GetModuleHandleW(L"OgreGUIRenderer.dll") == gui_mod) {
             DWORD old_protect = 0;
             if (::VirtualProtect(target, kTailPatchLen, PAGE_EXECUTE_READWRITE, &old_protect)) {
                 std::memcpy(target, g_saved_tail_bytes, kTailPatchLen);

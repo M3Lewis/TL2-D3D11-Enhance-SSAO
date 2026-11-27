@@ -71,13 +71,19 @@ int main() {
     uint8_t pre_mem_seek[16]{};
     uint8_t pre_mem_skip[16]{};
     const auto d3d_base = reinterpret_cast<uintptr_t>(d3d);
-    const auto ogre_base = reinterpret_cast<uintptr_t>(ogre);
+    const void* p_mem_read = reinterpret_cast<const void*>(::GetProcAddress(ogre, "?read@MemoryDataStream@Ogre@@UEAA_KPEAX_K@Z"));
+    const void* p_mem_seek = reinterpret_cast<const void*>(::GetProcAddress(ogre, "?seek@MemoryDataStream@Ogre@@UEAAX_K@Z"));
+    const void* p_mem_skip = reinterpret_cast<const void*>(::GetProcAddress(ogre, "?skip@MemoryDataStream@Ogre@@UEAAXJ@Z"));
+    if (!p_mem_read || !p_mem_seek || !p_mem_skip) {
+        std::printf("FAILED GetProcAddress for MemoryDataStream exports\n");
+        return 1;
+    }
     std::memcpy(pre_8260,     reinterpret_cast<const void*>(d3d_base + 0x8260),   sizeof(pre_8260));
     std::memcpy(pre_17539,    reinterpret_cast<const void*>(d3d_base + 0x17539),  sizeof(pre_17539));
     std::memcpy(pre_176d6,    reinterpret_cast<const void*>(d3d_base + 0x176D6),  sizeof(pre_176d6));
-    std::memcpy(pre_mem_read, reinterpret_cast<const void*>(ogre_base + 0x85E60), sizeof(pre_mem_read));
-    std::memcpy(pre_mem_seek, reinterpret_cast<const void*>(ogre_base + 0x864B0), sizeof(pre_mem_seek));
-    std::memcpy(pre_mem_skip, reinterpret_cast<const void*>(ogre_base + 0x86530), sizeof(pre_mem_skip));
+    std::memcpy(pre_mem_read, p_mem_read, sizeof(pre_mem_read));
+    std::memcpy(pre_mem_seek, p_mem_seek, sizeof(pre_mem_seek));
+    std::memcpy(pre_mem_skip, p_mem_skip, sizeof(pre_mem_skip));
 
     start_fn();
 
@@ -85,9 +91,9 @@ int main() {
     if (*reinterpret_cast<const uint16_t*>(d3d_base + 0x8260) != 0x25FF ||
         *reinterpret_cast<const uint16_t*>(d3d_base + 0x17539) != 0x25FF ||
         *reinterpret_cast<const uint16_t*>(d3d_base + 0x176D6) != 0x25FF ||
-        *reinterpret_cast<const uint16_t*>(ogre_base + 0x85E60) != 0x25FF ||
-        *reinterpret_cast<const uint16_t*>(ogre_base + 0x864B0) != 0x25FF ||
-        *reinterpret_cast<const uint16_t*>(ogre_base + 0x86530) != 0x25FF) {
+        *reinterpret_cast<const uint16_t*>(p_mem_read) != 0x25FF ||
+        *reinterpret_cast<const uint16_t*>(p_mem_seek) != 0x25FF ||
+        *reinterpret_cast<const uint16_t*>(p_mem_skip) != 0x25FF) {
         std::printf("FAILED patch verification: target prologues not patched!\n");
         stop_fn();
         return 2;
@@ -195,9 +201,9 @@ int main() {
     if (std::memcmp(pre_8260,     reinterpret_cast<const void*>(d3d_base + 0x8260),   sizeof(pre_8260)) != 0 ||
         std::memcmp(pre_17539,    reinterpret_cast<const void*>(d3d_base + 0x17539),  sizeof(pre_17539)) != 0 ||
         std::memcmp(pre_176d6,    reinterpret_cast<const void*>(d3d_base + 0x176D6),  sizeof(pre_176d6)) != 0 ||
-        std::memcmp(pre_mem_read, reinterpret_cast<const void*>(ogre_base + 0x85E60), sizeof(pre_mem_read)) != 0 ||
-        std::memcmp(pre_mem_seek, reinterpret_cast<const void*>(ogre_base + 0x864B0), sizeof(pre_mem_seek)) != 0 ||
-        std::memcmp(pre_mem_skip, reinterpret_cast<const void*>(ogre_base + 0x86530), sizeof(pre_mem_skip)) != 0) {
+        std::memcmp(pre_mem_read, p_mem_read, sizeof(pre_mem_read)) != 0 ||
+        std::memcmp(pre_mem_seek, p_mem_seek, sizeof(pre_mem_seek)) != 0 ||
+        std::memcmp(pre_mem_skip, p_mem_skip, sizeof(pre_mem_skip)) != 0) {
         std::printf("FAILED clean unhook byte restoration!\n");
         return 7;
     }

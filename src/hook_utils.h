@@ -19,7 +19,8 @@ public:
         const uint8_t* expected_prefix,
         size_t stolen_len,
         void* hook_fn,
-        void** out_trampoline);
+        void** out_trampoline,
+        const char* expected_mask = nullptr);
 
     void Remove();
     bool IsInstalled() const { return installed_; }
@@ -43,7 +44,8 @@ public:
         void* target,
         const uint8_t* expected_bytes,
         size_t patch_len,
-        const std::vector<uint8_t>& stub_code);
+        const std::vector<uint8_t>& stub_code,
+        const char* expected_mask = nullptr);
 
     void Remove();
     bool IsInstalled() const { return installed_; }
@@ -54,6 +56,25 @@ private:
     std::vector<uint8_t> orig_bytes_;
     bool installed_ = false;
 };
+
+// Scans all executable PE sections in module_base for a unique byte pattern
+// (mask char '?' acts as a wildcard). Returns nullptr if 0 or >=2 matches exist.
+void* FindUniqueCodePattern(
+    void* module_base,
+    const uint8_t* pattern,
+    const char* mask,
+    size_t len);
+
+// Fast path: returns base + preferred_rva if expected_prefix matches inside an
+// executable section; otherwise falls back to FindUniqueCodePattern.
+void* ResolveCodeTarget(
+    void* module_base,
+    uintptr_t preferred_rva,
+    const uint8_t* expected_prefix,
+    size_t prefix_len,
+    const uint8_t* scan_pattern,
+    const char* scan_mask,
+    size_t scan_len);
 
 class IatHook {
 public:

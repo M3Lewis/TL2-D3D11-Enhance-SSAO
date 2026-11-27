@@ -11,7 +11,7 @@ if ($proc) {
 }
 
 Write-Host "[Phase 0] Step 1: Reverting programs/ to vanilla reference..." -ForegroundColor Cyan
-& (Join-Path $ModsDir "revert_shaders.ps1")
+& (Join-Path $ModsDir "scripts\plugin\revert_shaders.ps1")
 
 $SrcDll = Join-Path $ProjectDir "bin\Plugin_TL2_DX11_Enhance_SSAO.dll"
 if (-not (Test-Path $SrcDll)) {
